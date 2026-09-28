@@ -167,6 +167,8 @@ target_link_libraries(acdb_tests PRIVATE acdb_core d3d11 d3d12 dxgi version)
 target_compile_definitions(acdb_tests PRIVATE ACDB_DLL_PATH="$<TARGET_FILE:ac-dlssg>")
 # The camera tests read the CSP Lua app (apps/lua/AcDlssg) from the source tree.
 target_compile_definitions(acdb_tests PRIVATE ACDB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+# The test app's CSP stand-ins (tools/testapp/fake_csp.h) are tested here too.
+target_include_directories(acdb_tests PRIVATE tests tools/testapp)
 add_dependencies(acdb_tests ac-dlssg)
 # An unsigned, loadable DLL for StreamlineRuntime's signature check: its
 # DllMain leaves a mark, so a test can prove it was never loaded.
