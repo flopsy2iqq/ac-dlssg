@@ -14,7 +14,9 @@
 #include <string>
 #include <utility>
 
+#include "child_process.h"
 #include "d3d12_presenter.h"
+#include "fake_nvngx/fake_nvngx.h"
 #include "gpu_test_devices.h"
 #include "log.h"
 #include "ngx_hook.h"
@@ -281,6 +283,83 @@ TEST(Presenter_CaptureSinkPairsEachCaptureWithThePresent) {
     }
     d.ctx11->ClearState();
     d.ctx11->Flush();
+}
+
+// M3 production wiring: with install_ngx_hook the presenter installs NgxHook
+// (once per process), attaches its coordinator, logs the hooked modules, and
+// detaches before it is destroyed. The fake NGX module stands in for
+// _nvngx.dll. A child process, because NgxHook is process-wide.
+TEST(Presenter_NgxHookReachesTheCoordinatorAndIsDetachedAtRelease) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_Presenter_NgxHookReachesTheCoordinator"), 0);
+}
+
+TEST(Child_Presenter_NgxHookReachesTheCoordinator) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    acdb_test::TempDir dir(L"presenter_ngx");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    HMODULE fake = LoadLibraryW(FAKE_NVNGX_PATH);
+    REQUIRE(fake != nullptr);
+    auto state = reinterpret_cast<FakeNgxState* (*)()>(GetProcAddress(fake, "FakeNgxGetState"));
+    using CreateFn = int(__cdecl*)(void*, unsigned int, void*, void**);
+    using EvalFn = int(__cdecl*)(void*, const void*, const void*, void*);
+    auto create = reinterpret_cast<CreateFn>(GetProcAddress(fake, "NVSDK_NGX_D3D11_CreateFeature"));
+    auto eval = reinterpret_cast<EvalFn>(GetProcAddress(fake, "NVSDK_NGX_D3D11_EvaluateFeature"));
+    REQUIRE(state && create && eval);
+    *state() = FakeNgxState{};
+    state()->nextHandle = reinterpret_cast<void*>(0x340000);
+
+    GameWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    Source src = CreateSource(d.device11.Get(), 640, 360);
+    CaptureSources cs = CreateCaptureSources(d.device11.Get(), 320, 180);
+    REQUIRE(src.rtv && cs.depth && cs.mvec);
+    FakeNgxParam cp;
+    cp.SetU(ngxkey::kWidth, 320u);
+    cp.SetU(ngxkey::kHeight, 180u);
+    cp.SetU(ngxkey::kOutWidth, 640u);
+    cp.SetU(ngxkey::kOutHeight, 360u);
+    cp.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));
+    FakeNgxParam ep;
+    ep.SetRes(ngxkey::kDepth, cs.depth.Get());
+    ep.SetRes(ngxkey::kMotionVectors, cs.mvec.Get());
+    ep.SetF(ngxkey::kMvScaleX, -320.0f);
+    ep.SetF(ngxkey::kMvScaleY, -180.0f);
+    ep.SetU(ngxkey::kSubrectWidth, 320u);
+    ep.SetU(ngxkey::kSubrectHeight, 180u);
+    {
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = GameDesc(640, 360);
+        info.env.install_ngx_hook = true;
+        std::string err;
+        auto p = D3D12Presenter::Create(info, &err);
+        REQUIRE(p != nullptr);
+        void* h = nullptr;
+        CHECK_EQ(create(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+        for (int i = 0; i < 5; ++i) {
+            CHECK_EQ(eval(d.ctx11.Get(), h, &ep, nullptr), kNgxSuccess);
+            CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, i)));
+        }
+        CHECK_EQ(p->Totals().captures, 5u);
+        p.reset();
+        // Detached: the next evaluate is forwarded and reaches nothing freed.
+        CHECK_EQ(eval(d.ctx11.Get(), h, &ep, nullptr), kNgxSuccess);
+        CHECK_EQ(state()->evalCalls, 6L);
+    }
+    NgxHook::Get().Uninstall();
+    FreeLibrary(fake);
+    LogClose();
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+    const std::string log = acdb_test::ReadAll(logPath);
+    CHECK(log.find("NGX hook: installed on 1 module(s): fake_nvngx.dll") != std::string::npos);
+    CHECK(log.find("capture: first counted evaluate: depth 39 320x180, mvec 34 320x180, subrect 320x180") !=
+          std::string::npos);
+    if (log.find("NGX hook: installed on 1 module(s): fake_nvngx.dll") == std::string::npos)
+        std::printf("  log:\n%s\n", log.c_str());
 }
 
 // M1 pacing: the D3D12 chain gets a frame-latency object exactly when the
