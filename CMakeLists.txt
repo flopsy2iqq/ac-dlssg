@@ -26,6 +26,9 @@ add_library(acdb_core STATIC
     src/internal_call.cpp
     src/system_dxgi.cpp
     src/vtable_patch.cpp
+    src/fence_pair.cpp
+    src/stall_watchdog.cpp
+    src/gpu_timers.cpp
 )
 target_include_directories(acdb_core PUBLIC src)
 
@@ -38,6 +41,8 @@ add_executable(acdb_tests
     tests/test_present_flags.cpp
     tests/test_latency_semaphore.cpp
     tests/test_vtable_patch.cpp
+    tests/test_fence_pair.cpp
+    tests/test_stall_watchdog.cpp
     tests/gpu_test_devices.cpp
 )
 # version: only the tests compare against VERSION.dll; the bridge never imports it.
