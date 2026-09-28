@@ -1548,7 +1548,7 @@ Invoke-Case 'PK: the friend test package' {
     Check ((Test-Path -LiteralPath $pkg -PathType Container) -and (Test-Path -LiteralPath $zip -PathType Leaf)) 'the package folder and the zip next to it exist'
     $expected = @('README-test.txt', 'ac-dlssg.dll', 'collect-logs.ps1', 'install.ps1', 'uninstall.ps1',
         'scripts/collect-sysinfo.ps1', 'scripts/dev-common.ps1', 'scripts/dev-install.ps1', 'scripts/dev-uninstall.ps1',
-        'scripts/fetch-deps.ps1')
+        'scripts/fetch-deps.ps1') + @($luaRealFiles | ForEach-Object { 'apps/lua/AcDlssg/' + $_.Replace('\', '/') })
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | ForEach-Object { $_.FullName.Substring($pkg.Length + 1).Replace('\', '/') } | Sort-Object)
     Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
     $dlls = @($files | Where-Object { $_ -like '*.dll' })
@@ -1565,6 +1565,14 @@ Invoke-Case 'PK: the friend test package' {
     Check ($readmeText -match 'install\.ps1' -and $readmeText -match 'collect-logs\.ps1' -and $readmeText -match 'uninstall\.ps1' -and
         $readmeText -match '-ExecutionPolicy Bypass' -and $readmeText -match '9\.8\.7' -and
         $readmeText -match (Get-Sha $dllV1)) 'README-test.txt names the scripts, the Bypass command, the version and the DLL hash'
+    # Russian patterns as \u escapes: Windows PowerShell reads this BOM-less file in the ANSI code page.
+    Check ($readmeText -match '\u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438[\u044f\u044e] \u043a\u0430\u0434\u0440\u043e\u0432' -and
+        $readmeText -notmatch '\u0435\u0449\u0451\s+\u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u0430') 'README-test.txt says the build contains frame generation'
+    Check ($readmeText -match 'RTX 30' -and $readmeText -match 'dlssg_for_sm86' -and $readmeText -match '(?i)ctrl\s*\+\s*f10' -and
+        $readmeText -match 'apps\\lua\\AcDlssg') 'README-test.txt covers RTX 30, dlssg_for_sm86, Ctrl+F10 and the Lua app'
+    $urls = @([regex]::Matches($readmeText, 'https?://[^\s)\u00bb"]+') | ForEach-Object { $_.Value.TrimEnd('.', ',') } | Sort-Object -Unique)
+    Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86') "the only link is the dlssg_for_sm86 repository, no binary ($($urls -join ', '))"
+    Check ($readmeText -notmatch '(?i)defender|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438|\u043e\u0442\u043a\u043b\u044e\u0447|smartscreen|smart app control') 'README-test.txt asks for no security feature to be turned off'
 
     # install.ps1 from the package layout, standalone, Streamline from -StreamlineDir (no download).
     $game = New-FakeGame 'PK' -NoDxgi
@@ -1574,23 +1582,52 @@ Invoke-Case 'PK: the friend test package' {
     Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'the package DLL is <game>\dxgi.dll'
     Check (Test-SlMatches $game $slReal) 'the Streamline files are installed'
     Check ((Get-Manifest $game).mode -eq 'standalone') 'the manifest records standalone mode'
+    Check (Test-LuaMatches $game $luaReal) 'the package installs the Lua app into apps\lua\AcDlssg'
 
-    # collect-logs.ps1: read-only, one zip next to the script.
+    # collect-logs.ps1: read-only, one zip next to the script. The Assetto
+    # Corsa documents folder is a fake one (-AcDocsDir) with CSP's log, in
+    # which CSP writes the Lua app's lines.
     Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake bridge log`r`n"
     Write-Text (Join-Path $game 'ac-dlssg\logs\sl.log') "fake Streamline log`r`n"
-    $before = @(Get-ChildItem -LiteralPath $game -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
-    $r = Invoke-Tool (Join-Path $pkg 'collect-logs.ps1') @('-GameDir', $game, '-SkipSysinfo', '-NoPause')
+    Write-Text (Join-Path $game 'dlssg_sm86\logs\loader_4242.jsonl') "{`"event`":`"fake`"}`r`n"
+    Write-Text (Join-Path $game 'dlssg_sm86\logs\backend_4242.jsonl') "{`"event`":`"fake backend`"}`r`n"
+    $acDocs = Join-Path $FakeRoot 'documents\Assetto Corsa'
+    $cspLog = @(
+        ('  98172  4350 Loading app: `' + (Get-LuaDir $game) + '`'),
+        '  98200     M [Lua: App: AC DLSS-G Camera] AcDlssg: writing the camera from render.onSceneReady',
+        '  98201     M [Lua: App: Other] something else',
+        '  98300     M Unrelated CSP line',
+        '  98400     M [Lua: App: AC DLSS-G Camera] AcDlssg: at scene ready ac.getSim().cameraPosition differs')
+    Write-Text (Join-Path $acDocs 'logs\custom_shaders_patch.log') (($cspLog -join "`r`n") + "`r`n")
+    Write-Text (Join-Path $acDocs 'logs\log.txt') "fake AC log`r`n"
+    $before = @(Get-ChildItem -LiteralPath $game, $acDocs -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+    $r = Invoke-Tool (Join-Path $pkg 'collect-logs.ps1') @('-GameDir', $game, '-AcDocsDir', $acDocs, '-SkipSysinfo', '-NoPause')
     Check ($r.Code -eq 0) 'collect-logs.ps1 exits 0'
-    $after = @(Get-ChildItem -LiteralPath $game -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
-    Check (($before -join "`n") -eq ($after -join "`n")) 'collect-logs.ps1 changes nothing in the game folder'
+    $after = @(Get-ChildItem -LiteralPath $game, $acDocs -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+    Check (($before -join "`n") -eq ($after -join "`n")) 'collect-logs.ps1 changes nothing in the game or documents folder'
     $logZips = @(Get-ChildItem -LiteralPath $pkg -Filter 'ac-dlssg-logs-*.zip' -File)
     Check ($logZips.Count -eq 1) 'collect-logs.ps1 writes one zip next to itself'
     if ($logZips.Count -eq 1) {
         $names = @(Get-ZipEntryNames $logZips[0].FullName)
         foreach ($n in @('ac-dlssg/logs/bridge.log', 'ac-dlssg/logs/sl.log', 'ac-dlssg/ac-dlssg.ini',
-                'ac-dlssg/install/dev-manifest.json', 'game-files.txt', 'collect-logs.txt')) {
+                'ac-dlssg/install/dev-manifest.json', 'game-files.txt', 'collect-logs.txt', 'documents/log.txt',
+                'documents/custom_shaders_patch.log', 'documents/acdlssg-lua-app.txt',
+                'dlssg_sm86/logs/loader_4242.jsonl', 'dlssg_sm86/logs/backend_4242.jsonl')) {
             Check (@($names | Where-Object { $_ -like "*/$n" -or $_ -eq $n }).Count -eq 1) "the log zip holds $n"
         }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($logZips[0].FullName)
+        try {
+            $entry = $archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq 'documents/acdlssg-lua-app.txt' } | Select-Object -First 1
+            $luaLines = @()
+            if ($entry) {
+                $reader = New-Object System.IO.StreamReader($entry.Open(), $utf8)
+                try { $luaLines = @($reader.ReadToEnd() -split "`r?`n" | Where-Object { $_ -and -not $_.StartsWith('#') }) } finally { $reader.Dispose() }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+        Check ($luaLines.Count -eq 3 -and @($luaLines | Where-Object { $_ -match 'Other|Unrelated' }).Count -eq 0) "acdlssg-lua-app.txt holds the app's three CSP log lines and nothing else ($($luaLines.Count) lines)"
         Remove-Item -LiteralPath $logZips[0].FullName
     }
     Check (@(Get-ChildItem -LiteralPath $pkg -Directory | Where-Object { $_.Name -like 'ac-dlssg-logs-*' }).Count -eq 0) 'no staging folder left'

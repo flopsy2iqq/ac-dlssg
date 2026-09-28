@@ -12,16 +12,26 @@
     ac-dlssg\install\dev-manifest.json
                              what install.ps1 installed (mode, file hashes)
     game-files.txt           the game folder's files with versions, and SHA-256
-                             of its DLLs and of ac-dlssg\sl
+                             of its DLLs, of ac-dlssg\sl, of the CSP Lua app in
+                             apps\lua\AcDlssg and of dlssg_sm86
+    dlssg_sm86\logs\...      the dlssg_for_sm86 spoof's own logs (loader_<pid>.jsonl,
+                             backend_<pid>.jsonl), the newest 20, when the spoof
+                             is installed
     documents\...            Assetto Corsa's log.txt and CSP's
-                             custom_shaders_patch.log of the last run
+                             custom_shaders_patch.log of the last run, and
+                             acdlssg-lua-app.txt: the lines of that CSP log from or
+                             about the Lua app (CSP writes a Lua app's ac.log,
+                             ac.warn and ac.error lines there, tagged
+                             "[Lua: App: AC DLSS-G Camera]", and its loading lines
+                             name apps\lua\AcDlssg)
     crash-events.txt         Windows Application log entries that name acs.exe,
                              from the last 7 days
     sysinfo\...              collect-sysinfo.ps1's report and dxdiag.txt (not
                              with -SkipSysinfo; dxdiag takes up to a minute)
     collect-logs.txt         what was found and what was missing
   The game is found through Steam's libraryfolders.vdf unless -GameDir is
-  given. Works from the repository's tools folder and from the test package
+  given; the Assetto Corsa documents folder is Documents\Assetto Corsa unless
+  -AcDocsDir is given. Works from the repository's tools folder and from the test package
   (which keeps the helper scripts in scripts\).
 
 .EXAMPLE
@@ -29,6 +39,7 @@
 #>
 param(
     [string]$GameDir,
+    [string]$AcDocsDir,
     [switch]$SkipSysinfo,
     [switch]$NoPause
 )
@@ -56,6 +67,23 @@ function Copy-Shared([string]$Source, [string]$Target) {
         try { $in.CopyTo($out) } finally { $out.Dispose() }
     } finally {
         $in.Dispose()
+    }
+}
+
+# The Lua app's lines in CSP's log: its own messages ("AcDlssg: ..."), CSP's
+# "[Lua: App: AC DLSS-G Camera]" tag (the NAME in its manifest.ini), and the
+# loading lines that name its folder.
+$LuaAppLinePattern = 'AcDlssg|\[Lua: App: AC DLSS-G Camera\]'
+$MaxSpoofLogs = 20
+
+# All lines of a text file (CSP's log is UTF-8), even while the game has it open.
+function Read-SharedLines([string]$Path) {
+    $stream = [System.IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite, Delete')
+    try {
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+        try { return @($reader.ReadToEnd() -split "`r?`n" | Where-Object { $_ -ne '' }) } finally { $reader.Dispose() }
+    } finally {
+        $stream.Dispose()
     }
 }
 
@@ -127,7 +155,7 @@ try {
         foreach ($f in @(Get-ChildItem -LiteralPath $game -File -Force | Sort-Object Name)) {
             $listing.Add((Get-FileLine $f ($f.Extension -ieq '.dll')))
         }
-        foreach ($sub in @('ac-dlssg\sl', 'dlssg_sm86')) {
+        foreach ($sub in @('ac-dlssg\sl', 'apps\lua\AcDlssg', 'dlssg_sm86')) {
             $dir = Join-Path $game $sub
             if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $listing.Add("($sub not present)"); continue }
             $listing.Add('')
@@ -136,11 +164,36 @@ try {
         }
         [System.IO.File]::WriteAllLines((Join-Path $staging 'game-files.txt'), [string[]]$listing.ToArray())
         Note 'wrote game-files.txt'
+
+        # The dlssg_for_sm86 spoof writes one loader and one backend log per run.
+        $spoofLogs = Join-Path $game 'dlssg_sm86\logs'
+        if (Test-Path -LiteralPath $spoofLogs -PathType Container) {
+            $jsonl = @(Get-ChildItem -LiteralPath $spoofLogs -File -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending)
+            foreach ($f in @($jsonl | Select-Object -First $MaxSpoofLogs)) { Add-File $f.FullName "dlssg_sm86\logs\$($f.Name)" $staging }
+            if ($jsonl.Count -gt $MaxSpoofLogs) { Note "dlssg_sm86\logs: $($jsonl.Count - $MaxSpoofLogs) older .jsonl files not collected" }
+            if ($jsonl.Count -eq 0) { Note "no .jsonl files in $spoofLogs" }
+        } else {
+            Note "$spoofLogs not present (no dlssg_for_sm86 spoof)"
+        }
     }
 
-    $docs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Assetto Corsa\logs'
+    if (-not $AcDocsDir) { $AcDocsDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Assetto Corsa' }
+    $docs = Join-Path $AcDocsDir 'logs'
     foreach ($f in @('log.txt', 'custom_shaders_patch.log')) {
         Add-File (Join-Path $docs $f) "documents\$f" $staging
+    }
+    # CSP writes the Lua app's lines into its own log; they are also collected on their own.
+    $cspLog = Join-Path $docs 'custom_shaders_patch.log'
+    if (Test-Path -LiteralPath $cspLog -PathType Leaf) {
+        try {
+            $appLines = @(Read-SharedLines $cspLog | Where-Object { $_ -match $LuaAppLinePattern })
+            New-Item -ItemType Directory -Force -Path (Join-Path $staging 'documents') | Out-Null
+            $out = @("# lines of $cspLog matching '$LuaAppLinePattern' (the CSP Lua app AcDlssg)") + $appLines
+            [System.IO.File]::WriteAllLines((Join-Path $staging 'documents\acdlssg-lua-app.txt'), [string[]]$out, (New-Object System.Text.UTF8Encoding $false))
+            Note "wrote documents\acdlssg-lua-app.txt ($($appLines.Count) lines of the Lua app from $cspLog)"
+        } catch {
+            Note "could not read $($cspLog): $($_.Exception.Message)"
+        }
     }
 
     try {
