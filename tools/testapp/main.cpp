@@ -1722,6 +1722,14 @@ int Run(App& a) {
 int wmain(int argc, wchar_t** argv) {
     // Unbuffered, so that a run killed on timeout still shows how far it got.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    // The NGX runtime that Streamline loads here can start nvngx_update.exe
+    // with inherited handles; with the pipes of run-testapp.ps1 among them,
+    // the script's reads would wait for the updater to exit, minutes after
+    // this process has.
+    for (const DWORD std : {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE, STD_INPUT_HANDLE}) {
+        const HANDLE h = GetStdHandle(std);
+        if (h && h != INVALID_HANDLE_VALUE) SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+    }
     App app;
     if (!ParseArgs(argc, argv, &app.opt)) {
         Usage();
