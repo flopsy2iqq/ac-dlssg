@@ -400,6 +400,29 @@ function Get-BridgeStats([string]$logPath) {
 
 $tmpDir = Join-Path $BuildDir 'tmp'
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+# The NGX runtime in the test app starts about six nvngx_update.exe per run
+# with inherited handles, and they live for many minutes. The test app keeps
+# its own standard handles out of them; this keeps this script's out too
+# (the test app inherits them and would pass them on), so that whoever reads
+# this script's output is not held until the updaters exit. Add-Type's
+# compiler files go to $tmpDir.
+$savedTemp = $env:TEMP, $env:TMP
+try {
+    $env:TEMP = $tmpDir
+    $env:TMP = $tmpDir
+    Add-Type -Namespace AcdbRunTestApp -Name Native -MemberDefinition (
+        '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);' +
+        '[DllImport("kernel32.dll")] public static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);')
+    foreach ($std in @(-10, -11, -12)) {
+        $h = [AcdbRunTestApp.Native]::GetStdHandle($std)
+        if ($h -ne [IntPtr]::Zero -and $h -ne [IntPtr](-1)) { [void][AcdbRunTestApp.Native]::SetHandleInformation($h, 1, 0) }
+    }
+} catch {
+    Write-Host "note: the standard handles stay inheritable ($($_.Exception.Message))"
+} finally {
+    $env:TEMP, $env:TMP = $savedTemp
+}
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $results = New-Object System.Collections.Generic.List[object]
 $reshade = $null
