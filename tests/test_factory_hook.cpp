@@ -245,8 +245,16 @@ TEST(Bootstrap_StateAndBanner) {
     CHECK(s.data_dir == ExeDir() + L"\\ac-dlssg");
     CHECK(s.docs_ac_dir == g_bootstrap_docs);
     if (s.config.enabled) {
-        CHECK(s.possible);
-        CHECK(s.reason.empty());
+        // M2: possible needs Streamline from <data_dir>\sl, which the test
+        // exe dir does not have.
+        CHECK_EQ(s.possible, s.streamline_ok);
+        if (s.streamline_ok) {
+            CHECK(s.reason.empty());
+        } else {
+            std::printf("  reason: %s\n", s.reason.c_str());
+            CHECK(!s.streamline_error.empty());
+            CHECK(s.reason == "Streamline: " + s.streamline_error);
+        }
     } else {
         CHECK(!s.possible);
         CHECK(s.reason == "disabled in ac-dlssg.ini");
@@ -264,6 +272,11 @@ TEST(Bootstrap_StateAndBanner) {
     CHECK(log.find("compat: graphics_adjustments.ini [FSR] ACTIVE=unset") != std::string::npos);
     CHECK(log.find("compat: HAGS ") != std::string::npos);
     CHECK(log.find("bridge: ") != std::string::npos);
+    CHECK(log.find("spoof: ") != std::string::npos);
+    CHECK(log.find("driver profile: ") != std::string::npos);
+    CHECK(log.find("Streamline: ") != std::string::npos);
+    // The driver profile is read before Streamline and before any device.
+    CHECK(log.find("driver profile: ") < log.find("Streamline: "));
     if (log.find("adapter 0: ") == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
 }
 
@@ -406,7 +419,10 @@ TEST(FactoryHook_MainWindowDecisionIsLoggedAndPassesThroughOnRefusal) {
     CHECK_EQ(lines, static_cast<size_t>(1));  // only the non-internal call
     CHECK(log.find(" INFO CreateSwapChainForHwnd: ") != std::string::npos);
     CHECK(log.find("(main window)") != std::string::npos);
-    CHECK(log.find("pass-through: CSP upscaler is not DLSS") != std::string::npos);
+    // Without <exe dir>\ac-dlssg\sl the bootstrap refuses first (M2), with its reason.
+    const BootstrapState& bs = EnsureBootstrap();
+    const std::string refusal = bs.possible ? std::string("CSP upscaler is not DLSS") : bs.reason;
+    CHECK(log.find("pass-through: " + refusal) != std::string::npos);
     CHECK(log.find("proxy swap chain created") == std::string::npos);
     if (lines != 1) std::printf("  log:\n%s\n", log.c_str());
 }

@@ -118,7 +118,7 @@ struct Fixture {
         if (!window->Get() || FAILED(dev.factory.As(&factory))) return false;
         std::string err;
         const HRESULT hr = ProxySwapChain::Create(factory.Get(), dev.device11.Get(), window->Get(), desc, nullptr,
-                                                  config, chain.GetAddressOf(), &err);
+                                                  config, nullptr, chain.GetAddressOf(), &err);
         if (FAILED(hr))
             std::printf("  ProxySwapChain::Create:0x%08lX %s\n", static_cast<unsigned long>(hr), err.c_str());
         return SUCCEEDED(hr) && chain;

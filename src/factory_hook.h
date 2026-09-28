@@ -24,7 +24,7 @@ struct ProxyDecisionInputs {
     bool is_main_window = false;        // IsMainGameWindow(hWnd)
     bool bootstrap_possible = false;    // BootstrapRunOnce().possible
     bool compat_ok = false;             // EvaluateCompat(...).ok
-    bool streamline_shut_down = false;  // always false in M1
+    bool streamline_shut_down = false;  // StreamlineRuntime::Get().IsShutDown()
 };
 // True only when !internal_call and every other condition holds.
 bool ShouldProxy(const ProxyDecisionInputs& in);

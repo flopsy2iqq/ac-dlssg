@@ -333,11 +333,11 @@ TEST(Presenter_LogsStatisticsEverySecond) {
     const char* const statsLine = " INFO stats: base_fps=";
     for (size_t pos = log.find(statsLine); pos != std::string::npos; pos = log.find(statsLine, pos + 1)) ++lines;
     CHECK(lines >= 2);
-    // Every field of spec 6.10 that M1 has, in order.
+    // Every field of spec 6.10 that M2 has, in order; the plain path has no Streamline.
     const std::regex full(
         " INFO stats: base_fps=[0-9]+\\.[0-9] presented_fps=[0-9]+\\.[0-9] skipped=0 failed=0 occluded=[0-9]+ "
         "uncopied=0 max_frame_ms=[0-9]+\\.[0-9] max_present_ms=[0-9]+\\.[0-9] bridge_gpu_ms d3d11=[0-9.na/]+ "
-        "d3d12=[0-9.na/]+ fg=off stalls=0\n");
+        "d3d12=[0-9.na/]+ fg=off stalls=0 streamline=off reflex=off pcl_problems=0\n");
     CHECK(std::regex_search(log, full));
     // Both copies were timed at least once in a second of frames.
     CHECK(log.find("d3d11=n/a d3d12=n/a") == std::string::npos);

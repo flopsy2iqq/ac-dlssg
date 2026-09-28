@@ -14,6 +14,7 @@
 #include "internal_call.h"
 #include "log.h"
 #include "module_version.h"
+#include "streamline_runtime.h"
 #include "system_dxgi.h"
 
 using Microsoft::WRL::ComPtr;
@@ -93,6 +94,31 @@ const char* LevelName(LogLevel level) {
 
 std::string Opt(const std::optional<long long>& v) { return v ? std::to_string(*v) : std::string("unset"); }
 
+bool SamePathNoCase(const std::wstring& a, const std::wstring& b) {
+    return !a.empty() && CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
+                                              static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+std::string Drs(const DrsValue& v) {
+    if (!v.found) return "unset";
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(v.value));
+    return buf;
+}
+
+void LogDriverProfile(const DriverProfileReport& r, const std::vector<std::string>& warnings) {
+    if (!r.nvapi_ok) {
+        LOGI("driver profile: not read: %s", r.error.c_str());
+    } else {
+        LOGI("driver profile: app profile %s; 0x%08X (DLSS-G override mode) app=%s global=%s; 0x%08X (Streamline "
+             "override) app=%s global=%s",
+             r.app_profile.empty() ? "(none)" : ("\"" + ToUtf8(r.app_profile) + "\"").c_str(), kDrsNgxDlssgMode,
+             Drs(r.dlssg_mode_app).c_str(), Drs(r.dlssg_mode_base).c_str(), kDrsSlDlssOverride,
+             Drs(r.sl_override_app).c_str(), Drs(r.sl_override_base).c_str());
+    }
+    for (const auto& w : warnings) LOGW("driver profile: %s", w.c_str());
+}
+
 void LogAdapters() {
     const SystemDxgi& sys = GetSystemDxgi();
     if (!sys.CreateDXGIFactory1) {
@@ -166,7 +192,7 @@ void Run(BootstrapState* s) {
     const bool keptPrevious = MoveFileExW(logPath.c_str(), prevLogPath.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
     LogOpen(logPath, s->config.log_level);
 
-    LOGI("ac-dlssg %s (M1: proxy swap chain and D3D12 presentation, no Streamline)", ACDB_VERSION);
+    LOGI("ac-dlssg %s (M2: Streamline proxy chain, Reflex and PCL markers; DLSS-G off)", ACDB_VERSION);
     LOGI("host: %s (pid %lu)", ToUtf8(exe).c_str(), GetCurrentProcessId());
     const HMODULE bridge = g_module.load();
     LOGI("bridge module: %s", bridge ? ToUtf8(ModuleFileName(bridge)).c_str() : "(not set)");
@@ -202,9 +228,38 @@ void Run(BootstrapState* s) {
     s->compat = ReadCompatInputs(s->game_dir, s->docs_ac_dir);
     LogCompatInputs(s->compat);
 
-    // M1 has no Streamline, so the only bootstrap-level condition is the config.
-    s->possible = c.enabled;
-    s->reason = s->possible ? std::string() : std::string("disabled in ac-dlssg.ini");
+    // Spoof: dlssg_for_sm86's version.dll next to acs.exe (spec 10).
+    if (const HMODULE version = GetModuleHandleW(L"version.dll"))
+        s->spoof_loaded = SamePathNoCase(ParentDir(ModuleFileName(version)), s->game_dir);
+    LOGI("spoof: %s", s->spoof_loaded ? "version.dll is loaded from the game folder (dlssg_for_sm86)"
+                                      : "no version.dll from the game folder");
+
+    // Driver profile before any D3D device exists (spec 6.8).
+    s->driver_profile = ReadDriverProfile(exe);
+    s->driver_warnings = DriverProfileWarnings(s->driver_profile);
+    LogDriverProfile(s->driver_profile, s->driver_warnings);
+
+    // Streamline is loaded only for an enabled bridge: disabled means the
+    // game runs as without the mod.
+    if (c.enabled) {
+        const std::wstring slDir = s->data_dir + L"\\sl";
+        s->streamline_ok = StreamlineRuntime::Get().Init(slDir, s->data_dir + L"\\logs", &s->streamline_error);
+        if (s->streamline_ok) {
+            LOGI("Streamline: initialised from %s", ToUtf8(slDir).c_str());
+        } else {
+            LOGW("Streamline: not available: %s", s->streamline_error.c_str());
+        }
+    } else {
+        s->streamline_error = "not loaded: the bridge is disabled";
+        LOGI("Streamline: %s", s->streamline_error.c_str());
+    }
+
+    s->possible = c.enabled && s->streamline_ok;
+    if (!c.enabled) {
+        s->reason = "disabled in ac-dlssg.ini";
+    } else if (!s->streamline_ok) {
+        s->reason = "Streamline: " + s->streamline_error;
+    }
     if (s->possible) {
         LOGI("bridge: possible; compatibility is checked per swap chain");
     } else {

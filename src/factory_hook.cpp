@@ -15,6 +15,7 @@
 #include "internal_call.h"
 #include "log.h"
 #include "proxy_swapchain.h"
+#include "streamline_runtime.h"
 #include "vtable_patch.h"
 
 using Microsoft::WRL::ComPtr;
@@ -77,8 +78,9 @@ std::string DecisionReason(const ProxyDecisionInputs& in, const std::string& boo
     if (!in.is_d3d11_device) return "the device is not a D3D11 device";
     if (!in.is_main_window) return "not the main game window (class acsW)";
     if (!in.bootstrap_possible) return bootstrapReason.empty() ? std::string("bridge not possible") : bootstrapReason;
+    // Spec 8: after slShutdown the bridge stays off for the rest of the process.
+    if (in.streamline_shut_down) return "Streamline already shut down";
     if (!in.compat_ok) return compatReason;
-    if (in.streamline_shut_down) return "Streamline was already shut down in this process";
     return {};
 }
 
@@ -109,7 +111,7 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         compat = EvaluateCompat(ci, desc.Width, desc.Height);
         in.compat_ok = compat.ok;
     }
-    in.streamline_shut_down = false;
+    in.streamline_shut_down = StreamlineRuntime::Get().IsShutDown();
 
     const bool proxy = ShouldProxy(in);
     const std::string reason = proxy ? std::string() : DecisionReason(in, bs.reason, compat.reason);
@@ -128,7 +130,9 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
     {
         // Everything the proxy creates (D3D12 device, chains) must not re-enter our hooks.
         InternalCallScope internal;
-        hr = ProxySwapChain::Create(self, device11.Get(), hwnd, desc, fullscreenDesc, bs.config,
+        // bootstrap_possible implies streamline_ok, so production always takes the Streamline path.
+        StreamlineRuntime* streamline = bs.streamline_ok ? &StreamlineRuntime::Get() : nullptr;
+        hr = ProxySwapChain::Create(self, device11.Get(), hwnd, desc, fullscreenDesc, bs.config, streamline,
                                     created.GetAddressOf(), &error);
     }
     if (FAILED(hr) || !created) {

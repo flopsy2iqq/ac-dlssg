@@ -14,7 +14,9 @@
 
 #include "internal_call.h"
 #include "log.h"
+#include "pcl_sequencer.h"
 #include "present_flags.h"
+#include "streamline_runtime.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -127,10 +129,14 @@ struct D3D12Presenter::Impl {
     ID3D11DeviceContext* ctx4_of = nullptr;  // the context ctx4 was queried from
     HWND hwnd = nullptr;
 
-    // D3D12 side.
+    // D3D12 side. device12 is always the native device (fences, shared
+    // resources, allocators, lists); on the Streamline path the queue comes
+    // from device_sl and factory is Streamline's factory proxy.
     ComPtr<ID3D12Device> device12;
+    ComPtr<ID3D12Device> device_sl;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<IDXGIFactory4> factory;
+    ComPtr<IDXGIFactory4> factory_native;
     bool tearing = false;
     UINT chain_flags = 0;
     UINT width = 0;
@@ -161,6 +167,15 @@ struct D3D12Presenter::Impl {
     std::atomic<HRESULT> last_present_hr{S_OK};
     bool warned_source = false;
     bool warned_present = false;
+
+    // Streamline path (M2); nullptr is the plain path.
+    StreamlineRuntime* sl = nullptr;
+    bool reflex_on = false;
+    bool shutdown_sl = false;  // ShutdownStreamlineOnRelease
+    PclSequencer pcl;
+    uint32_t frame_index = 0;          // the frame token counter, first frame 1
+    sl::FrameToken* token = nullptr;   // the current frame's token
+    uint32_t frames_with_markers = 0;  // frames that reached PresentEnd
 
     // Frame latency of a waitable chain (M1 pacing, see the header).
     HANDLE latency_waitable = nullptr;
@@ -200,6 +215,9 @@ struct D3D12Presenter::Impl {
     std::thread debug_thread;
 
     bool Init(D3D12Presenter& self, const PresenterCreateInfo& info, std::string* err);
+    void StartFrame();
+    void EmitMarkers(const std::vector<PclMarker>& markers);
+    void BeforeChainChange();
     bool CreateSharedTexture(UINT w, UINT h, std::string* err);
     bool FetchBuffers(D3D12Presenter& self, std::string* err);
     ID3D11DeviceContext4* Ctx4For(ID3D11DeviceContext* ctx);
@@ -285,31 +303,67 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     }
     device12 = device;
 
-    // 3. Direct queue.
+    // Streamline path (spec 6.4 steps 2-4): device, DLSS-G support, device proxy.
+    sl = info.streamline;
+    if (sl) {
+        std::string slErr;
+        if (!sl->SetDevice(device12.Get(), &slErr)) {
+            *err = "Streamline: " + slErr;
+            return false;
+        }
+        // Streamline now holds this device: a failure from here on must shut
+        // it down before the device is released (Streamline's guide), which
+        // also makes every later chain pass through. Cleared on success.
+        shutdown_sl = true;
+        std::string why;
+        const bool fg = sl->DlssgSupported(ad.AdapterLuid, &why);
+        LOGI("Streamline: DLSS-G %s on this adapter (%s)", fg ? "supported" : "not supported", why.c_str());
+        void* p = device12.Get();
+        if (!sl->Upgrade(&p) || !p || p == device12.Get()) {
+            *err = "Streamline: slUpgradeInterface(ID3D12Device) failed";
+            return false;
+        }
+        device_sl.Attach(static_cast<ID3D12Device*>(p));
+    }
+
+    // 3. Direct queue (from the device proxy on the Streamline path).
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    hr = device12->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue));
+    ID3D12Device* queueDevice = sl ? device_sl.Get() : device12.Get();
+    hr = queueDevice->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue));
     if (FAILED(hr)) {
         *err = HrText("ID3D12Device::CreateCommandQueue", hr);
         return false;
     }
 
-    // 4. Factory of the adapter; tearing support.
-    hr = adapter->GetParent(IID_PPV_ARGS(&factory));
+    // 4. Factory of the adapter (Streamline's proxy of it on the Streamline
+    // path); tearing support from the native factory.
+    hr = adapter->GetParent(IID_PPV_ARGS(&factory_native));
     if (FAILED(hr)) {
         *err = HrText("IDXGIAdapter::GetParent(IDXGIFactory4)", hr);
         return false;
     }
+    factory = factory_native;
+    if (sl) {
+        void* p = factory_native.Get();
+        if (!sl->Upgrade(&p) || !p || p == factory_native.Get()) {
+            *err = "Streamline: slUpgradeInterface(IDXGIFactory) failed";
+            return false;
+        }
+        factory.Reset();
+        factory.Attach(static_cast<IDXGIFactory4*>(p));
+    }
     ComPtr<IDXGIFactory5> factory5;
-    if (SUCCEEDED(factory.As(&factory5))) {
+    if (SUCCEEDED(factory_native.As(&factory5))) {
         BOOL allow = FALSE;
         tearing = SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow))) &&
                   allow;
     }
     chain_flags = tearing ? static_cast<UINT>(DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) : 0u;
     // M1 pacing: a game that paces on its waitable object gets one from the
-    // D3D12 chain too (see the header; removed in M2 for Streamline's pacer).
-    if (gd.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)
+    // D3D12 chain too. Never on the Streamline chain: its pacer must not be
+    // starved; Reflex paces instead (spec 6.3).
+    if (!sl && (gd.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT))
         chain_flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     // 5. The D3D12 chain on the game window.
@@ -329,6 +383,12 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     if (SUCCEEDED(hr)) hr = chain1 ? chain1.As(&self.chain_) : E_POINTER;
     if (FAILED(hr)) {
         *err = HrText("D3D12 CreateSwapChainForHwnd", hr);
+        return false;
+    }
+    // Spec 6.4 step 8: the chain is already Streamline's proxy; never
+    // slUpgradeInterface on it.
+    if (sl && !sl->IsProxied(self.chain_.Get())) {
+        *err = "Streamline: the D3D12 swap chain is not a Streamline proxy";
         return false;
     }
     if (chain_flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
@@ -391,17 +451,47 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
 
     watchdog = std::make_unique<StallWatchdog>(fences.get(), device12.Get());
     watchdog->Start();
+
+    if (sl) {
+        reflex_on = sl->EnableReflexLowLatency();
+        LOGI("Streamline: Reflex low latency %s (lowLatencyAvailable %s)", reflex_on ? "on" : "off",
+             sl->ReflexLowLatencyAvailable() ? "yes" : "no");
+        sl->LogLoadedModules();
+    }
     stats_start = GetTickCount64();
 
     char name[128] = {};
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
     LOGI("presenter created: %s (LUID %08lX:%08lX), D3D12 chain %ux%u, %u buffers, flags 0x%X, tearing %s, "
-         "frame-latency object %s, hwnd %p",
+         "frame-latency object %s, hwnd %p, %s",
          name, static_cast<unsigned long>(ad.AdapterLuid.HighPart), static_cast<unsigned long>(ad.AdapterLuid.LowPart),
          width, height, kBuffers, chain_flags, tearing ? "yes" : "no", latency_waitable ? "yes" : "no",
-         static_cast<void*>(hwnd));
+         static_cast<void*>(hwnd), sl ? "Streamline proxy chain" : "plain chain (no Streamline)");
+    // Spec 7 step 1 for the first frame: it starts at the end of creation.
+    if (sl) StartFrame();
+    shutdown_sl = false;  // from now on the owner decides (ShutdownStreamlineOnRelease)
     return true;
 }
+
+// Spec 7 step 1: frame token, Reflex sleep, SimulationStart.
+void D3D12Presenter::Impl::StartFrame() {
+    ++frame_index;
+    token = sl->NewFrameToken(frame_index);
+    if (token) sl->ReflexSleep(*token);
+    EmitMarkers(pcl.BeginFrame(frame_index));
+}
+
+void D3D12Presenter::Impl::EmitMarkers(const std::vector<PclMarker>& markers) {
+    if (!token) return;  // the runtime logs the token failure
+    for (PclMarker m : markers) sl->Marker(m, *token);
+}
+
+// M3 hook (spec 6.3 "Resizing" step 1): with DLSS-G on, set eOff and null
+// tags, then present the current frame once more through spec 7 steps 4-7
+// with its own frame token and the full marker sequence, not counted as a CSP
+// frame. Runs before ResizeBuffers, SetFullscreenState and ResizeTarget. M2
+// never turns DLSS-G on, so there is nothing to do yet.
+void D3D12Presenter::Impl::BeforeChainChange() {}
 
 bool D3D12Presenter::Impl::CreateSharedTexture(UINT w, UINT h, std::string* err) {
     shared12.Reset();
@@ -611,7 +701,13 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     if (FAILED(self.chain_->GetFullscreenState(&fullscreen, nullptr))) fullscreen = FALSE;
     const PresentPlan plan = PlanPresent(cspSync, cspFlags, tearing, !fullscreen, false, true);
     LogPresentMode(cspSync, cspFlags, plan, fullscreen);
+    if (sl) EmitMarkers(pcl.BeforePresent());
     const HRESULT presentHr = self.chain_->Present(plan.sync, plan.flags);
+    if (sl) {
+        const std::vector<PclMarker> after = pcl.AfterPresent();
+        if (token && !after.empty()) ++frames_with_markers;
+        EmitMarkers(after);
+    }
 
     const uint64_t done = fences->Next();
     queue->Signal(fences->Shared12(), done);
@@ -637,7 +733,11 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
         LOGW("presenter: D3D12 Present(%u, 0x%X) failed: 0x%08lX (logged once; the stats line counts them)",
              plan.sync, plan.flags, static_cast<unsigned long>(presentHr));
     }
-    if (!FAILED(presentHr)) WaitForLatency();
+    if (sl) {
+        if (!self.stopped_) StartFrame();  // spec 7 step 7: frame start for N+1
+    } else if (!FAILED(presentHr)) {
+        WaitForLatency();
+    }
     return presentHr;
 }
 
@@ -708,6 +808,18 @@ void D3D12Presenter::SetMaximumFrameLatency(UINT latency) {
 
 bool D3D12Presenter::HasLatencyWaitable() const { return impl_ && impl_->latency_waitable; }
 
+bool D3D12Presenter::UsesStreamline() const { return impl_ && impl_->sl; }
+
+void D3D12Presenter::ShutdownStreamlineOnRelease() {
+    if (impl_) impl_->shutdown_sl = true;
+}
+
+uint32_t D3D12Presenter::FramesWithMarkers() const { return impl_ ? impl_->frames_with_markers : 0; }
+
+uint32_t D3D12Presenter::MarkerProblems() const {
+    return impl_ ? impl_->pcl.AbandonedFrames() + impl_->pcl.OutOfOrderCalls() : 0;
+}
+
 bool D3D12Presenter::Impl::SourceMatches(ID3D11Texture2D* source) {
     if (!source || !shared11) return false;
     D3D11_TEXTURE2D_DESC sd{};
@@ -740,9 +852,11 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     // base: CSP frames; presented: frames the D3D12 chain accepted (occluded
     // ones included). M1 has no frame generation, hence fg=off.
     LOGI("stats: base_fps=%.1f presented_fps=%.1f skipped=%u failed=%u occluded=%u uncopied=%u max_frame_ms=%.1f "
-         "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=off stalls=%u",
+         "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=off stalls=%u streamline=%s reflex=%s "
+         "pcl_problems=%u",
          stats_presents / seconds, stats_delivered / seconds, stats_skipped, stats_failed, stats_occluded,
-         stats_uncopied, max_frame_ms, max_present_ms, a11, a12, stalls);
+         stats_uncopied, max_frame_ms, max_present_ms, a11, a12, stalls, sl ? "on" : "off", reflex_on ? "on" : "off",
+         pcl.AbandonedFrames() + pcl.OutOfOrderCalls());
     stats_start = now;
     stats_presents = stats_delivered = stats_skipped = stats_failed = stats_occluded = stats_uncopied = 0;
     max_frame_ms = max_present_ms = 0;
@@ -833,6 +947,8 @@ HRESULT D3D12Presenter::Impl::ApplyResize(D3D12Presenter& self, UINT w, UINT h) 
         buffer_value[i] = 0;
         timer12_pending[i] = false;
     }
+    // Spec 6.3 "Resizing" step 3: Streamline tracks the index through this call.
+    if (sl) self.chain_->GetCurrentBackBufferIndex();
     width = w;
     height = h;
     warned_source = false;
@@ -845,6 +961,7 @@ HRESULT D3D12Presenter::Resize(UINT width, UINT height) {
         if (!impl_ || !chain_) return DXGI_ERROR_INVALID_CALL;
         if (stopped_) return impl_->stop_error;
         if (width == 0 || height == 0) return DXGI_ERROR_INVALID_CALL;
+        impl_->BeforeChainChange();
         if (!impl_->Drain(*this, "ResizeBuffers")) {
             // Stall path: the resize runs once the queue has caught up.
             impl_->resize_pending = true;
@@ -874,6 +991,7 @@ HRESULT D3D12Presenter::TestPresent() const {
 HRESULT D3D12Presenter::SetFullscreenState(BOOL fullscreen, IDXGIOutput* target) {
     try {
         if (!impl_ || !chain_) return DXGI_ERROR_INVALID_CALL;
+        if (!stopped_) impl_->BeforeChainChange();
         if (!stopped_ && !impl_->Drain(*this, "SetFullscreenState")) return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
         return chain_->SetFullscreenState(fullscreen, target);
     } catch (...) {
@@ -893,6 +1011,7 @@ HRESULT D3D12Presenter::GetFullscreenState(BOOL* fullscreen, IDXGIOutput** targe
 HRESULT D3D12Presenter::ResizeTarget(const DXGI_MODE_DESC* params) {
     try {
         if (!impl_ || !chain_) return DXGI_ERROR_INVALID_CALL;
+        if (!stopped_) impl_->BeforeChainChange();
         if (!stopped_ && !impl_->Drain(*this, "ResizeTarget")) return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
         return chain_->ResizeTarget(params);
     } catch (...) {
@@ -967,6 +1086,10 @@ void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
     if (watchdog) watchdog->Stop();
     watchdog.reset();
 
+    // Spec 6.3 "Final Release" step 4: slShutdown after the drain and before
+    // any D3D12/DXGI object is released.
+    if (sl && shutdown_sl) sl->Shutdown();
+
     if (!drained) {
         // Releasing objects the GPU still uses can crash the driver later;
         // leaking them is the lesser harm at this point.
@@ -982,6 +1105,7 @@ void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
         static_cast<void>(fences.release());
         debug_fence.Detach();
         queue.Detach();
+        device_sl.Detach();
         device12.Detach();
         return;
     }
@@ -998,6 +1122,8 @@ void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
     debug_fence.Reset();
     queue.Reset();
     factory.Reset();
+    factory_native.Reset();
+    device_sl.Reset();
     device12.Reset();
     LOGI("presenter released");
 }

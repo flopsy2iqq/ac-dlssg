@@ -27,10 +27,17 @@ public:
     // the HRESULT and *error, and creates nothing (the caller then passes
     // through). ResizeBuffers resizes the hidden chain first: when that fails
     // (a view on buffer 0 is alive), nothing has changed.
+    // streamline: the process's initialised StreamlineRuntime in production;
+    // nullptr gives the plain D3D12 path (unit tests, which create many
+    // proxies in one process while Streamline allows one lifetime). The
+    // final Release of a Streamline-backed proxy calls
+    // StreamlineRuntime::Shutdown (spec 6.3 "Final Release"), after which
+    // FactoryHook passes every later chain through.
     static HRESULT Create(IDXGIFactory2* factory, ID3D11Device* device11, HWND hwnd,
                           const DXGI_SWAP_CHAIN_DESC1& desc,
                           const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
-                          const Config& config, IDXGISwapChain1** out, std::string* error);
+                          const Config& config, StreamlineRuntime* streamline, IDXGISwapChain1** out,
+                          std::string* error);
 
     // IUnknown
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override;

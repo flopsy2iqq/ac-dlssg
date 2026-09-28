@@ -37,7 +37,8 @@ BOOL CurrentWindowed(D3D12Presenter* presenter, BOOL fallback) {
 
 HRESULT ProxySwapChain::Create(IDXGIFactory2* factory, ID3D11Device* device11, HWND hwnd,
                                const DXGI_SWAP_CHAIN_DESC1& desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
-                               const Config& config, IDXGISwapChain1** out, std::string* error) {
+                               const Config& config, StreamlineRuntime* streamline, IDXGISwapChain1** out,
+                               std::string* error) {
     std::string err;
     HRESULT hr = E_FAIL;
     try {
@@ -76,6 +77,7 @@ HRESULT ProxySwapChain::Create(IDXGIFactory2* factory, ID3D11Device* device11, H
                 info.device11 = device11;
                 info.hwnd = hwnd;
                 info.game_desc = d;
+                info.streamline = streamline;
                 proxy->presenter_ = D3D12Presenter::Create(info, &err);
             }
             if (proxy->hidden_ && proxy->presenter_) {
@@ -108,10 +110,11 @@ HRESULT ProxySwapChain::Create(IDXGIFactory2* factory, ID3D11Device* device11, H
 }
 
 ProxySwapChain::~ProxySwapChain() {
-    // Final Release (spec 6.3) without the Streamline steps: the presenter
-    // leaves fullscreen, CPU-signals pending_wait and drains before it
+    // Final Release (spec 6.3): the presenter leaves fullscreen, CPU-signals
+    // pending_wait and drains, calls slShutdown on the Streamline path, then
     // releases the D3D12 side; the hidden chain goes after it.
     try {
+        if (presenter_ && presenter_->UsesStreamline()) presenter_->ShutdownStreamlineOnRelease();
         presenter_.reset();
     } catch (...) {
     }

@@ -1,8 +1,8 @@
 #pragma once
-// D3D12 side of the bridge for M1: device, queue, plain (non-Streamline)
-// flip-model swap chain on the game window, shared back buffer, fences,
-// stall watchdog, GPU timing and per-second statistics (spec 6.4, 7, 9).
-// Streamline is added in M2; this class keeps the places where it will go.
+// D3D12 side of the bridge: device, queue, flip-model swap chain on the game
+// window (Streamline's proxy chain in production, a plain chain without
+// Streamline in unit tests), shared back buffer, fences, stall watchdog, GPU
+// timing and per-second statistics (spec 6.4, 7, 9).
 #include <windows.h>
 #include <d3d11_4.h>
 #include <d3d12.h>
@@ -23,11 +23,40 @@ namespace acdb {
 // {7F2C9A11-3B4E-4D6A-812F-5E9CD37A1B42}
 extern const GUID IID_ReShadeUnwrappedObject;
 
+class StreamlineRuntime;
+
 struct PresenterCreateInfo {
     ID3D11Device* device11 = nullptr;   // CSP's native device
     HWND hwnd = nullptr;                // the game window
     DXGI_SWAP_CHAIN_DESC1 game_desc{};  // CSP's requested desc
+    // M2: the initialised runtime selects the Streamline path; nullptr keeps
+    // the plain M1 path (unit tests only; production never proxies without
+    // Streamline).
+    StreamlineRuntime* streamline = nullptr;
 };
+
+// Streamline path (spec 6.4, M2), differences from the plain path:
+//  - creation: native D3D12CreateDevice as before, then SetDevice(native)
+//    (slSetD3DDevice + feature functions), DlssgSupported(LUID) logged,
+//    Upgrade(&device) and the direct queue created from the upgraded device;
+//    factory from adapter->GetParent then Upgrade(&factory);
+//    CreateSwapChainForHwnd on the upgraded factory returns the Streamline
+//    proxy chain, checked with IsProxied (not proxied = creation failure);
+//    never slUpgradeInterface on the chain. The chain never gets the
+//    frame-latency waitable flag (Reflex paces instead). EnableReflexLowLatency
+//    and LogLoadedModules run once; ReflexLowLatencyAvailable is logged.
+//    Shared resources, fences, allocators and command lists use the native
+//    device; command lists execute on the upgraded queue.
+//  - frames: PclSequencer + frame tokens (spec 7): creation performs the first
+//    frame start (NewFrameToken(1), ReflexSleep, SimulationStart). In
+//    PresentFrame, BeforePresent's markers are emitted before the D3D12
+//    Present and AfterPresent's after it; then the next frame starts
+//    (NewFrameToken(n+1), ReflexSleep, SimulationStart). Every chain call
+//    (GetCurrentBackBufferIndex each frame, GetBuffer, Present,
+//    ResizeBuffers, SetFullscreenState) goes through the proxy chain.
+//  - shutdown: the destructor drains, CPU-signals pending_wait, and when the
+//    owner asked for it (ShutdownStreamlineOnRelease) calls
+//    StreamlineRuntime::Shutdown before releasing any D3D12/DXGI object.
 
 class D3D12Presenter {
 public:
@@ -51,7 +80,11 @@ public:
     //     MISC_SHARED | MISC_SHARED_NTHANDLE, BIND_RENDER_TARGET |
     //     BIND_SHADER_RESOURCE, opened with OpenSharedHandle), per-buffer
     //     command allocators and lists, GpuTimer11/12, StallWatchdog started.
-    // Any failure releases everything and returns nullptr with *error set.
+    // Any failure releases everything and returns nullptr with *error set. On
+    // the Streamline path, a failure after SetDevice first calls
+    // StreamlineRuntime::Shutdown (after the drain, before any release, as in
+    // the destructor): Streamline must be shut down before the device it was
+    // given is destroyed, and every later chain then passes through.
     static std::unique_ptr<D3D12Presenter> Create(const PresenterCreateInfo& info, std::string* error);
     ~D3D12Presenter();  // CPU-signals pending_wait, drains (500 ms max), stops the watchdog, releases
 
@@ -95,6 +128,13 @@ public:
     IDXGISwapChain4* Chain() const { return chain_.Get(); }
     bool Stopped() const { return stopped_; }
     bool HasLatencyWaitable() const;
+    bool UsesStreamline() const;
+    // Makes the destructor call StreamlineRuntime::Shutdown after the drain and
+    // before any release (set by the final Release of a Streamline proxy).
+    void ShutdownStreamlineOnRelease();
+    // Frames that reached PresentEnd, and PCL sequencing problems (tests).
+    uint32_t FramesWithMarkers() const;
+    uint32_t MarkerProblems() const;  // abandoned frames + out-of-order calls
 
 private:
     D3D12Presenter() = default;
