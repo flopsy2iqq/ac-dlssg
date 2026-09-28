@@ -20,6 +20,7 @@ add_library(acdb_core STATIC
     src/ini.cpp
     src/config.cpp
     src/compat.cpp
+    src/gpu_info.cpp
 )
 target_include_directories(acdb_core PUBLIC src)
 
@@ -28,6 +29,8 @@ add_executable(acdb_tests
     tests/test_main.cpp
     tests/test_ini_config.cpp
     tests/test_compat.cpp
+    tests/test_gpu_info.cpp
+    tests/gpu_test_devices.cpp
 )
 # version: only the tests compare against VERSION.dll; the bridge never imports it.
 target_link_libraries(acdb_tests PRIVATE acdb_core d3d11 d3d12 dxgi version)
