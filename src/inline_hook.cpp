@@ -61,6 +61,17 @@ void WriteAbsJump(uint8_t* at, const void* dest) {
     std::memcpy(at + 6, &d, sizeof(d));
 }
 
+// Reads bytes that may belong to an unloaded module. No unwinding objects here,
+// so the SEH frame is allowed.
+bool ReadCodeSafe(const void* p, uint8_t* out, size_t n) {
+    __try {
+        std::memcpy(out, p, n);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // ModRM + optional SIB + displacement, for the default 64-bit address size (no
 // 0x67). Sets *ripRel when the operand is [rip+disp32] (mod=00, rm=101, no SIB).
 // Returns bytes consumed, or 0 if the bytes run out.
@@ -459,13 +470,28 @@ bool InlineHook::Install(void* target, void* detour, std::string* error) {
     FlushInstructionCache(GetCurrentProcess(), tramp, dst + kJumpLen);
 
     target_ = target;
+    detour_ = detour;
     trampoline_ = tramp;
     active_ = true;
     return true;
 }
 
+bool InlineHook::PatchIntact() const {
+    if (!active_ || !target_) return false;
+    uint8_t expected[kJumpLen];
+    WriteAbsJump(expected, detour_);
+    uint8_t now[kJumpLen];
+    if (!ReadCodeSafe(target_, now, sizeof(now))) return false;
+    return std::memcmp(now, expected, sizeof(now)) == 0;
+}
+
 void InlineHook::Remove() {
     if (!active_) return;
+    if (!PatchIntact()) {
+        // Not our bytes any more: never write the saved prologue into them.
+        Detach();
+        return;
+    }
     DWORD oldProtect = 0;
     if (VirtualProtect(target_, savedLen_, PAGE_EXECUTE_READWRITE, &oldProtect)) {
         std::memcpy(target_, saved_, savedLen_);
@@ -476,6 +502,7 @@ void InlineHook::Remove() {
     if (trampoline_) VirtualFree(trampoline_, 0, MEM_RELEASE);
     trampoline_ = nullptr;
     target_ = nullptr;
+    detour_ = nullptr;
     savedLen_ = 0;
     active_ = false;
 }
@@ -486,6 +513,7 @@ void InlineHook::Detach() {
     if (trampoline_) VirtualFree(trampoline_, 0, MEM_RELEASE);
     trampoline_ = nullptr;
     target_ = nullptr;
+    detour_ = nullptr;
     savedLen_ = 0;
     active_ = false;
 }

@@ -44,19 +44,25 @@ public:
     // Patches `target` to jump to `detour` and builds a trampoline to the
     // original. On failure returns false, sets *error and changes nothing.
     bool Install(void* target, void* detour, std::string* error);
-    // Restores the original prologue bytes (target must still be mapped).
+    // Restores the original prologue bytes, but only over our own patch: when
+    // the target no longer starts with our jump (another module now occupies
+    // the address), it behaves like Detach and writes nothing.
     void Remove();
     // Frees the trampoline and forgets the hook without touching the target's
     // memory -- for a module that has been unloaded (spec 6.5).
     void Detach();
 
     bool Active() const { return active_; }
+    // True while the target is readable and still starts with the jump Install
+    // wrote. Fresh code mapped at the same address never contains that jump.
+    bool PatchIntact() const;
     // Call through this to reach the original function.
     void* Original() const { return trampoline_; }
     void* Target() const { return target_; }
 
 private:
     void* target_ = nullptr;
+    void* detour_ = nullptr;
     void* trampoline_ = nullptr;
     uint8_t saved_[32] = {};
     size_t savedLen_ = 0;
