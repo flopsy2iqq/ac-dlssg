@@ -89,7 +89,8 @@ public:
     // slSetD3DDevice(nativeDevice), then resolves slReflexSetOptions,
     // slReflexGetState, slReflexSleep, slPCLSetMarker, slDLSSGSetOptions and
     // slDLSSGGetState with slGetFeatureFunction. Missing DLSS-G functions are
-    // not an error (M2 does not use them); missing Reflex/PCL functions are.
+    // not an error here (DlssgFunctionsResolved reports them and the
+    // presenter decides); missing Reflex/PCL functions are.
     // The DLSS-G functions are requested only when slIsFeatureSupported
     // accepts the device's adapter (otherwise Streamline logs an error per
     // request).

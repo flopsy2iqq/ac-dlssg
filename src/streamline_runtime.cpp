@@ -429,8 +429,8 @@ bool StreamlineRuntime::SetDevice(ID3D12Device* nativeDevice, std::string* error
             }
         }
         if (!err.empty()) break;
-        // DLSS-G switches on in M3; its functions are optional until then.
-        // Requesting them while the plugin is not loaded (unsupported GPU)
+        // The DLSS-G functions are optional here: the presenter decides what
+        // an adapter without them means (proxy_without_fg). Requesting them while the plugin is not loaded (unsupported GPU)
         // makes Streamline log an error, and so does slIsFeatureLoaded;
         // slIsFeatureSupported on the device's adapter does not.
         const LUID luid = nativeDevice->GetAdapterLuid();
