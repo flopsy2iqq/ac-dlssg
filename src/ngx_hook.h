@@ -28,6 +28,9 @@ struct NgxEvaluateInputs {
     ID3D11Resource* depth = nullptr;
     ID3D11Resource* mvec = nullptr;
     float jitterX = 0, jitterY = 0, mvScaleX = 0, mvScaleY = 0;
+    // DLSS.Render.Subrect.Dimensions; when absent or 0 ("not set"), the
+    // evaluate block's Width/Height, else the observed create's input size.
+    // 0 only when none of them is known.
     uint32_t subrectW = 0, subrectH = 0;
     uint32_t createFlags = 0;
     bool reset = false;
@@ -41,7 +44,16 @@ public:
     virtual ~NgxEvaluateSink() = default;
     // Counted SuperSampling creates only.
     virtual void OnCreateFeature(uint64_t featureKey, const NgxCreateInfo& info) = 0;
-    // Counted evaluates only, after the original returned.
+    // Counted evaluates only, after the original returned Success.
+    //
+    // in.depth and in.mvec can be null (ngx review F7): for a handle whose
+    // create was observed, the evaluate is counted even when Depth or
+    // MotionVectors is missing from the parameter block or set to null. The
+    // sink must treat a null resource as "no capture this frame" and must not
+    // pass it on (CaptureSlots refuses null sources).
+    //
+    // in.ctx, in.depth and in.mvec are CSP's raw pointers, not AddRef'd: they
+    // are valid only for the duration of this call, and nothing may keep them.
     virtual void OnEvaluate(const NgxEvaluateInputs& in) = 0;
 };
 
@@ -58,6 +70,11 @@ NgxSkip NgxClassifyModule(const wchar_t* path, bool isHostExe, const void* creat
                           const void* eval_c);
 // True when the first bytes at fn are one filler byte (0x90 or 0xCC) repeated.
 bool NgxIsFillerStub(const void* fn);
+// True when path names an NVIDIA denoiser snippet: nvngx_dlssnr.dll (DLSS NR,
+// which CSP loads for its "DLSS Neural Rendering") or nvngx_dlssd.dll (DLSS
+// Ray Reconstruction). Calls whose outermost layer is such a module, or a
+// module whose exports resolve into one, are never counted (ngx review F4).
+bool NgxIsDenoiserModule(const wchar_t* path);
 
 class NgxHook {
 public:
@@ -66,18 +83,33 @@ public:
     // Scans loaded modules and registers for later ones. Never called from
     // DllMain. Returns false and sets *error only on a fatal setup failure.
     bool Install(NgxEvaluateSink* sink, std::string* error);
-    // Replaces the sink that counted calls report to; nullptr detaches it (the
-    // calls are still forwarded). The feature records are kept.
-    void SetSink(NgxEvaluateSink* sink);
-    // Finishes a rescan that a load notification deferred; call from Present.
+    // Applies the loads and unloads the loader notification queued (unloads
+    // first, never writing to an unloaded module) and rescans after a load.
+    // Call from Present. Without queued work it takes no lock and calls nothing.
     void ProcessPendingRescan();
-    // Restores patched bytes of modules still loaded (tests / shutdown).
+    // Restores patched bytes of modules still loaded (tests / shutdown), only
+    // into the module that was hooked and only over our own patch. It frees the
+    // trampolines, so no NGX call may be in progress on another thread; to
+    // detach a sink while NGX runs, use SetSink(nullptr) instead.
     void Uninstall();
+    // Swaps the sink atomically. When it returns, no call into the previous
+    // sink is in progress on any other thread (it waits for them), so the
+    // caller may destroy that sink: the presenter calls SetSink(nullptr) before
+    // it is destroyed. Called from inside a sink call on the same thread it
+    // swaps without waiting, because it would otherwise wait on its own caller.
+    // Install and Uninstall swap the sink the same way. Never call SetSink or
+    // Uninstall with the loader lock held (DllMain): a sink call it waits for
+    // may itself need the loader lock.
+    void SetSink(NgxEvaluateSink* sink);
     uint32_t HookedModules() const;
 
-    // Test-only: when false, a load notification only sets the pending flag and
-    // never rescans inline, so ProcessPendingRescan drives the deferred path.
-    void SetCallbackRescanEnabled(bool enabled);
+    // Test-only: Install calls fn after its first scan and before it registers
+    // for load notifications, so a test can load a module inside that gap.
+    void SetInstallGapHookForTest(void (*fn)());
+    // Test-only: hold every internal lock on the calling thread, to prove the
+    // loader-notification callback never waits on one (spec 6.5).
+    void LockStateForTest();
+    void UnlockStateForTest();
 
     // Internal, referenced by the per-slot detours. Not for callers.
     NgxResult DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId,

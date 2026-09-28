@@ -191,6 +191,31 @@ target_compile_definitions(acdb_tests PRIVATE
     FAKE_NVNGX_PATH=L"$<TARGET_FILE:fake_nvngx>"
     FAKE_NVNGX_ALIAS_PATH=L"$<TARGET_FILE:fake_nvngx_alias>")
 add_dependencies(acdb_tests fake_nvngx fake_nvngx_alias)
+# Two builds of the fake with one fixed preferred base (no ASLR), the second
+# with different code, so a test can put a different module at the address of
+# a hooked one that was unloaded (ngx review F6).
+foreach(variant a b)
+    add_library(fake_nvngx_reuse_${variant} SHARED tests/fake_nvngx/fake_nvngx.cpp)
+    target_include_directories(fake_nvngx_reuse_${variant} PRIVATE src)
+    target_link_options(fake_nvngx_reuse_${variant} PRIVATE /DYNAMICBASE:NO /BASE:0x6E0000000000)
+endforeach()
+target_compile_definitions(fake_nvngx_reuse_b PRIVATE FAKE_NVNGX_VARIANT_B=1)
+# The fake under the name of NVIDIA's DLSS NR snippet (a subfolder, so nothing
+# finds it by search path), and a module whose NGX exports forward into it
+# (ngx review F4).
+add_library(fake_nvngx_dlssnr SHARED tests/fake_nvngx/fake_nvngx.cpp)
+target_include_directories(fake_nvngx_dlssnr PRIVATE src)
+set_target_properties(fake_nvngx_dlssnr PROPERTIES OUTPUT_NAME nvngx_dlssnr
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/fake_nr")
+add_library(fake_nvngx_fwd SHARED tests/fake_nvngx/fake_nvngx_fwd.cpp)
+target_compile_definitions(acdb_tests PRIVATE
+    FAKE_NVNGX_DLSSNR_PATH=L"$<TARGET_FILE:fake_nvngx_dlssnr>"
+    FAKE_NVNGX_FWD_PATH=L"$<TARGET_FILE:fake_nvngx_fwd>")
+add_dependencies(acdb_tests fake_nvngx_dlssnr fake_nvngx_fwd)
+target_compile_definitions(acdb_tests PRIVATE
+    FAKE_NVNGX_REUSE_A_PATH=L"$<TARGET_FILE:fake_nvngx_reuse_a>"
+    FAKE_NVNGX_REUSE_B_PATH=L"$<TARGET_FILE:fake_nvngx_reuse_b>")
+add_dependencies(acdb_tests fake_nvngx_reuse_a fake_nvngx_reuse_b)
 # The default location, set explicitly so the payload below can name it
 # without a generator expression that names acdb_tests (see tools/testapp).
 set(ACDB_TESTS_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")

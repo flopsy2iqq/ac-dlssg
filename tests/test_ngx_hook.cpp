@@ -5,13 +5,17 @@
 #include <windows.h>
 #include <d3d11.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "child_process.h"
 #include "gpu_test_devices.h"
 #include "inline_hook.h"
+#include "log.h"
 #include "ngx_hook.h"
+#include "temp_dir.h"
 #include "test_framework.h"
 #include "fake_nvngx/fake_nvngx.h"
 
@@ -74,15 +78,13 @@ FakeNgxParam CspEvaluate() {
 struct HookFixture {
     HMODULE fake = nullptr;
     RecSink sink;
-    explicit HookFixture(HMODULE m, bool callbackRescan = true) : fake(m) {
+    explicit HookFixture(HMODULE m) : fake(m) {
         NgxHook::Get().Uninstall();  // defensive: no state from a previous test
-        NgxHook::Get().SetCallbackRescanEnabled(callbackRescan);
         std::string err;
         NgxHook::Get().Install(&sink, &err);
     }
     ~HookFixture() {
         NgxHook::Get().Uninstall();
-        NgxHook::Get().SetCallbackRescanEnabled(true);
         if (fake) FreeLibrary(fake);
     }
 };
@@ -245,6 +247,54 @@ TEST(NgxHook_UnobservedCreateAndSubrectFallback) {
     CHECK(fx.sink.evals.empty());
 }
 
+// A render subrect that is present but 0 means "not set": NVIDIA's evaluate
+// helper always writes the key from InRenderSubrectDimensions, which an app
+// without dynamic resolution leaves at 0, and the DLSS guide (3.17) then
+// assumes the input dimensions given at creation (ngx review F3). The subrect
+// falls back to the evaluate block's Width/Height, then to the create's.
+TEST(NgxHook_ZeroSubrectFallsBackToInputSize) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x640000);
+    HookFixture fx(fake);
+    FakeNgxParam cp = SuperSamplingCreate();  // Width/Height 1920x1080
+    void* h = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h);
+
+    // Zero subrect, Width/Height in the evaluate block: those win.
+    FakeNgxParam ep = CspEvaluate();
+    ep.SetU(ngxkey::kSubrectWidth, 0u);
+    ep.SetU(ngxkey::kSubrectHeight, 0u);
+    ep.SetU(ngxkey::kWidth, 1280u);
+    ep.SetU(ngxkey::kHeight, 720u);
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    REQUIRE(fx.sink.evals.size() == 1);
+    CHECK_EQ(fx.sink.evals[0].subrectW, 1280u);
+    CHECK_EQ(fx.sink.evals[0].subrectH, 720u);
+
+    // Zero subrect and no Width/Height in the block: the create's input size.
+    FakeNgxParam bare = CspEvaluate();
+    bare.SetU(ngxkey::kSubrectWidth, 0u);
+    bare.SetU(ngxkey::kSubrectHeight, 0u);
+    Eval(fake)(d.ctx11.Get(), h, &bare, nullptr);
+    REQUIRE(fx.sink.evals.size() == 2);
+    CHECK_EQ(fx.sink.evals[1].subrectW, 1920u);
+    CHECK_EQ(fx.sink.evals[1].subrectH, 1080u);
+
+    // A real subrect still wins over both.
+    FakeNgxParam dyn = CspEvaluate();  // 1600x900
+    dyn.SetU(ngxkey::kWidth, 1280u);
+    dyn.SetU(ngxkey::kHeight, 720u);
+    Eval(fake)(d.ctx11.Get(), h, &dyn, nullptr);
+    REQUIRE(fx.sink.evals.size() == 3);
+    CHECK_EQ(fx.sink.evals[2].subrectW, 1600u);
+    CHECK_EQ(fx.sink.evals[2].subrectH, 900u);
+}
+
 TEST(NgxHook_NestingCountsOnce) {
     GpuTestDevices d;
     if (!ImmediateDevices(&d)) return;
@@ -303,27 +353,292 @@ TEST(NgxHook_DeferredContextNotCaptured) {
 }
 
 TEST(NgxHook_LateLoadThenRescanThenUnload) {
-    HMODULE preloaded = LoadFake();  // hold one ref so classify/scan is exercised on unload only for our second ref
-    FreeLibrary(preloaded);          // ensure not resident from a prior test
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);  // not resident from a prior test
     NgxHook::Get().Uninstall();
-    NgxHook::Get().SetCallbackRescanEnabled(false);  // force the deferred path
     RecSink sink;
     std::string err;
     REQUIRE(NgxHook::Get().Install(&sink, &err));
 
     HMODULE fake = LoadFake();  // loaded AFTER Install
     REQUIRE(fake != nullptr);
-    // The load notification only set the pending flag; nothing hooked yet.
+    // The load notification only queued the event; nothing is hooked yet.
     CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
     NgxHook::Get().ProcessPendingRescan();
     CHECK(NgxHook::Get().HookedModules() >= 1);
 
-    FreeLibrary(fake);  // its unload notification drops the layer, no memory write
+    FreeLibrary(fake);  // its queued unload drops the layer, no memory write
     NgxHook::Get().ProcessPendingRescan();
     CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
 
     NgxHook::Get().Uninstall();
-    NgxHook::Get().SetCallbackRescanEnabled(true);
+}
+
+// The loader-notification callback runs under the loader lock and must never
+// wait on one of our locks (spec 6.5, ngx review F1). One thread holds every
+// internal lock while another loads and unloads a module; both loader calls must
+// return promptly. Runs in a child process so a regression hangs only the child.
+namespace {
+struct LoadUnloadCtx {
+    HANDLE done = nullptr;
+    bool loaded = false;
+};
+DWORD WINAPI LoadAndUnloadFake(void* p) {
+    auto* c = static_cast<LoadUnloadCtx*>(p);
+    HMODULE m = LoadLibraryW(FAKE_NVNGX_PATH);
+    c->loaded = m != nullptr;
+    if (m) FreeLibrary(m);
+    SetEvent(c->done);
+    return 0;
+}
+}  // namespace
+
+TEST(Child_NgxHook_LoadCompletesWhileStateLocked) {
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);  // the load below is a real load
+
+    LoadUnloadCtx ctx;
+    ctx.done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    REQUIRE(ctx.done != nullptr);
+    NgxHook::Get().LockStateForTest();
+    HANDLE th = CreateThread(nullptr, 0, &LoadAndUnloadFake, &ctx, 0, nullptr);
+    const DWORD w = th ? WaitForSingleObject(ctx.done, 5000) : WAIT_FAILED;
+    NgxHook::Get().UnlockStateForTest();
+    if (th) {
+        WaitForSingleObject(th, INFINITE);
+        CloseHandle(th);
+    }
+    CloseHandle(ctx.done);
+    CHECK(w == WAIT_OBJECT_0);  // the load and the unload returned while we held the locks
+    CHECK(ctx.loaded);
+
+    // The queued load and unload are finished from the render thread: the module
+    // is gone again, so nothing stays hooked.
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
+    NgxHook::Get().Uninstall();
+}
+
+TEST(NgxHook_LoadCompletesWhileStateLocked) {
+    CHECK_EQ(RunChildTest("Child_NgxHook_LoadCompletesWhileStateLocked", 60000), 0);
+}
+
+// A module that loads after Install's first scan but before the notification is
+// registered produces no event; the first ProcessPendingRescan must still hook
+// it (ngx review F5).
+namespace {
+HMODULE g_gapLoaded = nullptr;
+void LoadFakeInInstallGap() { g_gapLoaded = LoadLibraryW(FAKE_NVNGX_PATH); }
+}  // namespace
+
+TEST(NgxHook_ModuleLoadedDuringInstallIsHooked) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    g_gapLoaded = nullptr;
+    NgxHook::Get().SetInstallGapHookForTest(&LoadFakeInInstallGap);
+    const bool installed = NgxHook::Get().Install(&sink, &err);
+    NgxHook::Get().SetInstallGapHookForTest(nullptr);
+    REQUIRE(installed);
+    REQUIRE(g_gapLoaded != nullptr);
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);  // the first scan ran before the load
+
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK(NgxHook::Get().HookedModules() >= 1);
+    NgxHook::Get().Uninstall();
+    FreeLibrary(g_gapLoaded);
+    g_gapLoaded = nullptr;
+}
+
+// More loader events than the queue holds: the unload that falls off the end is
+// still noticed, because an overflow makes the next ProcessPendingRescan
+// re-verify every layer (ngx review F1).
+TEST(NgxHook_QueueOverflowStillDropsUnloadedLayer) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    REQUIRE(NgxHook::Get().HookedModules() >= 1);
+
+    // 2 events per cycle, 100 cycles: far more than the queue holds.
+    for (int i = 0; i < 100; ++i) {
+        HMODULE a = LoadLibraryW(FAKE_NVNGX_ALIAS_PATH);
+        if (a) FreeLibrary(a);
+    }
+    FreeLibrary(fake);  // this unload's event is dropped: the queue is full
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
+    NgxHook::Get().Uninstall();
+}
+
+// A hooked module unloads and a different module loads at the same base while
+// the loader events are lost (queue overflow). The stale layer must be
+// recognised by its size and path: the new module gets hooked, and Uninstall
+// never writes the old module's saved bytes into it (ngx review F6).
+TEST(NgxHook_ReusedBaseIsNotTakenForTheOldModule) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx_reuse_a.dll") == nullptr);
+    REQUIRE(GetModuleHandleW(L"fake_nvngx_reuse_b.dll") == nullptr);
+    HMODULE a = LoadLibraryW(FAKE_NVNGX_REUSE_A_PATH);
+    REQUIRE(a != nullptr);
+    const uintptr_t aCreate = reinterpret_cast<uintptr_t>(Create(a));
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    REQUIRE(NgxHook::Get().HookedModules() >= 1);
+
+    for (int i = 0; i < 100; ++i) {  // overflow the event queue
+        HMODULE x = LoadLibraryW(FAKE_NVNGX_ALIAS_PATH);
+        if (x) FreeLibrary(x);
+    }
+    FreeLibrary(a);  // its unload event is lost
+    HMODULE b = LoadLibraryW(FAKE_NVNGX_REUSE_B_PATH);
+    REQUIRE(b != nullptr);
+    if (b != a) {
+        std::printf("  the second fake did not load at the first one's base; skipping\n");
+        NgxHook::Get().Uninstall();
+        FreeLibrary(b);
+        return;
+    }
+    // B's bytes where A's CreateFeature was: Uninstall must leave them alone.
+    uint8_t before[16];
+    memcpy(before, reinterpret_cast<const void*>(aCreate), sizeof(before));
+
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK(NgxHook::Get().HookedModules() >= 1);
+    FakeNgxState* sb = State(b);
+    REQUIRE(sb != nullptr);
+    *sb = FakeNgxState{};
+    sb->nextHandle = reinterpret_cast<void*>(0x330000);
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    CHECK_EQ(Create(b)(nullptr, kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+    CHECK_EQ(sb->createCalls, 1L);
+    CHECK_EQ(sink.creates.size(), size_t{1});  // B itself is hooked
+
+    NgxHook::Get().Uninstall();
+    uint8_t after[16];
+    memcpy(after, reinterpret_cast<const void*>(aCreate), sizeof(after));
+    CHECK(memcmp(before, after, sizeof(before)) == 0);
+    CHECK_EQ(Create(b)(nullptr, kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);  // B still runs
+    CHECK_EQ(sb->createCalls, 2L);
+    FreeLibrary(b);
+}
+
+// SetSink swaps the sink, and when it returns no call into the old sink is in
+// progress: the presenter calls SetSink(nullptr) and is then destroyed.
+namespace {
+struct SlowSink : NgxEvaluateSink {
+    HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::atomic<bool> inside{false};
+    std::atomic<int> evals{0};
+    ~SlowSink() override { CloseHandle(entered); }
+    void OnCreateFeature(uint64_t, const NgxCreateInfo&) override {}
+    void OnEvaluate(const NgxEvaluateInputs&) override {
+        inside = true;
+        ++evals;
+        SetEvent(entered);
+        Sleep(300);
+        inside = false;
+    }
+};
+struct EvalCallCtx {
+    EvalFn eval = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    void* handle = nullptr;
+    FakeNgxParam* params = nullptr;
+};
+DWORD WINAPI EvaluateOnThread(void* p) {
+    auto* c = static_cast<EvalCallCtx*>(p);
+    c->eval(c->ctx, c->handle, c->params, nullptr);
+    return 0;
+}
+}  // namespace
+
+TEST(NgxHook_SetSinkWaitsForCallsInProgress) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x610000);
+    SlowSink slow;
+    NgxHook::Get().Uninstall();
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&slow, &err));
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h);
+    FakeNgxParam ep = CspEvaluate();
+
+    EvalCallCtx call{Eval(fake), d.ctx11.Get(), h, &ep};
+    HANDLE th = CreateThread(nullptr, 0, &EvaluateOnThread, &call, 0, nullptr);
+    REQUIRE(th != nullptr);
+    const bool entered = WaitForSingleObject(slow.entered, 5000) == WAIT_OBJECT_0;
+    NgxHook::Get().SetSink(nullptr);
+    const bool stillInside = slow.inside;  // must be false: SetSink waited for the call
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+    CHECK(entered);
+    CHECK(!stillInside);
+
+    // Later evaluates never reach the old sink; a new sink gets them.
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    CHECK_EQ(slow.evals.load(), 1);
+    RecSink rec;
+    NgxHook::Get().SetSink(&rec);
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    CHECK_EQ(rec.evals.size(), size_t{1});
+    NgxHook::Get().Uninstall();
+    FreeLibrary(fake);
+}
+
+// A sink that clears itself from inside its own OnEvaluate must not wait on its
+// own call (that would deadlock the render thread). Child process: a regression
+// hangs only the child.
+namespace {
+struct SelfClearingSink : NgxEvaluateSink {
+    int evals = 0;
+    void OnCreateFeature(uint64_t, const NgxCreateInfo&) override {}
+    void OnEvaluate(const NgxEvaluateInputs&) override {
+        ++evals;
+        NgxHook::Get().SetSink(nullptr);
+    }
+};
+}  // namespace
+
+TEST(Child_NgxHook_SetSinkFromInsideTheSink) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x620000);
+    SelfClearingSink sink;
+    NgxHook::Get().Uninstall();
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h);
+    FakeNgxParam ep = CspEvaluate();
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);  // returns: no self-wait
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);  // the sink is gone now
+    CHECK_EQ(sink.evals, 1);
+    NgxHook::Get().Uninstall();
+    FreeLibrary(fake);
+}
+
+TEST(NgxHook_SetSinkFromInsideTheSink) {
+    CHECK_EQ(RunChildTest("Child_NgxHook_SetSinkFromInsideTheSink", 60000), 0);
 }
 
 TEST(NgxHook_UninstallRestores) {
@@ -366,6 +681,188 @@ TEST(NgxHook_SkipsAliasedModule) {
     CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
     NgxHook::Get().Uninstall();
     FreeLibrary(alias);
+}
+
+// A dispatcher whose slot has no original (never hooked, removed or detached)
+// must not invent a result: NGX's generic failure goes back, never Success
+// with an unwritten *outHandle (ngx review F2).
+TEST(NgxHook_NoOriginalReturnsFail) {
+    NgxHook::Get().Uninstall();
+    NgxHandle* handle = reinterpret_cast<NgxHandle*>(0x1234);
+    const NgxResult rc = NgxHook::Get().DispatchCreate(0, nullptr, kNgxFeatureSuperSampling, nullptr, &handle);
+    CHECK_EQ(static_cast<uint32_t>(rc), 0xBAD00000u);
+    CHECK(handle == reinterpret_cast<NgxHandle*>(0x1234));  // untouched
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchEvaluate(0, false, nullptr, nullptr, nullptr, nullptr)),
+             0xBAD00000u);
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchEvaluate(0, true, nullptr, nullptr, nullptr, nullptr)),
+             0xBAD00000u);
+    // An out-of-range slot is refused the same way rather than indexing past the table.
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchCreate(99, nullptr, 1, nullptr, &handle)), 0xBAD00000u);
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchEvaluate(-1, false, nullptr, nullptr, nullptr, nullptr)),
+             0xBAD00000u);
+}
+static_assert(static_cast<uint32_t>(kNgxFail) == 0xBAD00000u, "NVSDK_NGX_Result_Fail");
+
+// ---- CSP's DLSS NR ("Neural Rendering") and DLSS RR are never counted (ngx
+// review F4). CSP creates its NR feature through the signed nvngx_dlssnr.dll
+// with feature ids 18, 16, 17, 19, 20 and DLSSNR.* keys (static analysis of
+// CSP 0.3.0-preview622 dwrite.dll).
+
+TEST(NgxIsDenoiserModule_Names) {
+    CHECK(NgxIsDenoiserModule(L"H:\\game\\nvngx_dlssnr.dll"));
+    CHECK(NgxIsDenoiserModule(L"C:\\x\\NVNGX_DLSSD.DLL"));
+    CHECK(NgxIsDenoiserModule(L"nvngx_dlssnr.dll"));
+    CHECK(!NgxIsDenoiserModule(L"C:\\x\\nvngx_dlss.dll"));
+    CHECK(!NgxIsDenoiserModule(L"C:\\x\\_nvngx.dll"));
+    CHECK(!NgxIsDenoiserModule(L"C:\\x\\my_nvngx_dlssnr.dll"));  // the base name, not a suffix
+    CHECK(!NgxIsDenoiserModule(L""));
+    CHECK(!NgxIsDenoiserModule(nullptr));
+}
+
+// Calls whose outermost layer is the NR snippet are forwarded but never
+// counted, even a feature-id-1 create with plain DLSS parameters; the handle it
+// returns is recorded as not ours, so an evaluate on it through another layer
+// is not counted either.
+TEST(NgxHook_DenoiserSnippetNeverCounts) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    REQUIRE(GetModuleHandleW(L"nvngx_dlssnr.dll") == nullptr);
+    HMODULE plain = LoadFake();
+    REQUIRE(plain != nullptr);
+    HMODULE nr = LoadLibraryW(FAKE_NVNGX_DLSSNR_PATH);
+    REQUIRE(nr != nullptr);
+    FakeNgxState* s = State(nr);
+    REQUIRE(s != nullptr && s != State(plain));
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x710000);
+    *State(plain) = FakeNgxState{};
+    HookFixture fx(plain);
+    CHECK(NgxHook::Get().HookedModules() >= 2);  // hooked, so nesting is tracked
+
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    CHECK_EQ(Create(nr)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+    CHECK_EQ(s->createCalls, 1L);
+    CHECK(fx.sink.creates.empty());
+
+    FakeNgxParam ep = CspEvaluate();
+    CHECK_EQ(Eval(nr)(d.ctx11.Get(), h, &ep, nullptr), kNgxSuccess);
+    CHECK_EQ(s->evalCalls, 1L);
+    ep.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));  // unobserved-style block
+    Eval(nr)(d.ctx11.Get(), reinterpret_cast<void*>(0x720000), &ep, nullptr);
+    CHECK(fx.sink.evals.empty());
+
+    Eval(plain)(d.ctx11.Get(), h, &ep, nullptr);  // the NR handle through the other layer
+    CHECK(fx.sink.evals.empty());
+
+    NgxHook::Get().Uninstall();
+    FreeLibrary(nr);
+}
+
+// CSP's NR ids are not SuperSampling; a feature-id-1 create that carries
+// DLSSNR or DLSSD keys is not either; and an evaluate on an unobserved handle
+// that carries a DLSSNR resource is not counted even when Depth, MotionVectors
+// and the create flags are present too.
+TEST(NgxHook_NeuralRenderingIdsAndKeysNotCounted) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    HookFixture fx(fake);
+    FakeNgxParam ep = CspEvaluate();
+
+    const uint32_t nrIds[] = {18, 16, 17, 19, 20};
+    for (uint32_t id : nrIds) {
+        s->nextHandle = reinterpret_cast<void*>(static_cast<uintptr_t>(0x730000 + id * 0x100));
+        FakeNgxParam nrc;
+        nrc.SetU("DLSSNR.Width", 1920u);
+        nrc.SetU("DLSSNR.Height", 1080u);
+        nrc.SetU(ngxkey::kWidth, 1920u);
+        nrc.SetU(ngxkey::kHeight, 1080u);
+        void* h = nullptr;
+        Create(fake)(d.ctx11.Get(), id, &nrc, &h);
+        Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    }
+    CHECK(fx.sink.creates.empty());
+    CHECK(fx.sink.evals.empty());
+
+    s->nextHandle = reinterpret_cast<void*>(0x740000);
+    FakeNgxParam nrScalars = SuperSamplingCreate();
+    nrScalars.SetU("DLSSNR.Width", 1920u);
+    void* h1 = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &nrScalars, &h1);
+    CHECK(fx.sink.creates.empty());
+
+    s->nextHandle = reinterpret_cast<void*>(0x750000);
+    FakeNgxParam rr = SuperSamplingCreate();
+    rr.SetRes("DLSSD.DiffuseHitDistance", reinterpret_cast<ID3D11Resource*>(0xD00D));
+    void* h2 = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &rr, &h2);
+    CHECK(fx.sink.creates.empty());
+
+    FakeNgxParam unobserved;
+    unobserved.SetRes(ngxkey::kDepth, reinterpret_cast<ID3D11Resource*>(0x11));
+    unobserved.SetRes(ngxkey::kMotionVectors, reinterpret_cast<ID3D11Resource*>(0x22));
+    unobserved.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));
+    unobserved.SetRes("DLSSNR.Color", reinterpret_cast<ID3D11Resource*>(0xC010));
+    Eval(fake)(d.ctx11.Get(), reinterpret_cast<void*>(0x7F0000), &unobserved, nullptr);
+    CHECK(fx.sink.evals.empty());
+
+    // Control: the same block without the NR key is counted.
+    FakeNgxParam plainBlock;
+    plainBlock.SetRes(ngxkey::kDepth, reinterpret_cast<ID3D11Resource*>(0x11));
+    plainBlock.SetRes(ngxkey::kMotionVectors, reinterpret_cast<ID3D11Resource*>(0x22));
+    plainBlock.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));
+    Eval(fake)(d.ctx11.Get(), reinterpret_cast<void*>(0x7F0000), &plainBlock, nullptr);
+    CHECK_EQ(fx.sink.evals.size(), size_t{1});
+}
+
+// A module whose NGX exports forward into an already-hooked module resolves to
+// the same code. It is not hooked a second time: a second patch would chain
+// two detours, and restoring them later would leave a jump into freed memory.
+TEST(NgxHook_ForwardedExportsNotHookedTwice) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    REQUIRE(GetModuleHandleW(L"nvngx_dlssnr.dll") == nullptr);
+    HMODULE nr = LoadLibraryW(FAKE_NVNGX_DLSSNR_PATH);
+    REQUIRE(nr != nullptr);
+    HMODULE fwd = LoadLibraryW(FAKE_NVNGX_FWD_PATH);
+    REQUIRE(fwd != nullptr);
+    CreateFn nrCreate = Create(nr);
+    REQUIRE(reinterpret_cast<void*>(Create(fwd)) == reinterpret_cast<void*>(nrCreate));
+    uint8_t original[16];
+    memcpy(original, reinterpret_cast<const void*>(nrCreate), sizeof(original));
+
+    RecSink sink;
+    std::string err;
+    NgxHook::Get().Uninstall();
+    TempDir tmp(L"ngx_fwd");
+    const std::filesystem::path logPath = tmp.Path() / L"bridge.log";
+    REQUIRE(LogOpen(logPath.wstring(), LogLevel::Debug));
+    const bool installed = NgxHook::Get().Install(&sink, &err);
+    LogClose();
+    REQUIRE(installed);
+    CHECK_EQ(NgxHook::Get().HookedModules(), 1u);
+    // Not even attempted: patching already-patched code only works by luck of
+    // how our jump's address bytes decode.
+    const std::string log = ReadAll(logPath);
+    CHECK(log.find("hook failed for") == std::string::npos);
+    CHECK(log.find("already hooked") != std::string::npos);
+
+    FakeNgxState* s = State(nr);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x760000);
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    CHECK_EQ(Create(fwd)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+    CHECK_EQ(s->createCalls, 1L);
+
+    NgxHook::Get().Uninstall();
+    CHECK(memcmp(original, reinterpret_cast<const void*>(nrCreate), sizeof(original)) == 0);
+    FreeLibrary(fwd);
+    FreeLibrary(nr);
 }
 
 TEST(NgxClassify_SkipRules) {

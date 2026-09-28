@@ -199,6 +199,45 @@ TEST(InlineHook_WidensShortBranch) {
     VirtualFree(fn, 0, MEM_RELEASE);
 }
 
+// Remove() writes the saved prologue back only over its own patch. When the
+// target no longer holds our jump (another module now occupies that address),
+// it only forgets the hook and leaves the foreign bytes alone (ngx review F6).
+TEST(InlineHook_RemoveLeavesForeignBytesAlone) {
+    uint8_t* fn = MakeBranchingFn();
+    REQUIRE(fn != nullptr);
+    InlineHook hook;
+    g_branchHook = &hook;
+    std::string err;
+    REQUIRE(hook.Install(fn, reinterpret_cast<void*>(&DetourBranch), &err));
+    CHECK(hook.PatchIntact());
+
+    uint8_t foreign[20];
+    for (size_t i = 0; i < sizeof(foreign); ++i) foreign[i] = static_cast<uint8_t>(0xA0 + i);
+    memcpy(fn, foreign, sizeof(foreign));  // the buffer is RWX
+    CHECK(!hook.PatchIntact());
+
+    hook.Remove();
+    CHECK(!hook.Active());
+    CHECK(hook.Original() == nullptr);
+    CHECK(memcmp(fn, foreign, sizeof(foreign)) == 0);
+    g_branchHook = nullptr;
+    VirtualFree(fn, 0, MEM_RELEASE);
+}
+
+// PatchIntact on memory that is gone reports false instead of faulting.
+TEST(InlineHook_PatchIntactOnReleasedMemory) {
+    uint8_t* fn = MakeBranchingFn();
+    REQUIRE(fn != nullptr);
+    InlineHook hook;
+    g_branchHook = &hook;
+    std::string err;
+    REQUIRE(hook.Install(fn, reinterpret_cast<void*>(&DetourBranch), &err));
+    VirtualFree(fn, 0, MEM_RELEASE);  // "the module unloaded"
+    CHECK(!hook.PatchIntact());
+    hook.Detach();
+    g_branchHook = nullptr;
+}
+
 // A pointer taken BEFORE Install still reaches the detour: the patch is at the
 // function body, not in an import or export table (spec 6.5 test list).
 TEST(InlineHook_PreTakenPointerReachesDetour) {
