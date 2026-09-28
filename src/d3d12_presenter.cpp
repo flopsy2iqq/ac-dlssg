@@ -306,7 +306,6 @@ struct D3D12Presenter::Impl {
     std::mutex marker_mu;
     bool fg_user_on = true;  // start_with_fg, then the hotkey
     KeyEdge hotkey_edge;
-    bool reset_next_fg = false;  // a toggle: the next DLSS-G frame has reset
     bool mode_known = false;     // SetDlssgOptions succeeded once
     bool mode_on = false;        // the DLSS-G mode Streamline has
     DlssgSizeHints mode_hints;
@@ -314,7 +313,7 @@ struct D3D12Presenter::Impl {
     bool logged_on = false;    // the last mode line said on
     std::string logged_off_reason;
     ReasonThrottle frame_off_throttle{10000};
-    bool prev_had_inputs = false;  // frame N-1 was presented with tags and constants
+    bool prev_had_inputs = false;  // frame N-1 was presented with DLSS-G on its tags and constants
     bool prev_tagged = false;
     bool have_prev_camera = false;  // frame N-1's snapshot, for BuildFrameConstants
     CameraLayout prev_camera{};
@@ -720,7 +719,7 @@ void D3D12Presenter::Impl::PollHotkey() {
     }
     if (!hotkey_edge.Pressed(chord)) return;
     fg_user_on = !fg_user_on;
-    reset_next_fg = true;    // spec 8: the next DLSS-G frame has reset
+    prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
     state_failure.clear();   // spec 9: a failure status is retried after a toggle
     LOGI("fg: hotkey -> %s", fg_user_on ? "on" : "off");
 }
@@ -785,7 +784,7 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
         in.cur = &cur;
         in.prev = have_prev_camera ? &prev : nullptr;
         in.capture = cap.params;
-        in.prevFrameHadInputs = prev_had_inputs && !originChanged && !reset_next_fg;
+        in.prevFrameHadInputs = prev_had_inputs && !originChanged;
         in.options.flipHandedness = config.camera_flip_handedness;
         in.options.negateSide = config.camera_negate_side;
         g.constantsOk = BuildFrameConstants(in, &d.constants, &g.constantsWhy);
@@ -1232,19 +1231,20 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     bool fgThisFrame = false;
     if (sl) {
         const FrameDecision dec = Decide(cap);
+        bool tagsSet = false;
         if (dec.tag) {
             const sl::Extent extent{0, 0, cap.params.renderW, cap.params.renderH};
             const sl::Result tagResult =
                 sl->SetTagsForFrame(*token, kViewport, slots->Depth12(cap.slot), slots->Mvec12(cap.slot), extent, cl);
-            const sl::Result constResult =
-                tagResult == sl::Result::eOk ? sl->SetConstants(dec.constants, *token, kViewport) : tagResult;
-            tagged = tagResult == sl::Result::eOk && constResult == sl::Result::eOk;
+            tagsSet = tagResult == sl::Result::eOk;
+            tagged = tagsSet && sl->SetConstants(dec.constants, *token, kViewport) == sl::Result::eOk;
             if (tagged && !logged_first_tags) {
                 logged_first_tags = true;
                 LOGI("fg: first tags and constants set (frame %u)", frame_index);
             }
         }
-        if (!tagged && prev_tagged && token) sl->SetNullTags(*token, kViewport);
+        // Streamline drops its references to the slots with null tags.
+        if (!tagged && (prev_tagged || tagsSet) && token) sl->SetNullTags(*token, kViewport);
         std::string reason = dec.reason;
         bool perFrame = dec.perFrame;
         if (dec.fg && !tagged) {
@@ -1257,7 +1257,6 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
             perFrame = false;
         }
         LogMode(fgThisFrame, reason, perFrame);
-        if (fgThisFrame) reset_next_fg = false;
     }
 
     hr = cl->Close();
@@ -1307,7 +1306,10 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     if (tagged && coordinator) coordinator->NoteTagged(cap.slot, done);
     history.delivered = true;
     prev_tagged = tagged;
-    prev_had_inputs = tagged;
+    // Spec 6.7 reset: only a frame DLSS-G used gives the next one history;
+    // tags without DLSS-G (tag_without_fg), a toggle, a stall or a resize
+    // leave the next DLSS-G frame with reset.
+    prev_had_inputs = tagged && fgThisFrame;
     have_prev_camera = cap.cameraResult == CameraChannel::ReadResult::Ok;
     if (have_prev_camera) prev_camera = cap.camera;
     CountFrame(cap, tagged, fgThisFrame && SUCCEEDED(presentHr));
