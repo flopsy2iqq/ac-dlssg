@@ -66,6 +66,9 @@ public:
     // Scans loaded modules and registers for later ones. Never called from
     // DllMain. Returns false and sets *error only on a fatal setup failure.
     bool Install(NgxEvaluateSink* sink, std::string* error);
+    // Replaces the sink that counted calls report to; nullptr detaches it (the
+    // calls are still forwarded). The feature records are kept.
+    void SetSink(NgxEvaluateSink* sink);
     // Finishes a rescan that a load notification deferred; call from Present.
     void ProcessPendingRescan();
     // Restores patched bytes of modules still loaded (tests / shutdown).

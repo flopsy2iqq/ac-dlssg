@@ -386,6 +386,12 @@ bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
     return true;
 }
 
+void NgxHook::SetSink(NgxEvaluateSink* sink) {
+    HookState& s = S();
+    std::lock_guard<std::recursive_mutex> lock(s.mu);
+    s.sink = sink;
+}
+
 void NgxHook::ProcessPendingRescan() {
     HookState& s = S();
     if (!s.installed) return;
