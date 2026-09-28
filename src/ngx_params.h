@@ -50,11 +50,17 @@ constexpr const char* kSubrectWidth = "DLSS.Render.Subrect.Dimensions.Width";
 constexpr const char* kSubrectHeight = "DLSS.Render.Subrect.Dimensions.Height";
 }  // namespace ngxkey
 
-// Resource keys that only a denoiser / ray-reconstruction feature sets. If any is
-// present the create is DLSS-D, not the super-resolution feature the bridge
-// mirrors (spec 6.5; adapted from dlss5-bridge's kDenoiserKeys, MIT). Both the
-// bare and DLSSD.-prefixed spellings are probed: a key this runtime does not know
-// answers a non-Success code, so a wrong name is only ever a false negative.
+// Keys that only a denoiser feature sets: DLSS-D (Ray Reconstruction) and DLSS
+// NR, the "DLSS Neural Rendering" feature CSP creates through nvngx_dlssnr.dll.
+// If one is present the block is not the super-resolution feature the bridge
+// mirrors (spec 6.5, ngx review F4). A key this runtime does not know answers a
+// non-Success code, so a wrong name is only ever a false negative.
+//
+// Resource keys count when they hold a non-null resource (D3D11, D3D12 or
+// untyped). Sources: dlss5-bridge's kDenoiserKeys (MIT); nvsdk_ngx_defs.h and
+// nvsdk_ngx_defs_dlssd.h (DLSS 310.9.1 SDK); and the DLSSNR.* strings in
+// nvngx_dlssnr.dll 310.8 and CSP 0.3.0-preview622 dwrite.dll, whose NR evaluate
+// sets DLSSNR.Color, .Output, .Depth and .MVec.
 inline const char* const kNgxDenoiserKeys[] = {
     "NormalRoughness",       "DLSSD.NormalRoughness",
     "DiffuseAlbedo",         "DLSS.Input.DiffuseAlbedo",
@@ -62,7 +68,29 @@ inline const char* const kNgxDenoiserKeys[] = {
     "SpecularHitDistance",   "DLSSD.SpecularHitDistance",
     "SpecularMotionVectors", "DLSSD.SpecularMotionVectors",
     "GBuffer.Normals",       "GBuffer.Roughness",
-    "DLSS.Denoise.Mode",
+    "DLSSD.DiffuseHitDistance",
+    "DLSSD.DiffuseRayDirection",
+    "DLSSD.SpecularRayDirection",
+    "DLSSD.DiffuseRayDirectionHitDistance",
+    "DLSSD.SpecularRayDirectionHitDistance",
+    "DLSSD.ReflectedAlbedo",
+    "DLSSD.Alpha",
+    "DLSSD.OutputAlpha",
+    "DLSSD.ResponsivityMask",
+    "DLSSNR.Color",          "DLSSNR.Output",
+    "DLSSNR.Depth",          "DLSSNR.MVec",
+};
+
+// Scalar keys that only a denoiser feature sets; any Success counts. The
+// DLSSNR.* ones are what CSP's NR create sets (dwrite.dll 0.3.0-preview622);
+// DLSS.Denoise.Mode and DLSS.Roughness.Mode are DLSS-D create parameters
+// (nvsdk_ngx_defs_dlssd.h).
+inline const char* const kNgxDenoiserScalarKeys[] = {
+    "DLSSNR.Width",      "DLSSNR.Height",
+    "DLSSNR.InputWidth", "DLSSNR.InputHeight",
+    "DLSSNR.OutputWidth", "DLSSNR.OutputHeight",
+    "DLSSNR.Hint.Render.Preset",
+    "DLSS.Denoise.Mode", "DLSS.Roughness.Mode",
 };
 
 // NVSDK_NGX_Parameter (nvsdk_ngx_params.h). MSVC emits same-name virtual

@@ -50,6 +50,10 @@ struct Layer {
     ULONG sizeOfImage = 0;
     std::wstring path;
     bool used = false;
+    // A denoiser snippet (DLSS NR / RR), or a module whose entry points resolve
+    // into one: hooked so nesting is tracked, forwarded, never counted (F4).
+    // Set before any of the layer's patches goes live.
+    bool neverCount = false;
     InlineHook create;
     InlineHook eval;
     InlineHook eval_c;
@@ -284,6 +288,14 @@ bool NgxIsFillerStub(const void* fn) {
     return true;
 }
 
+bool NgxIsDenoiserModule(const wchar_t* path) {
+    if (!path || !*path) return false;
+    const wchar_t* base = path;
+    for (const wchar_t* p = path; *p; ++p)
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    return _wcsicmp(base, L"nvngx_dlssnr.dll") == 0 || _wcsicmp(base, L"nvngx_dlssd.dll") == 0;
+}
+
 NgxSkip NgxClassifyModule(const wchar_t* path, bool isHostExe, const void* create, const void* eval,
                           const void* eval_c) {
     if (isHostExe) return NgxSkip::HostExe;
@@ -337,12 +349,26 @@ const DetourSet kDetours[kMaxLayers] = {
     NGX_DETOUR_ROW(12), NGX_DETOUR_ROW(13), NGX_DETOUR_ROW(14), NGX_DETOUR_ROW(15),
 };
 
-bool HasDenoiserKeys(const NgxParameter* p) {
+// The first denoiser key (DLSS-D or DLSS NR) present in p, or nullptr. A
+// resource key counts when it holds a non-null D3D11, D3D12 or untyped
+// resource; a scalar key counts when any numeric Get succeeds (F4).
+const char* DenoiserKeyIn(const NgxParameter* p) {
     for (const char* key : kNgxDenoiserKeys) {
-        ID3D11Resource* res = nullptr;
-        if (p->Get(key, &res) == kNgxSuccess && res != nullptr) return true;
+        ID3D11Resource* r11 = nullptr;
+        if (p->Get(key, &r11) == kNgxSuccess && r11) return key;
+        ID3D12Resource* r12 = nullptr;
+        if (p->Get(key, &r12) == kNgxSuccess && r12) return key;
+        void* untyped = nullptr;
+        if (p->Get(key, &untyped) == kNgxSuccess && untyped) return key;
     }
-    return false;
+    for (const char* key : kNgxDenoiserScalarKeys) {
+        unsigned int u = 0;
+        int i = 0;
+        float f = 0;
+        if (p->Get(key, &u) == kNgxSuccess || p->Get(key, &i) == kNgxSuccess || p->Get(key, &f) == kNgxSuccess)
+            return key;
+    }
+    return nullptr;
 }
 
 bool LayerIsLiveLocked(const Layer& L);
@@ -419,11 +445,32 @@ bool HookModuleLocked(HMODULE m, bool isHostExe) {
     void* evalT = eval ? FollowThunk(eval) : nullptr;
     void* evalCT = eval_c ? FollowThunk(eval_c) : nullptr;
 
+    // Entry points that resolve to code another layer already patched (a module
+    // whose exports forward into a hooked one): a second patch would chain two
+    // detours, and restoring them would leave a jump into freed memory (F4).
+    for (const Layer& other : s.layers) {
+        if (!other.used) continue;
+        if (other.create.Target() == createT || (evalT && other.eval.Target() == evalT) ||
+            (evalCT && other.eval_c.Target() == evalCT)) {
+            LOGD("ngx: %ls resolves to code already hooked in %ls; skipped", path.c_str(), other.path.c_str());
+            return true;
+        }
+    }
+
     Layer& L = s.layers[slot];
+    // DLSS NR / RR snippets, by name or by where the entry points resolve to,
+    // are hooked (so the nesting counter sees them) but never counted (F4).
+    auto resolvesIntoDenoiser = [](const void* fn) {
+        const HMODULE h = fn ? ModuleOf(fn) : nullptr;
+        return h && NgxIsDenoiserModule(ModulePath(h).c_str());
+    };
+    L.neverCount = NgxIsDenoiserModule(path.c_str()) || resolvesIntoDenoiser(createT) ||
+                   resolvesIntoDenoiser(evalT) || resolvesIntoDenoiser(evalCT);
     std::string err;
     if (!L.create.Install(createT, kDetours[slot].create, &err)) {
         LOGW("ngx: CreateFeature hook failed for %ls: %s", path.c_str(), err.c_str());
         L.create.Detach();
+        L.neverCount = false;
         return true;  // create is mandatory; without it the feature filter is blind
     }
     if (evalT && !L.eval.Install(evalT, kDetours[slot].eval, &err))
@@ -434,7 +481,8 @@ bool HookModuleLocked(HMODULE m, bool isHostExe) {
     L.sizeOfImage = ImageSizeAt(m);
     L.path = path;
     L.used = true;
-    LOGI("ngx: hooked %ls (slot %d)", path.c_str(), slot);
+    LOGI("ngx: hooked %ls (slot %d)%s", path.c_str(), slot,
+         L.neverCount ? ", a denoiser snippet: forwarded, never counted" : "");
     return true;
 }
 
@@ -447,6 +495,7 @@ void DetachLayerLocked(Layer& L) {
     L.sizeOfImage = 0;
     L.path.clear();
     L.used = false;
+    L.neverCount = false;
 }
 
 void RecountLocked() {
@@ -688,6 +737,7 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
     if (slot < 0 || slot >= kMaxLayers) return kNgxFail;
     auto orig = reinterpret_cast<PfnNgxCreateFeature>(s.layers[slot].create.Original());
     if (!orig) return kNgxFail;
+    const bool neverCount = s.layers[slot].neverCount;
     ++t_nest;
     NgxResult r = orig(ctx, featureId, params, outHandle);
     const int nest = t_nest;
@@ -696,7 +746,22 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
     if (r != kNgxSuccess || !outHandle || !*outHandle || !Plausible(params)) return r;
     try {
         const uint64_t key = reinterpret_cast<uint64_t>(*outHandle);
-        const bool denoiser = HasDenoiserKeys(params);
+        if (neverCount) {
+            // A denoiser snippet's own entry point (F4): the handle is recorded as
+            // not ours, so no layer counts an evaluate on it.
+            ExclusiveLock rec(&s.recLock);
+            s.records[key] = FeatureRecord{};
+            return r;
+        }
+        const char* denoiserKey = DenoiserKeyIn(params);
+        const bool denoiser = denoiserKey != nullptr;
+        if (denoiser && featureId == kNgxFeatureSuperSampling) {
+            // Shown once, so an in-game log says why a SuperSampling feature was
+            // not mirrored if CSP ever shares one parameter block with its NR.
+            static LONG said = 0;
+            if (InterlockedCompareExchange(&said, 1, 0) == 0)
+                LOGW("ngx: a SuperSampling create carries the denoiser key %s; not captured", denoiserKey);
+        }
         NgxCreateInfo info;
         info.featureId = featureId;
         params->Get(ngxkey::kWidth, &info.width);
@@ -726,11 +791,13 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
     InlineHook& hook = isC ? s.layers[slot].eval_c : s.layers[slot].eval;
     auto orig = reinterpret_cast<PfnNgxEvaluateFeature>(hook.Original());
     if (!orig) return kNgxFail;
+    const bool neverCount = s.layers[slot].neverCount;
     ++t_nest;
     NgxResult r = orig(ctx, handle, params, callback);
     const int nest = t_nest;
     --t_nest;
     if (nest != 1) return r;  // nested: touch nothing (spec 6.5)
+    if (neverCount) return r;  // a denoiser snippet's own entry point (F4)
     try {
         // Deferred contexts cannot be captured (spec 6.5).
         if (!Plausible(ctx)) return r;
@@ -778,6 +845,9 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
                 params->Get(ngxkey::kMotionVectors, &m) != kNgxSuccess ||
                 params->Get(ngxkey::kCreateFlags, &flags) != kNgxSuccess)
                 return r;
+            // A denoiser's block (DLSS NR / RR) never counts, whatever else it
+            // carries (F4).
+            if (DenoiserKeyIn(params)) return r;
             in.createFlags = static_cast<uint32_t>(flags);
         }
 

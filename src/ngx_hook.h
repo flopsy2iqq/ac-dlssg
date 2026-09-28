@@ -70,6 +70,11 @@ NgxSkip NgxClassifyModule(const wchar_t* path, bool isHostExe, const void* creat
                           const void* eval_c);
 // True when the first bytes at fn are one filler byte (0x90 or 0xCC) repeated.
 bool NgxIsFillerStub(const void* fn);
+// True when path names an NVIDIA denoiser snippet: nvngx_dlssnr.dll (DLSS NR,
+// which CSP loads for its "DLSS Neural Rendering") or nvngx_dlssd.dll (DLSS
+// Ray Reconstruction). Calls whose outermost layer is such a module, or a
+// module whose exports resolve into one, are never counted (ngx review F4).
+bool NgxIsDenoiserModule(const wchar_t* path);
 
 class NgxHook {
 public:

@@ -13,7 +13,9 @@
 #include "child_process.h"
 #include "gpu_test_devices.h"
 #include "inline_hook.h"
+#include "log.h"
 #include "ngx_hook.h"
+#include "temp_dir.h"
 #include "test_framework.h"
 #include "fake_nvngx/fake_nvngx.h"
 
@@ -700,6 +702,168 @@ TEST(NgxHook_NoOriginalReturnsFail) {
              0xBAD00000u);
 }
 static_assert(static_cast<uint32_t>(kNgxFail) == 0xBAD00000u, "NVSDK_NGX_Result_Fail");
+
+// ---- CSP's DLSS NR ("Neural Rendering") and DLSS RR are never counted (ngx
+// review F4). CSP creates its NR feature through the signed nvngx_dlssnr.dll
+// with feature ids 18, 16, 17, 19, 20 and DLSSNR.* keys (static analysis of
+// CSP 0.3.0-preview622 dwrite.dll).
+
+TEST(NgxIsDenoiserModule_Names) {
+    CHECK(NgxIsDenoiserModule(L"H:\\game\\nvngx_dlssnr.dll"));
+    CHECK(NgxIsDenoiserModule(L"C:\\x\\NVNGX_DLSSD.DLL"));
+    CHECK(NgxIsDenoiserModule(L"nvngx_dlssnr.dll"));
+    CHECK(!NgxIsDenoiserModule(L"C:\\x\\nvngx_dlss.dll"));
+    CHECK(!NgxIsDenoiserModule(L"C:\\x\\_nvngx.dll"));
+    CHECK(!NgxIsDenoiserModule(L"C:\\x\\my_nvngx_dlssnr.dll"));  // the base name, not a suffix
+    CHECK(!NgxIsDenoiserModule(L""));
+    CHECK(!NgxIsDenoiserModule(nullptr));
+}
+
+// Calls whose outermost layer is the NR snippet are forwarded but never
+// counted, even a feature-id-1 create with plain DLSS parameters; the handle it
+// returns is recorded as not ours, so an evaluate on it through another layer
+// is not counted either.
+TEST(NgxHook_DenoiserSnippetNeverCounts) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    REQUIRE(GetModuleHandleW(L"nvngx_dlssnr.dll") == nullptr);
+    HMODULE plain = LoadFake();
+    REQUIRE(plain != nullptr);
+    HMODULE nr = LoadLibraryW(FAKE_NVNGX_DLSSNR_PATH);
+    REQUIRE(nr != nullptr);
+    FakeNgxState* s = State(nr);
+    REQUIRE(s != nullptr && s != State(plain));
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x710000);
+    *State(plain) = FakeNgxState{};
+    HookFixture fx(plain);
+    CHECK(NgxHook::Get().HookedModules() >= 2);  // hooked, so nesting is tracked
+
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    CHECK_EQ(Create(nr)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+    CHECK_EQ(s->createCalls, 1L);
+    CHECK(fx.sink.creates.empty());
+
+    FakeNgxParam ep = CspEvaluate();
+    CHECK_EQ(Eval(nr)(d.ctx11.Get(), h, &ep, nullptr), kNgxSuccess);
+    CHECK_EQ(s->evalCalls, 1L);
+    ep.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));  // unobserved-style block
+    Eval(nr)(d.ctx11.Get(), reinterpret_cast<void*>(0x720000), &ep, nullptr);
+    CHECK(fx.sink.evals.empty());
+
+    Eval(plain)(d.ctx11.Get(), h, &ep, nullptr);  // the NR handle through the other layer
+    CHECK(fx.sink.evals.empty());
+
+    NgxHook::Get().Uninstall();
+    FreeLibrary(nr);
+}
+
+// CSP's NR ids are not SuperSampling; a feature-id-1 create that carries
+// DLSSNR or DLSSD keys is not either; and an evaluate on an unobserved handle
+// that carries a DLSSNR resource is not counted even when Depth, MotionVectors
+// and the create flags are present too.
+TEST(NgxHook_NeuralRenderingIdsAndKeysNotCounted) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    HookFixture fx(fake);
+    FakeNgxParam ep = CspEvaluate();
+
+    const uint32_t nrIds[] = {18, 16, 17, 19, 20};
+    for (uint32_t id : nrIds) {
+        s->nextHandle = reinterpret_cast<void*>(static_cast<uintptr_t>(0x730000 + id * 0x100));
+        FakeNgxParam nrc;
+        nrc.SetU("DLSSNR.Width", 1920u);
+        nrc.SetU("DLSSNR.Height", 1080u);
+        nrc.SetU(ngxkey::kWidth, 1920u);
+        nrc.SetU(ngxkey::kHeight, 1080u);
+        void* h = nullptr;
+        Create(fake)(d.ctx11.Get(), id, &nrc, &h);
+        Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    }
+    CHECK(fx.sink.creates.empty());
+    CHECK(fx.sink.evals.empty());
+
+    s->nextHandle = reinterpret_cast<void*>(0x740000);
+    FakeNgxParam nrScalars = SuperSamplingCreate();
+    nrScalars.SetU("DLSSNR.Width", 1920u);
+    void* h1 = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &nrScalars, &h1);
+    CHECK(fx.sink.creates.empty());
+
+    s->nextHandle = reinterpret_cast<void*>(0x750000);
+    FakeNgxParam rr = SuperSamplingCreate();
+    rr.SetRes("DLSSD.DiffuseHitDistance", reinterpret_cast<ID3D11Resource*>(0xD00D));
+    void* h2 = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &rr, &h2);
+    CHECK(fx.sink.creates.empty());
+
+    FakeNgxParam unobserved;
+    unobserved.SetRes(ngxkey::kDepth, reinterpret_cast<ID3D11Resource*>(0x11));
+    unobserved.SetRes(ngxkey::kMotionVectors, reinterpret_cast<ID3D11Resource*>(0x22));
+    unobserved.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));
+    unobserved.SetRes("DLSSNR.Color", reinterpret_cast<ID3D11Resource*>(0xC010));
+    Eval(fake)(d.ctx11.Get(), reinterpret_cast<void*>(0x7F0000), &unobserved, nullptr);
+    CHECK(fx.sink.evals.empty());
+
+    // Control: the same block without the NR key is counted.
+    FakeNgxParam plainBlock;
+    plainBlock.SetRes(ngxkey::kDepth, reinterpret_cast<ID3D11Resource*>(0x11));
+    plainBlock.SetRes(ngxkey::kMotionVectors, reinterpret_cast<ID3D11Resource*>(0x22));
+    plainBlock.SetI(ngxkey::kCreateFlags, static_cast<int>(kNgxDlssFlagMVLowRes));
+    Eval(fake)(d.ctx11.Get(), reinterpret_cast<void*>(0x7F0000), &plainBlock, nullptr);
+    CHECK_EQ(fx.sink.evals.size(), size_t{1});
+}
+
+// A module whose NGX exports forward into an already-hooked module resolves to
+// the same code. It is not hooked a second time: a second patch would chain
+// two detours, and restoring them later would leave a jump into freed memory.
+TEST(NgxHook_ForwardedExportsNotHookedTwice) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    REQUIRE(GetModuleHandleW(L"nvngx_dlssnr.dll") == nullptr);
+    HMODULE nr = LoadLibraryW(FAKE_NVNGX_DLSSNR_PATH);
+    REQUIRE(nr != nullptr);
+    HMODULE fwd = LoadLibraryW(FAKE_NVNGX_FWD_PATH);
+    REQUIRE(fwd != nullptr);
+    CreateFn nrCreate = Create(nr);
+    REQUIRE(reinterpret_cast<void*>(Create(fwd)) == reinterpret_cast<void*>(nrCreate));
+    uint8_t original[16];
+    memcpy(original, reinterpret_cast<const void*>(nrCreate), sizeof(original));
+
+    RecSink sink;
+    std::string err;
+    NgxHook::Get().Uninstall();
+    TempDir tmp(L"ngx_fwd");
+    const std::filesystem::path logPath = tmp.Path() / L"bridge.log";
+    REQUIRE(LogOpen(logPath.wstring(), LogLevel::Debug));
+    const bool installed = NgxHook::Get().Install(&sink, &err);
+    LogClose();
+    REQUIRE(installed);
+    CHECK_EQ(NgxHook::Get().HookedModules(), 1u);
+    // Not even attempted: patching already-patched code only works by luck of
+    // how our jump's address bytes decode.
+    const std::string log = ReadAll(logPath);
+    CHECK(log.find("hook failed for") == std::string::npos);
+    CHECK(log.find("already hooked") != std::string::npos);
+
+    FakeNgxState* s = State(nr);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x760000);
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    CHECK_EQ(Create(fwd)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+    CHECK_EQ(s->createCalls, 1L);
+
+    NgxHook::Get().Uninstall();
+    CHECK(memcmp(original, reinterpret_cast<const void*>(nrCreate), sizeof(original)) == 0);
+    FreeLibrary(fwd);
+    FreeLibrary(nr);
+}
 
 TEST(NgxClassify_SkipRules) {
     CHECK(NgxClassifyModule(L"C:\\game\\acs.exe", true, reinterpret_cast<void*>(0x1000),
