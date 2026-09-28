@@ -13,8 +13,8 @@
       recorded. Any other dxgi.dll (ReShade installed over it, another build
       copied by hand) makes it refuse before anything changes; with -Force it
       leaves that dxgi.dll in place and removes the rest;
-    - then the Streamline files, the manifest and optionally the data, as in
-      ReShade mode below.
+    - then the Streamline files, the Lua app, the manifest and optionally
+      the data, as in ReShade mode below.
 
   ReShade mode (a manifest without a mode is one):
     - reverts EnableProxyLibrary and ProxyLibrary in the ReShade.ini that the
@@ -25,8 +25,10 @@
     - re-reads ReShade.ini (and the one ReShade would use now, if that is a
       different file) and stops, keeping the DLL, while ReShade would still
       load ac-dlssg.dll;
-    - then deletes <game>\ac-dlssg.dll and the files in <game>\ac-dlssg\sl
-      (each only if it is the version the install copied) and the manifest;
+    - then deletes <game>\ac-dlssg.dll, the files in <game>\ac-dlssg\sl and
+      the CSP Lua app's files in <game>\apps\lua\AcDlssg (each only if it is
+      the version the install copied), the folders the install created for
+      the app when they are empty, and the manifest;
     - keeps the logs, ac-dlssg.ini and install\backup (DLLs that
       dev-install.ps1 -Force replaced) unless -RemoveData is given, which
       deletes the whole <game>\ac-dlssg folder.
@@ -262,6 +264,46 @@ try {
         }
         if ((Test-Path -LiteralPath $slDir) -and @(Get-ChildItem -LiteralPath $slDir -Force).Count -eq 0) {
             Remove-Item -LiteralPath $slDir -Force
+        }
+    }
+
+    # 4b. The CSP Lua app, each file only while it is the version installed,
+    #     then the folders the install created, deepest first, when empty.
+    if ($manifest.PSObject.Properties['luaApp'] -and $manifest.luaApp) {
+        $luaDir = Join-Path $game 'apps\lua\AcDlssg'
+        foreach ($f in @($manifest.luaApp.files)) {
+            $path = Join-Path $game ([string]$f.path)
+            if (-not (Get-NormalizedPath $path).StartsWith((Get-NormalizedPath $luaDir) + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                Step "WARNING: the manifest names $path, which is outside $luaDir; left alone"
+                continue
+            }
+            if (Test-Path -LiteralPath "$path.new") { Remove-Item -LiteralPath "$path.new" -Force }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Step "$path is already gone"; continue }
+            $hash = Get-Sha256OfFile $path
+            if ($hash -eq [string]$f.sha256) {
+                Remove-Item -LiteralPath $path -Force
+                Step "deleted $path"
+            } else {
+                Step "WARNING: $path is not the file dev-install.ps1 copied (SHA-256 $hash); left in place. Delete it by hand if it is yours."
+            }
+        }
+        if (Test-Path -LiteralPath $luaDir -PathType Container) {
+            $subDirs = @(Get-ChildItem -LiteralPath $luaDir -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending)
+            foreach ($d in $subDirs) {
+                if (@(Get-ChildItem -LiteralPath $d.FullName -Force).Count -eq 0) { Remove-Item -LiteralPath $d.FullName -Force }
+            }
+        }
+        foreach ($rel in @($manifest.luaApp.createdDirs)) {
+            $dir = Join-Path $game ([string]$rel)
+            if (-not (Test-SamePath $dir $luaDir) -and -not (Test-SamePath $dir (Join-Path $game 'apps\lua')) -and
+                -not (Test-SamePath $dir (Join-Path $game 'apps'))) {
+                Step "WARNING: the manifest names the folder $dir, which the install cannot have created; left alone"
+                continue
+            }
+            if ((Test-Path -LiteralPath $dir -PathType Container) -and @(Get-ChildItem -LiteralPath $dir -Force).Count -eq 0) {
+                Remove-Item -LiteralPath $dir -Force
+                Step "deleted the empty folder $dir"
+            }
         }
     }
 

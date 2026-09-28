@@ -35,6 +35,9 @@
   One case reads collect-sysinfo.ps1 without running it: the wording of its
   HAGS section, and that it contains no command that changes the system.
 
+  -Case runs only the named cases (their ids, such as SA1 or LA2; wildcards
+  allowed); the fixtures are built as always.
+
   Exits 0 when every check passes, 1 otherwise.
 
 .EXAMPLE
@@ -43,11 +46,14 @@
 param(
     [string]$FakeRoot,
     [string]$StreamlineDir,
+    [string[]]$Case = @(),
     [switch]$Keep
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+# "powershell -File" passes "-Case A,B" as one string.
+$Case = @($Case | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 $tools = $PSScriptRoot
 $installScript = Join-Path $tools 'dev-install.ps1'
@@ -117,6 +123,8 @@ function Check([bool]$Condition, [string]$Name) {
 
 # Runs one case; an unexpected error fails that case and the run goes on.
 function Invoke-Case([string]$Name, [scriptblock]$Body) {
+    # -Case: only the cases whose id (the text before the colon) is listed.
+    if ($Case.Count -and -not ($Case | Where-Object { $Name -like "$($_):*" })) { return }
     $script:currentCase = $Name
     Write-Host ''
     Write-Host "== $Name"
@@ -155,12 +163,15 @@ function Invoke-Tool([string]$Script, [string[]]$Arguments) {
 }
 
 # -Sl '' leaves -StreamlineDir to the script's default; -Mode '' leaves -Mode
-# to the script's default (Auto).
-function Install([string]$Game, [string]$Dll, [switch]$Force, [string]$Sl = $slReal, [string]$Mode = '') {
+# to the script's default (Auto); -Lua '' leaves -LuaApp to the script's
+# default (the repository's apps\lua\AcDlssg).
+function Install([string]$Game, [string]$Dll, [switch]$Force, [string]$Sl = $slReal, [string]$Mode = '',
+    [string]$Lua = '') {
     $a = @('-GameDir', $Game)
     if ($Dll) { $a += @('-Dll', $Dll) }
     if ($Sl) { $a += @('-StreamlineDir', $Sl) }
     if ($Mode) { $a += @('-Mode', $Mode) }
+    if ($Lua) { $a += @('-LuaApp', $Lua) }
     if ($Force) { $a += '-Force' }
     return Invoke-Tool $installScript $a
 }
@@ -1308,6 +1319,202 @@ Invoke-Case 'SA6: access denied in the game folder asks for an elevated PowerShe
     }
     $r = Install $game $dllV1
     Check ($r.Code -eq 0) 'install exits 0 once the folder is writable'
+    $r = Uninstall $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+}
+
+# ---------------------------------------------------------------------------
+# M3: the CSP Lua app that publishes the camera, installed as
+# <game>\apps\lua\AcDlssg (spec 6.6, 12), and the M3 keys of ac-dlssg.ini.
+
+$luaReal = Get-NormalizedPath (Join-Path $tools '..\apps\lua\AcDlssg')
+$luaRealFiles = @(Get-ChildItem -LiteralPath $luaReal -File -Recurse | ForEach-Object { $_.FullName.Substring($luaReal.Length + 1) } |
+        Sort-Object)
+
+# A copy of the app under -FakeRoot, optionally with a changed AcDlssg.lua (a newer build).
+function New-LuaVariant([string]$Name, [switch]$Changed) {
+    $dir = Join-Path $FakeRoot "lua\$Name\AcDlssg"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Copy-Item -Path (Join-Path $luaReal '*') -Destination $dir -Recurse -Force
+    if ($Changed) { [IO.File]::AppendAllText((Join-Path $dir 'AcDlssg.lua'), "-- changed for the upgrade test`r`n") }
+    return $dir
+}
+
+function Get-LuaDir([string]$Game) { return Join-Path $Game 'apps\lua\AcDlssg' }
+
+# True when <game>\apps\lua\AcDlssg holds exactly the files of $Source with the same hashes.
+function Test-LuaMatches([string]$Game, [string]$Source) {
+    $dir = Get-LuaDir $Game
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $false }
+    $names = @(Get-ChildItem -LiteralPath $dir -File -Recurse -Force | ForEach-Object { $_.FullName.Substring($dir.Length + 1) } | Sort-Object)
+    if (($names -join '|') -ne ($luaRealFiles -join '|')) { return $false }
+    foreach ($n in $names) {
+        if ((Get-Sha (Join-Path $dir $n)) -ne (Get-Sha (Join-Path $Source $n))) { return $false }
+    }
+    return $true
+}
+
+function Get-LuaRecordedHash($Manifest, [string]$Name) {
+    $rec = @($Manifest.luaApp.files | Where-Object { $_.path -eq "apps\lua\AcDlssg\$Name" })
+    if ($rec.Count -ne 1) { return $null }
+    return [string]$rec[0].sha256
+}
+
+$luaV2 = New-LuaVariant 'v2' -Changed
+
+Invoke-Case 'LA1: Lua app: fresh install, re-run, upgrade, uninstall' {
+    $game = New-FakeGame 'LA1' -NoDxgi
+    $lua = Get-LuaDir $game
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install with the default -LuaApp exits 0'
+    Check (Test-LuaMatches $game $luaReal) 'apps\lua\AcDlssg holds the repository app''s files with the same hashes'
+    $m = Get-Manifest $game
+    Check (Test-SamePath $m.luaApp.source $luaReal) 'manifest records apps\lua\AcDlssg of the repository as the source'
+    $bad = @($luaRealFiles | Where-Object { (Get-LuaRecordedHash $m $_) -ne (Get-Sha (Join-Path $luaReal $_)) })
+    Check (@($m.luaApp.files).Count -eq $luaRealFiles.Count -and $bad.Count -eq 0) 'manifest records every app file with its hash'
+    Check ((@($m.luaApp.createdDirs) -join '|') -eq 'apps\lua\AcDlssg|apps\lua|apps') 'manifest records the folders the install created, deepest first'
+    $slAt = $r.Text.LastIndexOf('copied ac-dlssg\sl\')
+    $luaAt = $r.Text.IndexOf('copied apps\lua\AcDlssg\')
+    Check ($slAt -ge 0 -and $luaAt -gt $slAt -and $luaAt -lt $r.Text.IndexOf('copied dxgi.dll')) 'the app is copied after Streamline and before the bridge (spec 12 order)'
+    Check (Test-NoLeftovers @($lua)) 'no .new files left in the app folder'
+
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and $r.Text -notmatch 'copied apps' -and $r.Text -match 'AcDlssg\.lua is already this version') 'a re-run copies no app file'
+    $r = Install $game $dllV2 -Lua $luaV2
+    Check ($r.Code -eq 0) 'upgrade to a changed app exits 0'
+    Check (Test-LuaMatches $game $luaV2) 'the changed app file is replaced'
+    Check ($r.Text -match 'copied apps\\lua\\AcDlssg\\AcDlssg\.lua' -and $r.Text -match 'manifest\.ini is already this version') 'only the changed app file is copied'
+    Check ((Get-LuaRecordedHash (Get-Manifest $game) 'AcDlssg.lua') -eq (Get-Sha (Join-Path $luaV2 'AcDlssg.lua'))) 'manifest records the new hash'
+    Check ((@((Get-Manifest $game).luaApp.createdDirs) -join '|') -eq 'apps\lua\AcDlssg|apps\lua|apps') 'the upgrade keeps the first install''s folder record'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\install\backup'))) 'no backup left after the upgrade'
+
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake log`r`n"
+    $r = Uninstall $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'apps'))) 'uninstall removes apps\lua\AcDlssg and the folders the install created'
+    Check ($r.Text -match "deleted $([regex]::Escape($lua))") 'uninstall reports the app files it deleted'
+    Check (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\logs\bridge.log')) 'uninstall keeps the logs'
+}
+
+Invoke-Case 'LA2: a CSP apps\lua folder that exists stays, and another app is untouched' {
+    $game = New-FakeGame 'LA2'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-Utf8Bytes $simpleIni
+    Write-Bytes $ini $original
+    $other = Join-Path $game 'apps\lua\OtherApp\manifest.ini'
+    Write-Text $other "[ABOUT]`r`nNAME = Other`r`n"
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and (Test-LuaMatches $game $luaReal)) 'install exits 0 and installs the app next to another one'
+    Check ((@((Get-Manifest $game).luaApp.createdDirs) -join '|') -eq 'apps\lua\AcDlssg') 'only apps\lua\AcDlssg is recorded as created'
+    $r = Uninstall $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check (-not (Test-Path -LiteralPath (Get-LuaDir $game))) 'uninstall removes apps\lua\AcDlssg'
+    Check ((Test-Path -LiteralPath $other) -and (Test-Path -LiteralPath (Join-Path $game 'apps\lua'))) 'the other app and apps\lua stay'
+    Check (Test-SameBytes (Read-Bytes $ini) $original) 'round trip restores a byte-identical ReShade.ini'
+}
+
+Invoke-Case 'LA3: a foreign apps\lua\AcDlssg folder is refused' {
+    $game = New-FakeGame 'LA3' -NoDxgi
+    $foreign = Join-Path (Get-LuaDir $game) 'AcDlssg.lua'
+    Write-Text $foreign "-- someone else's app`r`n"
+    foreach ($force in @($false, $true)) {
+        $r = if ($force) { Install $game $dllV1 -Force } else { Install $game $dllV1 }
+        Check ((Test-Refused $r) -and $r.Text -match 'apps\\lua\\AcDlssg' -and $r.Text -match 'not installed by') "install$(if ($force) { ' -Force' }) refuses a foreign apps\lua\AcDlssg and names it"
+    }
+    Check ((Get-Sha $foreign) -eq (Get-Sha256OfBytes (Get-Utf8Bytes "-- someone else's app`r`n"))) 'the foreign app is untouched'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and -not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'nothing else was installed'
+
+    # An M2 install (no luaApp in the manifest) is upgraded: the app is added,
+    # unless a foreign folder is in the way.
+    $game = New-FakeGame 'LA3b' -NoDxgi
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    $m = Get-Manifest $game
+    $m.PSObject.Properties.Remove('luaApp')
+    [IO.File]::WriteAllText((Get-ManifestPath $game), ($m | ConvertTo-Json -Depth 8), $utf8)
+    Remove-Item -LiteralPath (Join-Path $game 'apps') -Recurse -Force
+    Write-Text (Join-Path (Get-LuaDir $game) 'manifest.ini') "foreign`r`n"
+    $manifestBefore = Read-Bytes (Get-ManifestPath $game)
+    $r = Install $game $dllV2
+    Check ((Test-Refused $r) -and $r.Text -match 'apps\\lua\\AcDlssg') 'an upgrade of an M2 install refuses a foreign app folder'
+    Check (Test-SameBytes (Read-Bytes (Get-ManifestPath $game)) $manifestBefore) 'the manifest is untouched'
+    Remove-Item -LiteralPath (Join-Path $game 'apps') -Recurse -Force
+    $r = Install $game $dllV2
+    Check ($r.Code -eq 0 -and (Test-LuaMatches $game $luaReal)) 'without it the upgrade of an M2 install adds the app'
+    $r = Uninstall $game -RemoveData
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game 'apps'))) 'and its uninstall removes it'
+}
+
+Invoke-Case 'LA4: an app file changed outside the script' {
+    $game = New-FakeGame 'LA4' -NoDxgi
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    $file = Join-Path (Get-LuaDir $game) 'AcDlssg.lua'
+    [IO.File]::AppendAllText($file, "-- edited by hand`r`n")
+    $edited = Get-Sha $file
+    $r = Install $game $dllV1
+    Check ((Test-Refused $r) -and $r.Text -match 'AcDlssg\.lua was changed outside this script' -and $r.Text -match $edited) 'the upgrade refuses and names the hash'
+    Check ((Get-Sha $file) -eq $edited) 'the edited file is untouched'
+    $r = Install $game $dllV1 -Force
+    Check ($r.Code -eq 0 -and (Test-LuaMatches $game $luaReal)) 'with -Force the upgrade replaces it'
+    $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue)
+    Check ($backups.Count -eq 1 -and (Get-Sha $backups[0].FullName) -eq $edited) 'the edited file is kept in install\backup'
+    [IO.File]::AppendAllText($file, "-- edited again`r`n")
+    $r = Uninstall $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check ((Test-Path -LiteralPath $file) -and $r.Text -match 'WARNING: .*AcDlssg\.lua is not the file') 'a changed app file is kept with a warning'
+    Check (-not (Test-Path -LiteralPath (Join-Path (Get-LuaDir $game) 'manifest.ini'))) 'the unchanged app file is deleted'
+}
+
+Invoke-Case 'LA5: -LuaApp checks and the rollback of a failed install' {
+    $game = New-FakeGame 'LA5' -NoDxgi
+    $r = Install $game $dllV1 -Lua (Join-Path $FakeRoot 'lua\none\AcDlssg')
+    Check ((Test-Refused $r) -and $r.Text -match 'Lua app') 'install refuses a missing -LuaApp'
+    $partial = New-LuaVariant 'partial'
+    Remove-Item -LiteralPath (Join-Path $partial 'manifest.ini')
+    $r = Install $game $dllV1 -Lua $partial
+    Check ((Test-Refused $r) -and $r.Text -match 'manifest\.ini') 'install refuses an app folder without manifest.ini'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and -not (Test-Path -LiteralPath (Join-Path $game 'apps'))) 'nothing was installed'
+
+    # A fresh ReShade-mode install whose ReShade.ini write fails: everything,
+    # the app and the folders it created included, is rolled back.
+    $game = New-FakeGame 'LA5b'
+    $ini = Join-Path $game 'ReShade.ini'
+    Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
+    $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $r = Install $game $dllV1
+    } finally {
+        $lock.Dispose()
+    }
+    Check ($r.Code -ne 0 -and $r.Text -match 'FAILED:') 'the install fails'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'apps'))) 'the app and the folders the install created are rolled back'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and -not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'nothing else is left'
+}
+
+Invoke-Case 'CF: the ac-dlssg.ini the install writes has the M3 keys with their defaults' {
+    $game = New-FakeGame 'CF' -NoDxgi
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    $lines = @([IO.File]::ReadAllLines($cfg))
+    foreach ($kv in @('proxy_without_fg=0', 'tag_without_fg=0', 'fg_vram_headroom_mib=512', 'camera_flip_handedness=0',
+            'camera_negate_side=0')) {
+        $i = [array]::IndexOf($lines, $kv)
+        Check ($i -gt 0 -and $lines[$i - 1].StartsWith(';')) "config has $kv under a comment"
+    }
+    $bridge = [array]::IndexOf($lines, '[bridge]')
+    Check ($bridge -ge 0 -and [array]::IndexOf($lines, 'camera_negate_side=0') -gt $bridge) 'the keys are in [bridge]'
+    Check (@($lines | Where-Object { $_ -match '^[a-z_]+=' } | ForEach-Object { ($_ -split '=')[0] } | Group-Object | Where-Object { $_.Count -gt 1 }).Count -eq 0) 'no key twice'
+
+    # An existing ini is kept; the install names the M3 keys it lacks.
+    $game = New-FakeGame 'CF2' -NoDxgi
+    $old = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    $oldBytes = Get-Utf8Bytes "[bridge]`r`nenabled=1`r`nproxy_without_fg=1`r`n"
+    Write-Bytes $old $oldBytes
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $old) $oldBytes)) 'an existing ini is kept byte for byte'
+    Check ($r.Text -match 'tag_without_fg' -and $r.Text -match 'camera_negate_side' -and $r.Text -notmatch 'lacks [^\r\n]*proxy_without_fg') 'the install names the M3 keys the existing ini lacks'
     $r = Uninstall $game -RemoveData
     Check ($r.Code -eq 0) 'uninstall exits 0'
 }
