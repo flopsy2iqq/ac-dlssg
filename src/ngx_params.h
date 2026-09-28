@@ -19,6 +19,8 @@ namespace acdb {
 // bits 0xBAD..., so "not Success" is "not set" for our reads (spec 6.5).
 using NgxResult = int;
 constexpr NgxResult kNgxSuccess = 0x1;
+// NVSDK_NGX_Result_Fail, the generic failure (nvsdk_ngx_defs.h).
+constexpr NgxResult kNgxFail = static_cast<NgxResult>(0xBAD00000u);
 
 // NVSDK_NGX_Feature (nvsdk_ngx_defs.h). Only the two the bridge distinguishes.
 constexpr uint32_t kNgxFeatureSuperSampling = 1;

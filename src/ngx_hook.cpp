@@ -429,9 +429,13 @@ void NgxHook::SetCallbackRescanEnabled(bool enabled) { S().callbackRescan = enab
 NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId,
                                   NgxParameter* params, NgxHandle** outHandle) noexcept {
     HookState& s = S();
+    // No original (an unused, removed or detached slot): report NGX's generic
+    // failure rather than invent a Success with *outHandle unwritten.
+    if (slot < 0 || slot >= kMaxLayers) return kNgxFail;
     auto orig = reinterpret_cast<PfnNgxCreateFeature>(s.layers[slot].create.Original());
+    if (!orig) return kNgxFail;
     ++t_nest;
-    NgxResult r = orig ? orig(ctx, featureId, params, outHandle) : kNgxSuccess;
+    NgxResult r = orig(ctx, featureId, params, outHandle);
     const int nest = t_nest;
     --t_nest;
     if (nest != 1) return r;  // nested NGX-internal create: forward only
@@ -466,10 +470,12 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
 NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx, const NgxHandle* handle,
                                     const NgxParameter* params, void* callback) noexcept {
     HookState& s = S();
+    if (slot < 0 || slot >= kMaxLayers) return kNgxFail;  // as in DispatchCreate
     InlineHook& hook = isC ? s.layers[slot].eval_c : s.layers[slot].eval;
     auto orig = reinterpret_cast<PfnNgxEvaluateFeature>(hook.Original());
+    if (!orig) return kNgxFail;
     ++t_nest;
-    NgxResult r = orig ? orig(ctx, handle, params, callback) : kNgxSuccess;
+    NgxResult r = orig(ctx, handle, params, callback);
     const int nest = t_nest;
     --t_nest;
     if (nest != 1) return r;  // nested: touch nothing (spec 6.5)

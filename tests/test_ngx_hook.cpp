@@ -368,6 +368,26 @@ TEST(NgxHook_SkipsAliasedModule) {
     FreeLibrary(alias);
 }
 
+// A dispatcher whose slot has no original (never hooked, removed or detached)
+// must not invent a result: NGX's generic failure goes back, never Success
+// with an unwritten *outHandle (ngx review F2).
+TEST(NgxHook_NoOriginalReturnsFail) {
+    NgxHook::Get().Uninstall();
+    NgxHandle* handle = reinterpret_cast<NgxHandle*>(0x1234);
+    const NgxResult rc = NgxHook::Get().DispatchCreate(0, nullptr, kNgxFeatureSuperSampling, nullptr, &handle);
+    CHECK_EQ(static_cast<uint32_t>(rc), 0xBAD00000u);
+    CHECK(handle == reinterpret_cast<NgxHandle*>(0x1234));  // untouched
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchEvaluate(0, false, nullptr, nullptr, nullptr, nullptr)),
+             0xBAD00000u);
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchEvaluate(0, true, nullptr, nullptr, nullptr, nullptr)),
+             0xBAD00000u);
+    // An out-of-range slot is refused the same way rather than indexing past the table.
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchCreate(99, nullptr, 1, nullptr, &handle)), 0xBAD00000u);
+    CHECK_EQ(static_cast<uint32_t>(NgxHook::Get().DispatchEvaluate(-1, false, nullptr, nullptr, nullptr, nullptr)),
+             0xBAD00000u);
+}
+static_assert(static_cast<uint32_t>(kNgxFail) == 0xBAD00000u, "NVSDK_NGX_Result_Fail");
+
 TEST(NgxClassify_SkipRules) {
     CHECK(NgxClassifyModule(L"C:\\game\\acs.exe", true, reinterpret_cast<void*>(0x1000),
                             reinterpret_cast<void*>(0x1100), nullptr) == NgxSkip::HostExe);
