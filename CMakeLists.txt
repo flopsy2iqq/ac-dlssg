@@ -52,6 +52,7 @@ add_library(acdb_core STATIC
     src/config.cpp
     src/compat.cpp
     src/gpu_info.cpp
+    src/adapter_caps.cpp
     src/module_version.cpp
     src/present_flags.cpp
     src/latency_semaphore.cpp
@@ -88,6 +89,7 @@ add_executable(acdb_tests
     tests/test_ini_config.cpp
     tests/test_compat.cpp
     tests/test_gpu_info.cpp
+    tests/test_adapter_caps.cpp
     tests/test_present_flags.cpp
     tests/test_latency_semaphore.cpp
     tests/test_vtable_patch.cpp
