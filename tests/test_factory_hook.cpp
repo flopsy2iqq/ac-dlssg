@@ -249,13 +249,15 @@ TEST(FactoryHook_RenderAdapterMustBeNvidia) {
     a.description = "Intel(R) UHD Graphics";
     CHECK_EQ(RenderAdapterRefusal(a),
              "CSP renders on Intel(R) UHD Graphics (vendor 0x8086), not an NVIDIA GPU: set acs.exe to High "
-             "performance in Windows Settings > System > Display > Graphics");
+             "performance in Windows Settings > System > Display > Graphics, and check SELECT_ADAPTER in CSP's "
+             "dxgi_tweaks.ini");
 
     a.vendor_id = 0x1414;
     a.description = "Microsoft Basic Render Driver";
     CHECK_EQ(RenderAdapterRefusal(a),
              "CSP renders on Microsoft Basic Render Driver (vendor 0x1414), not an NVIDIA GPU: set acs.exe to High "
-             "performance in Windows Settings > System > Display > Graphics");
+             "performance in Windows Settings > System > Display > Graphics, and check SELECT_ADAPTER in CSP's "
+             "dxgi_tweaks.ini");
 
     RenderAdapter unknown;
     unknown.error = "IDXGIDevice::GetAdapter/GetDesc failed: 0x887A0005";
