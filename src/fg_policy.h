@@ -20,6 +20,8 @@ struct FgGateInputs {
     bool supported = false;    // slIsFeatureSupported and the DLSS-G functions resolved
     std::string stateFailure;  // non-empty: slDLSSGGetState reported this failure status
     bool stalled = false;      // stalled mode (spec 6.4)
+    bool windowMinimized = false;  // IsIconic(game window): the NVIDIA DLSS-G guide asks for
+                                   // eOff around a minimize (review finding F6)
     std::string aspectRefusal;  // non-empty: RuntimeAspectRefusal refused
     bool captured = false;      // a capture paired with this Present exists
     std::string captureReason;  // why there is none, or why the frame is forced off
@@ -49,17 +51,18 @@ struct FgGateResult {
 //  2. !userOn          "off by the user (start_with_fg or the hotkey)"
 //  3. stateFailure     "DLSS-G status <stateFailure>"
 //  4. stalled          "D3D12 stall"                            (per frame)
-//  5. aspectRefusal    aspectRefusal
-//  6. !captured        captureReason, or "no DLSS evaluate this frame" (per frame)
-//  7. forcedOff        captureReason                            (per frame)
-//  8. mvScaleMissing   "MV scale missing"                       (per frame)
-//  9. !cameraOk        "camera: <cameraReason>"                 (per frame)
-// 10. !cameraFresh     "camera not fresh"                       (per frame)
-// 11. kCamPaused       "game paused"                            (per frame)
-// 12. kCamMainMenu     "in-game menu open"                      (per frame)
-// 13. kCamVR/kCamTriple "VR or triple-screen mode"              (per frame)
-// 14. !constantsOk     "frame constants refused: <constantsWhy>" (per frame)
-// 15. vramRefusal      vramRefusal
+//  5. windowMinimized  "game window minimized"                  (per frame)
+//  6. aspectRefusal    aspectRefusal
+//  7. !captured        captureReason, or "no DLSS evaluate this frame" (per frame)
+//  8. forcedOff        captureReason                            (per frame)
+//  9. mvScaleMissing   "MV scale missing"                       (per frame)
+// 10. !cameraOk        "camera: <cameraReason>"                 (per frame)
+// 11. !cameraFresh     "camera not fresh"                       (per frame)
+// 12. kCamPaused       "game paused"                            (per frame)
+// 13. kCamMainMenu     "in-game menu open"                      (per frame)
+// 14. kCamVR/kCamTriple "VR or triple-screen mode"              (per frame)
+// 15. !constantsOk     "frame constants refused: <constantsWhy>" (per frame)
+// 16. vramRefusal      vramRefusal
 // kCamReplay and kCamJumped never turn DLSS-G off (a jump only sets reset).
 FgGateResult DecideFg(const FgGateInputs& in);
 
@@ -69,7 +72,7 @@ FgGateResult DecideFg(const FgGateInputs& in);
 bool ShouldTag(const FgGateInputs& in, const FgGateResult& gate, bool tagWithoutFg);
 
 // With tag_without_fg, when a lasting reason keeps DLSS-G off (gate.perFrame
-// false), the first per-frame condition of DecideFg that fails (4 and 6-14
+// false), the first per-frame condition of DecideFg that fails (4, 5 and 7-15
 // above), as if DLSS-G were supported, wanted and allowed: why this frame's
 // inputs are incomplete. The presenter logs it as the throttled "fg: frame
 // without DLSS-G" WARN, so a run where DLSS-G cannot turn on still names the

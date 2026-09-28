@@ -27,6 +27,7 @@ FgGateResult DecideFg(const FgGateInputs& in) {
     if (!in.userOn) return Off("off by the user (start_with_fg or the hotkey)", false);
     if (!in.stateFailure.empty()) return Off("DLSS-G status " + in.stateFailure, false);
     if (in.stalled) return Off("D3D12 stall", true);
+    if (in.windowMinimized) return Off("game window minimized", true);
     if (!in.aspectRefusal.empty()) return Off(in.aspectRefusal, false);
     if (!in.captured)
         return Off(in.captureReason.empty() ? std::string("no DLSS evaluate this frame") : in.captureReason, true);

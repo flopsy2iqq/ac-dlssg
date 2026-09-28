@@ -750,6 +750,7 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     g.supported = fg_supported;
     g.stateFailure = state_failure;
     g.stalled = stalled;
+    g.windowMinimized = IsIconic(hwnd) != FALSE;
     g.aspectRefusal = RuntimeAspectRefusal(env.allow_stretching, cap.outWidth, cap.outHeight, width, height);
     g.captured = cap.captured;
     g.captureReason = cap.reason;

@@ -50,6 +50,8 @@ TEST(FgGate_EachConditionTurnsItOffWithItsReason) {
         {"status", [](FgGateInputs* in) { in->stateFailure = "eFailResolutionTooLow"; }, "status eFailResolutionTooLow",
          false},
         {"stall", [](FgGateInputs* in) { in->stalled = true; }, "D3D12 stall", true},
+        // Review finding F6: DLSS-G off while the game window is minimized.
+        {"minimized", [](FgGateInputs* in) { in->windowMinimized = true; }, "game window minimized", true},
         {"aspect", [](FgGateInputs* in) { in->aspectRefusal = "aspect: x"; }, "aspect: x", false},
         {"no evaluate", [](FgGateInputs* in) { in->captured = false; }, "no DLSS evaluate this frame", true},
         {"no capture",
