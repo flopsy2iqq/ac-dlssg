@@ -28,6 +28,9 @@ struct NgxEvaluateInputs {
     ID3D11Resource* depth = nullptr;
     ID3D11Resource* mvec = nullptr;
     float jitterX = 0, jitterY = 0, mvScaleX = 0, mvScaleY = 0;
+    // DLSS.Render.Subrect.Dimensions; when absent or 0 ("not set"), the
+    // evaluate block's Width/Height, else the observed create's input size.
+    // 0 only when none of them is known.
     uint32_t subrectW = 0, subrectH = 0;
     uint32_t createFlags = 0;
     bool reset = false;

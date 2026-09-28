@@ -245,6 +245,54 @@ TEST(NgxHook_UnobservedCreateAndSubrectFallback) {
     CHECK(fx.sink.evals.empty());
 }
 
+// A render subrect that is present but 0 means "not set": NVIDIA's evaluate
+// helper always writes the key from InRenderSubrectDimensions, which an app
+// without dynamic resolution leaves at 0, and the DLSS guide (3.17) then
+// assumes the input dimensions given at creation (ngx review F3). The subrect
+// falls back to the evaluate block's Width/Height, then to the create's.
+TEST(NgxHook_ZeroSubrectFallsBackToInputSize) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x640000);
+    HookFixture fx(fake);
+    FakeNgxParam cp = SuperSamplingCreate();  // Width/Height 1920x1080
+    void* h = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h);
+
+    // Zero subrect, Width/Height in the evaluate block: those win.
+    FakeNgxParam ep = CspEvaluate();
+    ep.SetU(ngxkey::kSubrectWidth, 0u);
+    ep.SetU(ngxkey::kSubrectHeight, 0u);
+    ep.SetU(ngxkey::kWidth, 1280u);
+    ep.SetU(ngxkey::kHeight, 720u);
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    REQUIRE(fx.sink.evals.size() == 1);
+    CHECK_EQ(fx.sink.evals[0].subrectW, 1280u);
+    CHECK_EQ(fx.sink.evals[0].subrectH, 720u);
+
+    // Zero subrect and no Width/Height in the block: the create's input size.
+    FakeNgxParam bare = CspEvaluate();
+    bare.SetU(ngxkey::kSubrectWidth, 0u);
+    bare.SetU(ngxkey::kSubrectHeight, 0u);
+    Eval(fake)(d.ctx11.Get(), h, &bare, nullptr);
+    REQUIRE(fx.sink.evals.size() == 2);
+    CHECK_EQ(fx.sink.evals[1].subrectW, 1920u);
+    CHECK_EQ(fx.sink.evals[1].subrectH, 1080u);
+
+    // A real subrect still wins over both.
+    FakeNgxParam dyn = CspEvaluate();  // 1600x900
+    dyn.SetU(ngxkey::kWidth, 1280u);
+    dyn.SetU(ngxkey::kHeight, 720u);
+    Eval(fake)(d.ctx11.Get(), h, &dyn, nullptr);
+    REQUIRE(fx.sink.evals.size() == 3);
+    CHECK_EQ(fx.sink.evals[2].subrectW, 1600u);
+    CHECK_EQ(fx.sink.evals[2].subrectH, 900u);
+}
+
 TEST(NgxHook_NestingCountsOnce) {
     GpuTestDevices d;
     if (!ImmediateDevices(&d)) return;

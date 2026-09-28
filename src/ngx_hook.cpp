@@ -58,6 +58,7 @@ struct Layer {
 struct FeatureRecord {
     bool supersampling = false;  // SuperSampling feature with no denoiser keys
     uint32_t createFlags = 0;
+    uint32_t width = 0, height = 0;  // the create's input size (subrect fallback)
 };
 
 // One load or unload reported by the loader-notification callback.
@@ -710,7 +711,7 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
 
         {
             ExclusiveLock rec(&s.recLock);
-            s.records[key] = FeatureRecord{supersampling, info.createFlags};
+            s.records[key] = FeatureRecord{supersampling, info.createFlags, info.width, info.height};
         }
         if (supersampling) CallSink([&](NgxEvaluateSink* sink) { sink->OnCreateFeature(key, info); });
     } catch (...) {
@@ -747,7 +748,7 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
 
         const uint64_t key = reinterpret_cast<uint64_t>(handle);
         bool observed = false, supersampling = false;
-        uint32_t recFlags = 0;
+        uint32_t recFlags = 0, recWidth = 0, recHeight = 0;
         {
             SharedLock rec(&s.recLock);
             auto it = s.records.find(key);
@@ -755,6 +756,8 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
                 observed = true;
                 supersampling = it->second.supersampling;
                 recFlags = it->second.createFlags;
+                recWidth = it->second.width;
+                recHeight = it->second.height;
             }
         }
 
@@ -788,11 +791,20 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         params->Get(ngxkey::kJitterOffsetY, &in.jitterY);
         params->Get(ngxkey::kMvScaleX, &in.mvScaleX);
         params->Get(ngxkey::kMvScaleY, &in.mvScaleY);
-        unsigned int sw = 0, sh = 0;
-        if (params->Get(ngxkey::kSubrectWidth, &sw) != kNgxSuccess) params->Get(ngxkey::kWidth, &sw);
-        if (params->Get(ngxkey::kSubrectHeight, &sh) != kNgxSuccess) params->Get(ngxkey::kHeight, &sh);
-        in.subrectW = sw;
-        in.subrectH = sh;
+        // The render subrect. Absent or 0 means "not set" (ngx review F3): NVIDIA's
+        // evaluate helper always writes the key, as 0 when the app does not use
+        // dynamic resolution, and DLSS then takes the create-time input size
+        // (DLSS programming guide 3.17). So: a non-zero subrect, else a non-zero
+        // Width/Height from this block, else the observed create's input size.
+        auto pick = [params](const char* subrectKey, const char* sizeKey, uint32_t createSize) -> uint32_t {
+            unsigned int v = 0;
+            if (params->Get(subrectKey, &v) == kNgxSuccess && v != 0) return v;
+            v = 0;
+            if (params->Get(sizeKey, &v) == kNgxSuccess && v != 0) return v;
+            return createSize;
+        };
+        in.subrectW = pick(ngxkey::kSubrectWidth, ngxkey::kWidth, recWidth);
+        in.subrectH = pick(ngxkey::kSubrectHeight, ngxkey::kHeight, recHeight);
         int reset = 0;
         if (params->Get(ngxkey::kReset, &reset) == kNgxSuccess) in.reset = reset != 0;
 
