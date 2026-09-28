@@ -70,6 +70,7 @@ add_library(acdb_core STATIC
     src/pcl_sequencer.cpp
     src/streamline_runtime.cpp
     src/driver_profile.cpp
+    src/camera_layout.h
 )
 target_include_directories(acdb_core PUBLIC src)
 # Streamline types appear in streamline_runtime.h; NVAPI stays inside driver_profile.cpp.
