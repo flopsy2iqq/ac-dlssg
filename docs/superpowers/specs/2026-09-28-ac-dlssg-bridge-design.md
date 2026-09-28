@@ -203,7 +203,7 @@ A complete `IDXGISwapChain4` COM object. It has all 41 vtable slots and its own 
   - **When recreated.** Before every copy, the bridge compares the source descriptions with the slot's. On any difference, and after every counted `CreateFeature`, it puts DLSS-G in `eOff` for that frame and sets null tags. It waits until `progress` has passed the last frame that tagged the old slots, then releases and recreates them.
   - **Tag extents** are `{0, 0, DLSS.Render.Subrect.Dimensions.Width, .Height}`, which may be smaller than the slot texture.
 - **Fences.**
-  - One `D3D12_FENCE_FLAG_SHARED` fence, opened on D3D11 with `ID3D11Device5::OpenSharedFence`. Its values come from one monotonic counter starting at 1. Both D3D11 signals (capture, Present) and D3D12 signals take values from it.
+  - One `D3D12_FENCE_FLAG_SHARED` fence, opened on D3D11 with `ID3D11Device5::OpenSharedFence`. Its values come from one monotonic counter starting at 1. The D3D11 Present signal and the D3D12 signals take values from it. The capture does not signal it (M3 review finding): a capture value is always higher than the value D3D11 waits for at the next Present, so a capture signal would release CSP's queue before the D3D12 copy of the previous frame finished. The capture copy is recorded on the same immediate context before the Present's copy and signal, so the D3D12 queue's wait for the Present's value V also covers the capture.
   - A second, non-shared D3D12 fence, `progress`. The D3D12 queue signals it with the same value right after every signal of the shared fence.
   - Allocator retirement, the drains in `ResizeBuffers` and Release, and stall detection read `progress`, never the shared fence, because the shared fence can be advanced from the CPU.
 - **Command recording.** There is one command allocator and one command list per D3D12 back buffer. A frame's allocator is reset only after `progress` passes that frame's value.
@@ -237,7 +237,7 @@ A complete `IDXGISwapChain4` COM object. It has all 41 vtable slots and its own 
 - **Copying into slot `N mod 3`.** This runs on the same immediate context, after the original call.
   - Motion vectors are copied with `CopyResource` into the slot's texture of the same typed format.
   - Depth is copied with a precompiled `cs_5_0` blit, from the typed SRV of the source into the slot's `R32_FLOAT` UAV. The SRV is `R32_FLOAT` for `R32_TYPELESS` or `D32_FLOAT` sources, and `R24_UNORM_X8_TYPELESS` for `R24G8_TYPELESS` sources. The compute shader, SRV slot 0 and UAV slot 0 are saved and restored.
-  - The shared fence is then signalled. The slot's fence value, the evaluate parameters and the latched camera snapshot (6.6) pair with the next non-test Present.
+  - No fence is signalled here (6.4 "Fences"). The slot, the evaluate parameters and the latched camera snapshot (6.6) pair with the next non-test Present, whose signal V covers the copy.
 - **Deferred contexts.** If the context is not immediate, capture is disabled and logged.
 
 ### 6.6 CameraChannel (`camera_channel.cpp`) and the Lua app (`apps/lua/AcDlssg/`)
@@ -354,7 +354,7 @@ Bridge frame N. Test presents do not take part (6.3).
 1. **Frame start.** The frame starts at the end of the previous non-test Present. For the very first frame, it starts at the end of `D3D12Presenter` creation. The bridge calls `slGetNewFrameToken(token, &counter)` with its own incrementing counter, then `slReflexSleep(token)`, then emits `eSimulationStart`. That token object is used for every PCL marker, `slSetTagForFrame` and `slSetConstants` call of this frame.
 2. **CSP renders the 3D scene.** At the first qualifying DLSS evaluate of frame N:
    - the camera snapshot is latched;
-   - depth and motion vectors are copied into slot `N mod 3` and the shared fence is signalled;
+   - depth and motion vectors are copied into slot `N mod 3` (no fence signal; the Present's V covers the copy);
    - `eSimulationEnd` and `eRenderSubmitStart` are emitted.
 
    Later evaluates overwrite the capture but emit no markers. A per-token bitmask prevents duplicate markers.
@@ -364,7 +364,7 @@ Bridge frame N. Test presents do not take part (6.3).
    - `CopyResource` from the hidden buffer 0 into the shared back buffer.
    - Signal the shared fence (value V) and emit `eRenderSubmitEnd`.
 5. **Our Present, D3D12 side.**
-   1. `queue->Wait(sharedFence, V)`.
+   1. `queue->Wait(sharedFence, V)`. This also covers the frame's capture copy.
    2. `GetCurrentBackBufferIndex` on the proxy; wait until `progress` has retired that buffer's allocator.
    3. Record transitions and `CopyResource` from the shared back buffer into that buffer.
    4. **DLSS-G this frame** if all of these hold: DLSS-G is enabled; a capture paired with this Present exists; the camera snapshot is fresh (6.6) and has neither the paused nor the in-main-menu flag set; and there is no stall or aspect refusal. Then call `slSetTagForFrame` with depth and motion vectors (render-subrect extent, `eValidUntilPresent`, state `COMMON`), then `slSetConstants`. Otherwise set null tags and put DLSS-G in `eOff` for this frame.
