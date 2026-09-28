@@ -70,6 +70,7 @@ add_library(acdb_core STATIC
     src/pcl_sequencer.cpp
     src/streamline_runtime.cpp
     src/driver_profile.cpp
+    src/camera_channel.cpp
 )
 target_include_directories(acdb_core PUBLIC src)
 # Streamline types appear in streamline_runtime.h; NVAPI stays inside driver_profile.cpp.
@@ -104,6 +105,7 @@ add_executable(acdb_tests
     tests/test_streamline_prefs.cpp
     tests/test_streamline_runtime.cpp
     tests/test_driver_profile.cpp
+    tests/test_camera_channel.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
@@ -111,6 +113,8 @@ add_executable(acdb_tests
 target_link_libraries(acdb_tests PRIVATE acdb_core d3d11 d3d12 dxgi version)
 # The DLL-level test loads the built bridge DLL.
 target_compile_definitions(acdb_tests PRIVATE ACDB_DLL_PATH="$<TARGET_FILE:ac-dlssg>")
+# The camera tests read the CSP Lua app (apps/lua/AcDlssg) from the source tree.
+target_compile_definitions(acdb_tests PRIVATE ACDB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_dependencies(acdb_tests ac-dlssg)
 # An unsigned, loadable DLL for StreamlineRuntime's signature check: its
 # DllMain leaves a mark, so a test can prove it was never loaded.
