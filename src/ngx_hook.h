@@ -41,7 +41,16 @@ public:
     virtual ~NgxEvaluateSink() = default;
     // Counted SuperSampling creates only.
     virtual void OnCreateFeature(uint64_t featureKey, const NgxCreateInfo& info) = 0;
-    // Counted evaluates only, after the original returned.
+    // Counted evaluates only, after the original returned Success.
+    //
+    // in.depth and in.mvec can be null (ngx review F7): for a handle whose
+    // create was observed, the evaluate is counted even when Depth or
+    // MotionVectors is missing from the parameter block or set to null. The
+    // sink must treat a null resource as "no capture this frame" and must not
+    // pass it on (CaptureSlots refuses null sources).
+    //
+    // in.ctx, in.depth and in.mvec are CSP's raw pointers, not AddRef'd: they
+    // are valid only for the duration of this call, and nothing may keep them.
     virtual void OnEvaluate(const NgxEvaluateInputs& in) = 0;
 };
 
