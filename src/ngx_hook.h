@@ -66,15 +66,18 @@ public:
     // Scans loaded modules and registers for later ones. Never called from
     // DllMain. Returns false and sets *error only on a fatal setup failure.
     bool Install(NgxEvaluateSink* sink, std::string* error);
-    // Finishes a rescan that a load notification deferred; call from Present.
+    // Applies the loads and unloads the loader notification queued (unloads
+    // first, never writing to an unloaded module) and rescans after a load.
+    // Call from Present. Without queued work it takes no lock and calls nothing.
     void ProcessPendingRescan();
     // Restores patched bytes of modules still loaded (tests / shutdown).
     void Uninstall();
     uint32_t HookedModules() const;
 
-    // Test-only: when false, a load notification only sets the pending flag and
-    // never rescans inline, so ProcessPendingRescan drives the deferred path.
-    void SetCallbackRescanEnabled(bool enabled);
+    // Test-only: hold every internal lock on the calling thread, to prove the
+    // loader-notification callback never waits on one (spec 6.5).
+    void LockStateForTest();
+    void UnlockStateForTest();
 
     // Internal, referenced by the per-slot detours. Not for callers.
     NgxResult DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId,

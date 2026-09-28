@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "child_process.h"
 #include "gpu_test_devices.h"
 #include "inline_hook.h"
 #include "ngx_hook.h"
@@ -74,15 +75,13 @@ FakeNgxParam CspEvaluate() {
 struct HookFixture {
     HMODULE fake = nullptr;
     RecSink sink;
-    explicit HookFixture(HMODULE m, bool callbackRescan = true) : fake(m) {
+    explicit HookFixture(HMODULE m) : fake(m) {
         NgxHook::Get().Uninstall();  // defensive: no state from a previous test
-        NgxHook::Get().SetCallbackRescanEnabled(callbackRescan);
         std::string err;
         NgxHook::Get().Install(&sink, &err);
     }
     ~HookFixture() {
         NgxHook::Get().Uninstall();
-        NgxHook::Get().SetCallbackRescanEnabled(true);
         if (fake) FreeLibrary(fake);
     }
 };
@@ -303,27 +302,100 @@ TEST(NgxHook_DeferredContextNotCaptured) {
 }
 
 TEST(NgxHook_LateLoadThenRescanThenUnload) {
-    HMODULE preloaded = LoadFake();  // hold one ref so classify/scan is exercised on unload only for our second ref
-    FreeLibrary(preloaded);          // ensure not resident from a prior test
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);  // not resident from a prior test
     NgxHook::Get().Uninstall();
-    NgxHook::Get().SetCallbackRescanEnabled(false);  // force the deferred path
     RecSink sink;
     std::string err;
     REQUIRE(NgxHook::Get().Install(&sink, &err));
 
     HMODULE fake = LoadFake();  // loaded AFTER Install
     REQUIRE(fake != nullptr);
-    // The load notification only set the pending flag; nothing hooked yet.
+    // The load notification only queued the event; nothing is hooked yet.
     CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
     NgxHook::Get().ProcessPendingRescan();
     CHECK(NgxHook::Get().HookedModules() >= 1);
 
-    FreeLibrary(fake);  // its unload notification drops the layer, no memory write
+    FreeLibrary(fake);  // its queued unload drops the layer, no memory write
     NgxHook::Get().ProcessPendingRescan();
     CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
 
     NgxHook::Get().Uninstall();
-    NgxHook::Get().SetCallbackRescanEnabled(true);
+}
+
+// The loader-notification callback runs under the loader lock and must never
+// wait on one of our locks (spec 6.5, ngx review F1). One thread holds every
+// internal lock while another loads and unloads a module; both loader calls must
+// return promptly. Runs in a child process so a regression hangs only the child.
+namespace {
+struct LoadUnloadCtx {
+    HANDLE done = nullptr;
+    bool loaded = false;
+};
+DWORD WINAPI LoadAndUnloadFake(void* p) {
+    auto* c = static_cast<LoadUnloadCtx*>(p);
+    HMODULE m = LoadLibraryW(FAKE_NVNGX_PATH);
+    c->loaded = m != nullptr;
+    if (m) FreeLibrary(m);
+    SetEvent(c->done);
+    return 0;
+}
+}  // namespace
+
+TEST(Child_NgxHook_LoadCompletesWhileStateLocked) {
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);  // the load below is a real load
+
+    LoadUnloadCtx ctx;
+    ctx.done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    REQUIRE(ctx.done != nullptr);
+    NgxHook::Get().LockStateForTest();
+    HANDLE th = CreateThread(nullptr, 0, &LoadAndUnloadFake, &ctx, 0, nullptr);
+    const DWORD w = th ? WaitForSingleObject(ctx.done, 5000) : WAIT_FAILED;
+    NgxHook::Get().UnlockStateForTest();
+    if (th) {
+        WaitForSingleObject(th, INFINITE);
+        CloseHandle(th);
+    }
+    CloseHandle(ctx.done);
+    CHECK(w == WAIT_OBJECT_0);  // the load and the unload returned while we held the locks
+    CHECK(ctx.loaded);
+
+    // The queued load and unload are finished from the render thread: the module
+    // is gone again, so nothing stays hooked.
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
+    NgxHook::Get().Uninstall();
+}
+
+TEST(NgxHook_LoadCompletesWhileStateLocked) {
+    CHECK_EQ(RunChildTest("Child_NgxHook_LoadCompletesWhileStateLocked", 60000), 0);
+}
+
+// More loader events than the queue holds: the unload that falls off the end is
+// still noticed, because an overflow makes the next ProcessPendingRescan
+// re-verify every layer (ngx review F1).
+TEST(NgxHook_QueueOverflowStillDropsUnloadedLayer) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    REQUIRE(NgxHook::Get().HookedModules() >= 1);
+
+    // 2 events per cycle, 100 cycles: far more than the queue holds.
+    for (int i = 0; i < 100; ++i) {
+        HMODULE a = LoadLibraryW(FAKE_NVNGX_ALIAS_PATH);
+        if (a) FreeLibrary(a);
+    }
+    FreeLibrary(fake);  // this unload's event is dropped: the queue is full
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
+    NgxHook::Get().Uninstall();
 }
 
 TEST(NgxHook_UninstallRestores) {

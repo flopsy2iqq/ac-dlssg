@@ -2,8 +2,8 @@
 
 #include <d3d11.h>
 
+#include <atomic>
 #include <cstring>
-#include <mutex>
 #include <unordered_map>
 
 #include "inline_hook.h"
@@ -52,29 +52,129 @@ struct FeatureRecord {
     uint32_t createFlags = 0;
 };
 
+// One load or unload reported by the loader-notification callback.
+struct LdrEvent {
+    ULONG reason = 0;
+    uintptr_t base = 0;
+    ULONG size = 0;
+};
+
+// The callback's only output: a bounded, lock-free queue (D. Vyukov's bounded
+// queue; any number of producers, one consumer). The callback pushes under the
+// loader lock and never waits; the consumer is ProcessPendingRescan, Install or
+// Uninstall, always under scanLock. A push into a full queue fails and the
+// caller raises the overflow flag, which makes the consumer re-verify every
+// layer instead.
+class LdrEventQueue {
+public:
+    static constexpr uint32_t kCap = 64;  // a power of two
+    LdrEventQueue() { Reset(); }
+
+    // Only while no callback can run (before registering, after unregistering).
+    void Reset() {
+        for (uint32_t i = 0; i < kCap; ++i) cells_[i].seq.store(i, std::memory_order_relaxed);
+        head_.store(0, std::memory_order_relaxed);
+        tail_ = 0;
+    }
+    bool Push(const LdrEvent& ev) {
+        uint32_t pos = head_.load(std::memory_order_relaxed);
+        for (;;) {
+            Cell& c = cells_[pos & (kCap - 1)];
+            const uint32_t seq = c.seq.load(std::memory_order_acquire);
+            const int32_t diff = static_cast<int32_t>(seq - pos);
+            if (diff == 0) {
+                if (head_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+                    c.ev = ev;
+                    c.seq.store(pos + 1, std::memory_order_release);
+                    return true;
+                }
+            } else if (diff < 0) {
+                return false;  // full
+            } else {
+                pos = head_.load(std::memory_order_relaxed);
+            }
+        }
+    }
+    bool Pop(LdrEvent* out) {
+        Cell& c = cells_[tail_ & (kCap - 1)];
+        const uint32_t seq = c.seq.load(std::memory_order_acquire);
+        if (static_cast<int32_t>(seq - (tail_ + 1)) < 0) return false;  // empty
+        *out = c.ev;
+        c.seq.store(tail_ + kCap, std::memory_order_release);
+        ++tail_;
+        return true;
+    }
+
+private:
+    struct Cell {
+        std::atomic<uint32_t> seq{0};
+        LdrEvent ev;
+    };
+    Cell cells_[kCap];
+    std::atomic<uint32_t> head_{0};
+    uint32_t tail_ = 0;  // consumer only
+};
+
 // One process-wide state block behind the singleton.
+//
+// Locks (spec 6.5, ngx review F1). The loader-notification callback takes none
+// of them. scanLock guards the layer table and is the only lock ever held
+// across a loader call (module enumeration, GetProcAddress, GetModuleHandleEx);
+// only Install, Uninstall and ProcessPendingRescan take it, never a detour.
+// recLock guards the feature records and is never held across a loader or an
+// NGX call. Order when both are held: scanLock, then recLock.
 struct HookState {
-    std::recursive_mutex mu;  // guards layers, records; recursive because a scan
-                              // triggered from the load notification can nest.
+    SRWLOCK scanLock = SRWLOCK_INIT;
+    SRWLOCK recLock = SRWLOCK_INIT;
     Layer layers[kMaxLayers];
     std::unordered_map<uint64_t, FeatureRecord> records;
-    NgxEvaluateSink* sink = nullptr;
-    bool installed = false;
-    bool callbackRescan = true;
-    volatile LONG pendingRescan = 0;
+    std::atomic<NgxEvaluateSink*> sink{nullptr};
+    std::atomic<bool> installed{false};
+    std::atomic<uint32_t> hooked{0};  // used layers, for HookedModules
+
+    // Written by the callback, drained under scanLock.
+    LdrEventQueue events;
+    std::atomic<bool> eventsOverflow{false};
+    std::atomic<bool> pendingRescan{false};  // a module loaded: rescan
+    std::atomic<bool> workPending{false};    // anything above is set: the gate
 
     PfnEnumProcessModules enumModules = nullptr;
     PfnLdrRegister ldrRegister = nullptr;
     PfnLdrUnregister ldrUnregister = nullptr;
     void* ldrCookie = nullptr;
-    CRITICAL_SECTION scanCs{};   // for the non-blocking TryEnter in the callback
-    bool scanCsReady = false;
 };
 
 HookState& S() {
     static HookState s;
     return s;
 }
+
+// What the callback reads instead of S(): a plain pointer set before the
+// notification is registered, so the callback never runs a function-local
+// static's initialisation guard under the loader lock.
+std::atomic<HookState*> g_callbackState{nullptr};
+
+class ExclusiveLock {
+public:
+    explicit ExclusiveLock(SRWLOCK* l) : l_(l) { AcquireSRWLockExclusive(l_); }
+    ~ExclusiveLock() { ReleaseSRWLockExclusive(l_); }
+    ExclusiveLock(const ExclusiveLock&) = delete;
+    ExclusiveLock& operator=(const ExclusiveLock&) = delete;
+
+private:
+    SRWLOCK* l_;
+};
+
+class SharedLock {
+public:
+    explicit SharedLock(SRWLOCK* l) : l_(l) { AcquireSRWLockShared(l_); }
+    ~SharedLock() { ReleaseSRWLockShared(l_); }
+    SharedLock(const SharedLock&) = delete;
+    SharedLock& operator=(const SharedLock&) = delete;
+
+private:
+    SRWLOCK* l_;
+};
 
 bool ReadBytesSafe(const void* p, uint8_t* out, size_t n) {
     __try {
@@ -191,7 +291,7 @@ bool HasDenoiserKeys(const NgxParameter* p) {
     return false;
 }
 
-// Scans loaded modules and hooks any not yet hooked. Caller holds S().mu.
+// Scans loaded modules and hooks any not yet hooked. Caller holds scanLock.
 void ScanLocked() {
     HookState& s = S();
     if (!s.enumModules) return;
@@ -256,7 +356,24 @@ void ScanLocked() {
     }
 }
 
-// Drops any layer whose module is no longer loaded. Caller holds S().mu.
+// Forgets a layer without touching its module's memory. Caller holds scanLock.
+void DetachLayerLocked(Layer& L) {
+    L.create.Detach();
+    L.eval.Detach();
+    L.eval_c.Detach();
+    L.mod = nullptr;
+    L.used = false;
+}
+
+void RecountLocked() {
+    HookState& s = S();
+    uint32_t n = 0;
+    for (const Layer& L : s.layers)
+        if (L.used) ++n;
+    s.hooked.store(n, std::memory_order_release);
+}
+
+// Drops any layer whose module is no longer loaded. Caller holds scanLock.
 void VerifyUnloadsLocked() {
     HookState& s = S();
     for (Layer& L : s.layers) {
@@ -265,65 +382,51 @@ void VerifyUnloadsLocked() {
         const BOOL present = GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(L.mod), &h);
-        if (!present || h != L.mod) {
-            L.create.Detach();
-            L.eval.Detach();
-            L.eval_c.Detach();
-            L.mod = nullptr;
-            L.used = false;
-        }
+        if (!present || h != L.mod) DetachLayerLocked(L);
     }
 }
 
-// Drops the layer for one just-unloaded base without touching its memory. Caller
-// holds S().mu.
-void DetachModuleLocked(const void* base) {
+// Applies one unload the callback reported: the layer at that base is dropped
+// without a write to its memory. Caller holds scanLock.
+void ApplyUnloadLocked(uintptr_t base) {
     HookState& s = S();
-    for (Layer& L : s.layers) {
-        if (L.used && static_cast<const void*>(L.mod) == base) {
-            L.create.Detach();
-            L.eval.Detach();
-            L.eval_c.Detach();
-            L.mod = nullptr;
-            L.used = false;
-        }
-    }
+    for (Layer& L : s.layers)
+        if (L.used && reinterpret_cast<uintptr_t>(L.mod) == base) DetachLayerLocked(L);
 }
 
-void OnLdrNotificationImpl(ULONG reason, const void* data) {
+// Takes everything the callback queued. Unloads are applied here, before any
+// rescan can look at the address they freed; loads only ask for a rescan.
+// Returns true when the queue overflowed, so the caller re-verifies every layer.
+// Caller holds scanLock.
+bool DrainEventsLocked() {
     HookState& s = S();
-    try {
-        if (reason == kLdrLoaded) {
-            InterlockedExchange(&s.pendingRescan, 1);
-            if (s.callbackRescan && s.scanCsReady && TryEnterCriticalSection(&s.scanCs)) {
-                {
-                    std::lock_guard<std::recursive_mutex> lock(s.mu);
-                    ScanLocked();
-                    InterlockedExchange(&s.pendingRescan, 0);
-                }
-                LeaveCriticalSection(&s.scanCs);
-            }
-        } else if (reason == kLdrUnloaded && data) {
-            void* base = static_cast<const LdrNotificationData*>(data)->DllBase;
-            InterlockedExchange(&s.pendingRescan, 1);
-            if (s.scanCsReady && TryEnterCriticalSection(&s.scanCs)) {
-                {
-                    std::lock_guard<std::recursive_mutex> lock(s.mu);
-                    DetachModuleLocked(base);
-                }
-                LeaveCriticalSection(&s.scanCs);
-            }
-        }
-    } catch (...) {
+    // An exchange, not a store: reading the callback's `true` orders every push
+    // and flag it made before it before the pops below.
+    s.workPending.exchange(false, std::memory_order_acq_rel);
+    LdrEvent ev;
+    while (s.events.Pop(&ev)) {
+        if (ev.reason == kLdrUnloaded) ApplyUnloadLocked(ev.base);
     }
+    return s.eventsOverflow.exchange(false, std::memory_order_acq_rel);
 }
 
 void CALLBACK OnLdrNotification(ULONG reason, const void* data, void*) {
-    // Runs under the loader lock; must not block (spec 6.5). Our hook does not
-    // suspend threads, so a scan taken with the loader lock held is safe. The
-    // work lives in a helper so this SEH frame carries no unwinding objects.
+    // Runs under the loader lock, so it must never wait (spec 6.5, ngx review
+    // F1): no lock, no allocation, no loader call. It records the event for
+    // ProcessPendingRescan and returns. The SEH frame carries no unwinding
+    // objects.
     __try {
-        OnLdrNotificationImpl(reason, data);
+        HookState* s = g_callbackState.load(std::memory_order_acquire);
+        if (s && data && (reason == kLdrLoaded || reason == kLdrUnloaded)) {
+            const auto* d = static_cast<const LdrNotificationData*>(data);
+            LdrEvent ev;
+            ev.reason = reason;
+            ev.base = reinterpret_cast<uintptr_t>(d->DllBase);
+            ev.size = d->SizeOfImage;
+            if (!s->events.Push(ev)) s->eventsOverflow.store(true, std::memory_order_release);
+            if (reason == kLdrLoaded) s->pendingRescan.store(true, std::memory_order_release);
+            s->workPending.store(true, std::memory_order_release);
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -345,12 +448,8 @@ NgxHook& NgxHook::Get() {
 bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
     HookState& s = S();
     // A previous Install without Uninstall is treated as a fresh start.
-    if (s.installed) Uninstall();
+    if (s.installed.load(std::memory_order_acquire)) Uninstall();
 
-    if (!s.scanCsReady) {
-        InitializeCriticalSection(&s.scanCs);
-        s.scanCsReady = true;
-    }
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     s.enumModules = k32 ? reinterpret_cast<PfnEnumProcessModules>(
                               GetProcAddress(k32, "K32EnumProcessModules"))
@@ -368,39 +467,57 @@ bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
                          : nullptr;
 
     {
-        std::lock_guard<std::recursive_mutex> lock(s.mu);
-        s.sink = sink;
-        s.records.clear();
-        InterlockedExchange(&s.pendingRescan, 0);
+        ExclusiveLock scan(&s.scanLock);
+        // No callback is registered here (Uninstall unregistered it), so the
+        // queue can be reset.
+        s.events.Reset();
+        s.eventsOverflow.store(false);
+        s.pendingRescan.store(false);
+        s.workPending.store(false);
+        {
+            ExclusiveLock rec(&s.recLock);
+            s.records.clear();
+        }
+        s.sink.store(sink, std::memory_order_release);
         ScanLocked();
+        RecountLocked();
     }
-    // Register only after the first scan, so an early load notification cannot
-    // race an uninitialised table.
+    // Register only after the first scan. The callback reads only the queue.
+    g_callbackState.store(&s, std::memory_order_release);
     if (s.ldrRegister && !s.ldrCookie) {
         if (s.ldrRegister(0, &OnLdrNotification, nullptr, &s.ldrCookie) != 0) {
             s.ldrCookie = nullptr;
             LOGW("ngx: LdrRegisterDllNotification failed; only already-loaded modules are hooked");
         }
     }
-    s.installed = true;
+    s.installed.store(true, std::memory_order_release);
     return true;
 }
 
 void NgxHook::ProcessPendingRescan() {
     HookState& s = S();
-    if (!s.installed) return;
-    std::lock_guard<std::recursive_mutex> lock(s.mu);
-    VerifyUnloadsLocked();
-    if (InterlockedExchange(&s.pendingRescan, 0) != 0) ScanLocked();
+    if (!s.installed.load(std::memory_order_acquire)) return;
+    // The per-frame fast path: nothing was reported, so no lock and no loader call.
+    if (!s.workPending.load(std::memory_order_acquire)) return;
+    ExclusiveLock scan(&s.scanLock);
+    const bool overflow = DrainEventsLocked();  // unloads first, before any rescan
+    if (overflow) VerifyUnloadsLocked();
+    if (s.pendingRescan.exchange(false, std::memory_order_acq_rel) || overflow) ScanLocked();
+    RecountLocked();
 }
 
 void NgxHook::Uninstall() {
     HookState& s = S();
+    // Unregister outside our locks: it waits for a callback in progress, and the
+    // callback takes none of them anyway.
     if (s.ldrUnregister && s.ldrCookie) {
         s.ldrUnregister(s.ldrCookie);
         s.ldrCookie = nullptr;
     }
-    std::lock_guard<std::recursive_mutex> lock(s.mu);
+    s.installed.store(false, std::memory_order_release);
+    ExclusiveLock scan(&s.scanLock);
+    // A module that went away since the last drain is detached, never written to.
+    DrainEventsLocked();
     for (Layer& L : s.layers) {
         if (!L.used) continue;
         L.create.Remove();
@@ -409,22 +526,29 @@ void NgxHook::Uninstall() {
         L.mod = nullptr;
         L.used = false;
     }
-    s.records.clear();
-    s.sink = nullptr;
-    s.installed = false;
-    InterlockedExchange(&s.pendingRescan, 0);
+    RecountLocked();
+    {
+        ExclusiveLock rec(&s.recLock);
+        s.records.clear();
+    }
+    s.sink.store(nullptr, std::memory_order_release);
+    s.pendingRescan.store(false);
+    s.workPending.store(false);
 }
 
-uint32_t NgxHook::HookedModules() const {
+uint32_t NgxHook::HookedModules() const { return S().hooked.load(std::memory_order_acquire); }
+
+void NgxHook::LockStateForTest() {
     HookState& s = S();
-    std::lock_guard<std::recursive_mutex> lock(s.mu);
-    uint32_t n = 0;
-    for (const Layer& L : s.layers)
-        if (L.used) ++n;
-    return n;
+    AcquireSRWLockExclusive(&s.scanLock);
+    AcquireSRWLockExclusive(&s.recLock);
 }
 
-void NgxHook::SetCallbackRescanEnabled(bool enabled) { S().callbackRescan = enabled; }
+void NgxHook::UnlockStateForTest() {
+    HookState& s = S();
+    ReleaseSRWLockExclusive(&s.recLock);
+    ReleaseSRWLockExclusive(&s.scanLock);
+}
 
 NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId,
                                   NgxParameter* params, NgxHandle** outHandle) noexcept {
@@ -455,12 +579,11 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
         info.hasDenoiserKeys = denoiser;
         const bool supersampling = (featureId == kNgxFeatureSuperSampling) && !denoiser;
 
-        NgxEvaluateSink* sink = nullptr;
         {
-            std::lock_guard<std::recursive_mutex> lock(s.mu);
+            ExclusiveLock rec(&s.recLock);
             s.records[key] = FeatureRecord{supersampling, info.createFlags};
-            sink = s.sink;
         }
+        NgxEvaluateSink* sink = s.sink.load(std::memory_order_acquire);
         if (supersampling && sink) sink->OnCreateFeature(key, info);
     } catch (...) {
     }
@@ -498,7 +621,7 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         bool observed = false, supersampling = false;
         uint32_t recFlags = 0;
         {
-            std::lock_guard<std::recursive_mutex> lock(s.mu);
+            SharedLock rec(&s.recLock);
             auto it = s.records.find(key);
             if (it != s.records.end()) {
                 observed = true;
@@ -545,11 +668,7 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         int reset = 0;
         if (params->Get(ngxkey::kReset, &reset) == kNgxSuccess) in.reset = reset != 0;
 
-        NgxEvaluateSink* sink = nullptr;
-        {
-            std::lock_guard<std::recursive_mutex> lock(s.mu);
-            sink = s.sink;
-        }
+        NgxEvaluateSink* sink = s.sink.load(std::memory_order_acquire);
         if (sink) sink->OnEvaluate(in);
     } catch (...) {
     }
