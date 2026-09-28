@@ -12,6 +12,47 @@ namespace {
 //   <8-byte absolute target>
 constexpr size_t kJumpLen = 14;
 
+// Reserve+commit RWX memory within ±2GB of `target`, so a copied RIP-relative
+// operand or rel32 branch in the trampoline still reaches its original target
+// with a 32-bit displacement. Some NGX prologues (nvngx_dlssnr, nvngx_dlssg)
+// begin with `mov rax,[rip+disp32]`, so a far trampoline would fail to relocate.
+void* AllocNear(const void* target, size_t size) {
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    const uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+    const uintptr_t t = reinterpret_cast<uintptr_t>(target);
+    const uintptr_t kSpan = 0x7FFF0000;  // a little under 2GB, for safety
+    const uintptr_t lo = t > kSpan ? t - kSpan : 0x10000;
+    const uintptr_t hi = (t + kSpan < t) ? UINTPTR_MAX : t + kSpan;
+    auto tryAt = [&](uintptr_t a) -> void* {
+        return VirtualAlloc(reinterpret_cast<void*>(a), size, MEM_COMMIT | MEM_RESERVE,
+                            PAGE_EXECUTE_READWRITE);
+    };
+    // Search upward from the target, then downward, probing free regions.
+    for (uintptr_t addr = (t + gran - 1) & ~(gran - 1); addr < hi;) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) != sizeof(mbi)) break;
+        if (mbi.State == MEM_FREE) {
+            if (void* p = tryAt(addr)) return p;
+        }
+        const uintptr_t next = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        addr = (next + gran - 1) & ~(gran - 1);
+        if (addr <= reinterpret_cast<uintptr_t>(mbi.BaseAddress)) break;  // no progress
+    }
+    for (uintptr_t addr = (t & ~(gran - 1)); addr >= lo;) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi)) != sizeof(mbi)) break;
+        if (mbi.State == MEM_FREE) {
+            if (void* p = tryAt(addr)) return p;
+        }
+        const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.AllocationBase ? mbi.AllocationBase
+                                                                              : mbi.BaseAddress);
+        if (base < gran) break;
+        addr = (base - gran) & ~(gran - 1);
+    }
+    return nullptr;
+}
+
 void WriteAbsJump(uint8_t* at, const void* dest) {
     at[0] = 0xFF;
     at[1] = 0x25;
@@ -291,15 +332,7 @@ size_t PrologueLength(const uint8_t* code, size_t need, std::string* why) {
             }
             return 0;
         }
-        if (d.relBranch && d.relSize == 1) {
-            // A short rel8 branch cannot be relocated into a far trampoline.
-            if (why) {
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "short branch at +%zu cannot be relocated", total);
-                *why = buf;
-            }
-            return 0;
-        }
+        // A rel8 branch is fine: Install widens it to rel32 in the trampoline.
         total += d.length;
     }
     return total;
@@ -330,55 +363,84 @@ bool InlineHook::Install(void* target, void* detour, std::string* error) {
         return false;
     }
 
-    // Trampoline: relocated prologue + a jump back to target+copyLen.
-    auto* tramp = static_cast<uint8_t*>(
-        VirtualAlloc(nullptr, copyLen + kJumpLen, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    // Trampoline: the relocated prologue plus a jump back to target+copyLen.
+    // Widening a short branch to its rel32 form can grow an instruction by up to
+    // 4 bytes, so allow room for that.
+    const size_t trampCap = copyLen * 2 + kJumpLen;
+    auto* tramp = static_cast<uint8_t*>(AllocNear(target, trampCap));
     if (!tramp) {
-        if (error) *error = "trampoline VirtualAlloc failed";
+        if (error) *error = "no free memory within 2GB of the target for a trampoline";
         return false;
     }
-    std::memcpy(tramp, code, copyLen);
 
-    // Relocate RIP-relative operands and rel32 branches in the copied bytes.
-    size_t off = 0;
+    // Emit instruction by instruction. RIP-relative operands and rel32 branches
+    // are re-based; a rel8 branch is rewritten to its rel32 form so its target
+    // survives the move far from the original.
+    size_t src = 0, dst = 0;
     bool ok = true;
-    while (off < copyLen) {
-        const DecodedInsn d = DecodeInsn(code + off, copyLen - off + 32);
+    while (src < copyLen) {
+        const DecodedInsn d = DecodeInsn(code + src, copyLen - src + 32);
         if (!d.understood) {
             ok = false;
             break;
         }
-        const int64_t delta = static_cast<int64_t>(code - tramp);  // src - dst, same for all
+        const uint8_t* si = code + src;
+        uint8_t* di = tramp + dst;
+        const uintptr_t srcAddr = reinterpret_cast<uintptr_t>(si);
+        const uintptr_t dstAddr = reinterpret_cast<uintptr_t>(di);
+
+        if (d.relBranch && d.relSize == 1) {
+            int8_t rel8 = 0;
+            std::memcpy(&rel8, si + d.relOffset, 1);
+            const uintptr_t targetAddr = srcAddr + d.length + rel8;
+            const uint8_t op = si[d.relOffset - 1];  // the branch opcode (no prefixes kept)
+            if (op == 0xEB) {  // jmp rel8 -> jmp rel32
+                di[0] = 0xE9;
+                const int64_t r = static_cast<int64_t>(targetAddr) - static_cast<int64_t>(dstAddr + 5);
+                if (r > INT32_MAX || r < INT32_MIN) { ok = false; break; }
+                const int32_t r32 = static_cast<int32_t>(r);
+                std::memcpy(di + 1, &r32, 4);
+                dst += 5;
+            } else {  // Jcc rel8 (0x70-0x7F) -> Jcc rel32 (0F 8x)
+                di[0] = 0x0F;
+                di[1] = static_cast<uint8_t>(0x80 + (op - 0x70));
+                const int64_t r = static_cast<int64_t>(targetAddr) - static_cast<int64_t>(dstAddr + 6);
+                if (r > INT32_MAX || r < INT32_MIN) { ok = false; break; }
+                const int32_t r32 = static_cast<int32_t>(r);
+                std::memcpy(di + 2, &r32, 4);
+                dst += 6;
+            }
+            src += d.length;
+            continue;
+        }
+
+        std::memcpy(di, si, d.length);
+        const int64_t delta = static_cast<int64_t>(srcAddr) - static_cast<int64_t>(dstAddr);
         if (d.ripRelative) {
             int32_t disp;
-            std::memcpy(&disp, tramp + off + d.dispOffset, sizeof(disp));
+            std::memcpy(&disp, di + d.dispOffset, sizeof(disp));
             const int64_t fixed = static_cast<int64_t>(disp) + delta;
-            if (fixed > INT32_MAX || fixed < INT32_MIN) {
-                ok = false;
-                break;
-            }
+            if (fixed > INT32_MAX || fixed < INT32_MIN) { ok = false; break; }
             const int32_t nd = static_cast<int32_t>(fixed);
-            std::memcpy(tramp + off + d.dispOffset, &nd, sizeof(nd));
+            std::memcpy(di + d.dispOffset, &nd, sizeof(nd));
         }
         if (d.relBranch && d.relSize == 4) {
             int32_t rel;
-            std::memcpy(&rel, tramp + off + d.relOffset, sizeof(rel));
+            std::memcpy(&rel, di + d.relOffset, sizeof(rel));
             const int64_t fixed = static_cast<int64_t>(rel) + delta;
-            if (fixed > INT32_MAX || fixed < INT32_MIN) {
-                ok = false;
-                break;
-            }
+            if (fixed > INT32_MAX || fixed < INT32_MIN) { ok = false; break; }
             const int32_t nr = static_cast<int32_t>(fixed);
-            std::memcpy(tramp + off + d.relOffset, &nr, sizeof(nr));
+            std::memcpy(di + d.relOffset, &nr, sizeof(nr));
         }
-        off += d.length;
+        dst += d.length;
+        src += d.length;
     }
     if (!ok) {
         VirtualFree(tramp, 0, MEM_RELEASE);
         if (error) *error = "prologue relocation failed";
         return false;
     }
-    WriteAbsJump(tramp + copyLen, code + copyLen);
+    WriteAbsJump(tramp + dst, code + copyLen);
 
     // Patch the target under VirtualProtect, keeping execute rights.
     DWORD oldProtect = 0;
@@ -394,7 +456,7 @@ bool InlineHook::Install(void* target, void* detour, std::string* error) {
     VirtualProtect(target, kJumpLen, oldProtect, &ignored);
 
     FlushInstructionCache(GetCurrentProcess(), target, kJumpLen);
-    FlushInstructionCache(GetCurrentProcess(), tramp, copyLen + kJumpLen);
+    FlushInstructionCache(GetCurrentProcess(), tramp, dst + kJumpLen);
 
     target_ = target;
     trampoline_ = tramp;

@@ -142,6 +142,63 @@ TEST(InlineHook_DetoursAndRestores) {
     g_addHook = nullptr;
 }
 
+// A prologue with an early short conditional branch is relocated by widening the
+// rel8 to rel32 in the trampoline (the case the optimized NGX prologues hit).
+namespace {
+using IntFn = int (*)(int);
+InlineHook* g_branchHook = nullptr;
+
+// A hand-assembled function whose first bytes contain a `je rel8` whose target
+// lies past the copied region:
+//   cmp ecx,0 ; je L ; mov eax,1 ; ret ; nops... ; L: mov eax,2 ; ret
+// Returns 2 when the argument is 0, else 1.
+uint8_t* MakeBranchingFn() {
+    static const uint8_t code[] = {
+        0x83, 0xF9, 0x00,              // cmp ecx, 0
+        0x74, 0x0F,                    // je +0x0F -> offset 0x14
+        0xB8, 0x01, 0x00, 0x00, 0x00,  // mov eax, 1
+        0xC3,                          // ret
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,  // padding to offset 0x14
+        0xB8, 0x02, 0x00, 0x00, 0x00,  // (0x14) mov eax, 2
+        0xC3,                          // ret
+    };
+    auto* mem = static_cast<uint8_t*>(
+        VirtualAlloc(nullptr, sizeof(code), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (mem) {
+        memcpy(mem, code, sizeof(code));
+        FlushInstructionCache(GetCurrentProcess(), mem, sizeof(code));
+    }
+    return mem;
+}
+
+int DetourBranch(int x) {
+    IntFn orig = reinterpret_cast<IntFn>(g_branchHook->Original());
+    return orig(x) + 100;
+}
+}  // namespace
+
+TEST(InlineHook_WidensShortBranch) {
+    uint8_t* fn = MakeBranchingFn();
+    REQUIRE(fn != nullptr);
+    IntFn f = reinterpret_cast<IntFn>(fn);
+    CHECK_EQ(f(0), 2);
+    CHECK_EQ(f(1), 1);
+
+    InlineHook hook;
+    g_branchHook = &hook;
+    std::string err;
+    REQUIRE(hook.Install(fn, reinterpret_cast<void*>(&DetourBranch), &err));
+    // Both branches survive relocation into the trampoline.
+    CHECK_EQ(f(0), 102);
+    CHECK_EQ(f(1), 101);
+    CHECK_EQ(reinterpret_cast<IntFn>(hook.Original())(0), 2);
+    CHECK_EQ(reinterpret_cast<IntFn>(hook.Original())(1), 1);
+    hook.Remove();
+    CHECK_EQ(f(0), 2);
+    g_branchHook = nullptr;
+    VirtualFree(fn, 0, MEM_RELEASE);
+}
+
 // A pointer taken BEFORE Install still reaches the detour: the patch is at the
 // function body, not in an import or export table (spec 6.5 test list).
 TEST(InlineHook_PreTakenPointerReachesDetour) {

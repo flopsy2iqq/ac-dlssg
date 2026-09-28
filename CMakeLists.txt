@@ -61,6 +61,7 @@ add_library(acdb_core STATIC
     src/bootstrap.cpp
     src/vtable_patch.cpp
     src/inline_hook.cpp
+    src/ngx_hook.cpp
     src/factory_hook.cpp
     src/hidden_chain.cpp
     src/fence_pair.cpp
@@ -95,6 +96,7 @@ add_executable(acdb_tests
     tests/test_latency_semaphore.cpp
     tests/test_vtable_patch.cpp
     tests/test_inline_hook.cpp
+    tests/test_ngx_hook.cpp
     tests/test_factory_hook.cpp
     tests/test_hidden_chain.cpp
     tests/test_fence_pair.cpp
@@ -120,6 +122,19 @@ add_library(acdb_unsigned_fixture SHARED tests/unsigned_fixture.cpp)
 target_compile_definitions(acdb_tests PRIVATE
     ACDB_UNSIGNED_FIXTURE_PATH="$<TARGET_FILE:acdb_unsigned_fixture>")
 add_dependencies(acdb_tests acdb_unsigned_fixture)
+
+# A fake NGX module for the NgxHook tests: it exports the three D3D11 entry
+# points with NVIDIA's signatures and records what its "original" was called
+# with. A second module aliases two of those exports to one address so the
+# skip rule can be tested against a real module.
+add_library(fake_nvngx SHARED tests/fake_nvngx/fake_nvngx.cpp)
+target_include_directories(fake_nvngx PRIVATE src)
+add_library(fake_nvngx_alias SHARED
+    tests/fake_nvngx/fake_nvngx_alias.cpp tests/fake_nvngx/fake_nvngx_alias.def)
+target_compile_definitions(acdb_tests PRIVATE
+    FAKE_NVNGX_PATH=L"$<TARGET_FILE:fake_nvngx>"
+    FAKE_NVNGX_ALIAS_PATH=L"$<TARGET_FILE:fake_nvngx_alias>")
+add_dependencies(acdb_tests fake_nvngx fake_nvngx_alias)
 # The default location, set explicitly so the payload below can name it
 # without a generator expression that names acdb_tests (see tools/testapp).
 set(ACDB_TESTS_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>")

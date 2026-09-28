@@ -30,8 +30,8 @@ struct DecodedInsn {
 DecodedInsn DecodeInsn(const uint8_t* p, size_t avail);
 
 // Total length of whole instructions covering at least `need` bytes, or 0 if the
-// decoder meets something it does not understand (or a short rel8 branch, which
-// cannot be relocated into a far trampoline) before reaching `need`.
+// decoder meets something it does not understand before reaching `need`. A rel8
+// branch is allowed here; Install widens it to rel32 when it copies the prologue.
 size_t PrologueLength(const uint8_t* code, size_t need, std::string* why);
 
 class InlineHook {
