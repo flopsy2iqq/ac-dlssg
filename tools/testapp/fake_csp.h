@@ -232,7 +232,7 @@ public:
         params_->Set(acdb::ngxkey::kOutWidth, static_cast<unsigned int>(outW));
         params_->Set(acdb::ngxkey::kOutHeight, static_cast<unsigned int>(outH));
         params_->Set(acdb::ngxkey::kCreateFlags, static_cast<int>(acdb::kNgxDlssFlagMVLowRes));
-        params_->Set("PerfQualityValue", 1);  // NVSDK_NGX_PerfQuality_Value_MaxQuality, as CSP sends
+        params_->Set("PerfQualityValue", 1);  // NVSDK_NGX_PerfQuality_Value_Balanced, as CSP sent it
         acdb::NgxHandle* handle = nullptr;
         const int r = create_(ctx, acdb::kNgxFeatureSuperSampling, params_, &handle);
         if (r != acdb::kNgxSuccess || !handle) return Fail("NVSDK_NGX_D3D11_CreateFeature failed: " + Hex(r), error);

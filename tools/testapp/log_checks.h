@@ -188,4 +188,151 @@ inline std::vector<std::string> FgReasonThrottleViolations(const std::vector<std
     return violations;
 }
 
+// ------------------------------------------------------------------ --expect-fg
+
+// What the test app's --fake-ngx (and --fake-camera) run must show in the
+// bridge log: the render size of the first DLSS feature and the fake camera.
+struct FgExpectation {
+    bool pipeline = true;  // false: no camera is written (no-camera)
+    unsigned renderW = 0, renderH = 0;
+    float fovVDeg = 0, clipNear = 0, clipFar = 0;
+    double minShare = 0.9;                   // of base_fps, per statistics line after the first
+    double reasonPeriodMs = 10000.0 - 50.0;  // the throttle, less the timestamps' jitter
+};
+
+struct FgCheckResult {
+    std::vector<std::string> problems;
+    std::vector<std::string> evidence;  // the lines the verdict rests on
+};
+
+// DXGI_FORMAT and NGX values the checks compare with (dxgiformat.h,
+// nvsdk_ngx_defs.h), without the headers.
+inline constexpr int kDxgiR32Typeless = 39;
+inline constexpr int kDxgiR32Float = 41;
+inline constexpr int kDxgiR16G16Float = 34;
+inline constexpr unsigned kNgxCreateFlagsMVLowRes = 2;
+
+inline bool ContainsNoCase(const std::string& text, const char* needle) {
+    std::string t = text, n = needle;
+    for (auto& c : t) c = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    for (auto& c : n) c = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    return t.find(n) != std::string::npos;
+}
+
+// The checks of --expect-fg on the bridge log's lines (M3 log line contract).
+inline FgCheckResult CheckFgLines(const std::vector<std::string>& lines, const FgExpectation& e) {
+    FgCheckResult r;
+    auto problem = [&r](const std::string& p) { r.problems.push_back(p); };
+    // The one line that contains `needle` (a problem when there is none or more).
+    auto onceOnly = [&](const char* needle) -> const std::string* {
+        const std::string* found = nullptr;
+        int n = 0;
+        for (const auto& l : lines)
+            if (l.find(needle) != std::string::npos && n++ == 0) found = &l;
+        if (n != 1) {
+            problem("the bridge log has " + std::to_string(n) + " \"" + needle + "\" lines, expected one");
+            return nullptr;
+        }
+        r.evidence.push_back(*found);
+        return found;
+    };
+
+    // The hook reached the fake module.
+    bool namesFake = false;
+    for (const auto& l : lines) {
+        if (l.find("] INFO NGX hook: installed on ") == std::string::npos) continue;
+        r.evidence.push_back(l);
+        namesFake = namesFake || ContainsNoCase(l, "fake_nvngx.dll");
+    }
+    if (!namesFake) problem("the bridge log has no \"NGX hook: installed on\" line naming fake_nvngx.dll");
+
+    // The first counted evaluate: the test app's inputs at the first feature's size.
+    if (const std::string* l = onceOnly(kFirstCaptureTag)) {
+        FirstCapture c;
+        if (!ParseFirstCapture(*l, &c)) {
+            problem("the first counted evaluate line does not parse: " + *l);
+        } else if ((c.depthFormat != kDxgiR32Typeless && c.depthFormat != kDxgiR32Float) || c.depthW != e.renderW ||
+                   c.depthH != e.renderH || c.mvecFormat != kDxgiR16G16Float || c.mvecW != e.renderW ||
+                   c.mvecH != e.renderH || c.subrectW != e.renderW || c.subrectH != e.renderH ||
+                   c.createFlags != kNgxCreateFlagsMVLowRes || !(c.mvScaleX < 0 && c.mvScaleY < 0)) {
+            char want[200];
+            std::snprintf(want, sizeof(want),
+                          "depth %d (or %d) %ux%u, mvec %d %ux%u, subrect %ux%u, create flags 0x%X, a negative mv scale",
+                          kDxgiR32Typeless, kDxgiR32Float, e.renderW, e.renderH, kDxgiR16G16Float, e.renderW,
+                          e.renderH, e.renderW, e.renderH, kNgxCreateFlagsMVLowRes);
+            problem(std::string("the first counted evaluate is not the test app's (expected ") + want + "): " + *l);
+        }
+    }
+
+    const char* const kConstants = "] INFO constants: ";
+    const char* const kFirstTags = "fg: first tags and constants set (frame ";
+    if (e.pipeline) {
+        if (const std::string* l = onceOnly(kFirstCameraTag)) {
+            FirstCamera c;
+            if (!ParseFirstCamera(*l, &c)) {
+                problem("the first fresh camera line does not parse: " + *l);
+            } else if (c.fov < e.fovVDeg - 0.01f || c.fov > e.fovVDeg + 0.01f || c.zNear < e.clipNear - 1e-4f ||
+                       c.zNear > e.clipNear + 1e-4f || c.zFar < e.clipFar - 0.5f || c.zFar > e.clipFar + 0.5f ||
+                       c.renderW != static_cast<float>(e.renderW) || c.renderH != static_cast<float>(e.renderH)) {
+                char want[160];
+                std::snprintf(want, sizeof(want), "fov %.0f, near %.1f, far %.0f, render %ux%u", e.fovVDeg,
+                              e.clipNear, e.clipFar, e.renderW, e.renderH);
+                problem(std::string("the first fresh camera is not the test app's (") + want + "): " + *l);
+            }
+        }
+        onceOnly(kConstants);
+        onceOnly(kFirstTags);
+    } else {
+        for (const char* never : {kFirstCameraTag, kFirstTags})
+            for (const auto& l : lines)
+                if (l.find(never) != std::string::npos) problem("\"" + std::string(never) + "\" without a camera: " + l);
+        bool namesCamera = false;
+        for (const auto& l : lines) {
+            if (l.find(kFgFrameWithoutTag) == std::string::npos) continue;
+            r.evidence.push_back(l);
+            namesCamera = namesCamera || ContainsNoCase(l.substr(l.find(kFgFrameWithoutTag)), "camera");
+        }
+        if (!namesCamera) problem("no \"fg: frame without DLSS-G:\" warning names the camera");
+    }
+    for (const auto& v : FgReasonThrottleViolations(lines, e.reasonPeriodMs))
+        problem("\"fg: frame without DLSS-G:\" more than once per 10 s: " + v);
+
+    // The statistics after the first line (warm-up): every frame captured,
+    // with a fresh camera and tagged (pipeline), or captured but never
+    // tagged (no camera); no double evaluate; every frame delivered.
+    int counted = 0;
+    bool first = true;
+    for (const auto& l : lines) {
+        if (l.find(" stats: base_fps=") == std::string::npos) continue;
+        const Stats s = ParseStats(l);
+        const bool warmUp = first;
+        first = false;
+        if (!warmUp) ++counted;
+        if (!HasM3Stats(s)) {
+            problem("statistics without the M3 fields (captures ... double_evaluates): " + l);
+            continue;
+        }
+        if (!e.pipeline && (s.Num("camera_fresh") != 0 || s.Num("tagged") != 0))
+            problem("statistics with a fresh camera or tags although no camera is written: " + l);
+        if (warmUp) continue;
+        const double base = s.Num("base_fps");
+        if (e.pipeline) {
+            for (const char* k : {"captures", "camera_fresh", "tagged"}) {
+                if (s.Num(k) >= e.minShare * base) continue;
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "%s=%.0f is below %.0f%% of base_fps=%.1f: ", k, s.Num(k),
+                              e.minShare * 100, base);
+                problem(buf + l);
+            }
+        } else if (s.Num("captures") <= 0) {
+            problem("no captures: " + l);
+        }
+        if (s.Num("double_evaluates") != 0) problem("double evaluates: " + l);
+        if (s.Num("skipped") != 0 || s.Num("failed") != 0)
+            problem("the proxy did not deliver every frame (skipped, failed): " + l);
+    }
+    if (counted == 0) problem("no statistics line after the first one; the run is too short for --expect-fg");
+    return r;
+}
+
 }  // namespace testapp

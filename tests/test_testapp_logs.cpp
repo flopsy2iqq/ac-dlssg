@@ -145,3 +145,169 @@ TEST(TestappLogs_FgReasonThrottle) {
     CHECK(v[0].find("no fresh camera") != std::string::npos && v[0].find("9000 ms") != std::string::npos);
     CHECK(v[1].find("paused") != std::string::npos && v[1].find("2000 ms") != std::string::npos);
 }
+
+// ------------------------------------------------------------ --expect-fg
+
+namespace {
+
+// A bridge log of an fg-pipeline run in the formats of the M3 contract.
+std::vector<std::string> PipelineLog() {
+    return {
+        "20:00:00.100 [1] INFO CreateSwapChainForHwnd: hwnd 0000000000010000 (main window), 1280x720 format 28: proxy",
+        "20:00:00.200 [1] INFO NGX hook: installed on 1 module(s): fake_nvngx.dll",
+        "20:00:00.300 [1] INFO capture: first counted evaluate: depth 39 853x480, mvec 34 853x480, subrect 853x480, "
+        "create flags 0x2, mv scale -853,-480, jitter 0,-0.166667",
+        "20:00:00.301 [1] WARN fg: frame without DLSS-G: camera not fresh",
+        "20:00:00.302 [1] INFO camera: first fresh snapshot: pos (200.000, 1.500, 0.000) fwd (0.000, 0.000, 1.000) up "
+        "(0.000, 1.000, 0.000) fov 56.00 near 0.100 far 20000.0 render 853x480 origin shift (0.000, 0.000, 0.000)",
+        "20:00:00.303 [1] INFO constants: basis det -1.000 near 0.100 far 20000.0 fovY 0.977 aspect 1.777",
+        "20:00:00.304 [1] INFO fg: first tags and constants set (frame 2)",
+        "20:00:01.000 [1] INFO stats: base_fps=300.0 presented_fps=300.0 skipped=0 failed=0 occluded=0 uncopied=0 "
+        "max_frame_ms=4.0 max_present_ms=1.0 bridge_gpu_ms d3d11=0.100 d3d12=0.050 fg=off stalls=0 streamline=on "
+        "reflex=on pcl_problems=0 captures=150 camera_fresh=100 tagged=99 fg_frames=0 generated=n/a "
+        "double_evaluates=0 vram_mib=48/9283",
+        "20:00:02.000 [1] INFO stats: base_fps=320.0 presented_fps=320.0 skipped=0 failed=0 occluded=0 uncopied=0 "
+        "max_frame_ms=4.0 max_present_ms=1.0 bridge_gpu_ms d3d11=0.100 d3d12=0.050 fg=off stalls=0 streamline=on "
+        "reflex=on pcl_problems=0 captures=320 camera_fresh=320 tagged=320 fg_frames=0 generated=n/a "
+        "double_evaluates=0 vram_mib=48/9283",
+        "20:00:03.000 [1] INFO stats: base_fps=318.0 presented_fps=318.0 skipped=0 failed=0 occluded=0 uncopied=0 "
+        "max_frame_ms=4.0 max_present_ms=1.0 bridge_gpu_ms d3d11=0.100 d3d12=0.050 fg=off stalls=0 streamline=on "
+        "reflex=on pcl_problems=0 captures=318 camera_fresh=317 tagged=317 fg_frames=0 generated=n/a "
+        "double_evaluates=0 vram_mib=48/9283",
+    };
+}
+
+FgExpectation Pipeline() {
+    FgExpectation e;
+    e.pipeline = true;
+    e.renderW = 853;
+    e.renderH = 480;
+    e.fovVDeg = 56.0f;
+    e.clipNear = 0.1f;
+    e.clipFar = 20000.0f;
+    return e;
+}
+
+// The same run without a camera: captured, never fresh, never tagged.
+std::vector<std::string> NoCameraLog() {
+    std::vector<std::string> log;
+    for (const auto& l : PipelineLog()) {
+        if (l.find("camera: first") != std::string::npos || l.find("constants: ") != std::string::npos ||
+            l.find("fg: first tags") != std::string::npos)
+            continue;
+        std::string s = l;
+        for (const char* k : {"camera_fresh=", "tagged="}) {
+            const size_t at = s.find(k);
+            if (at == std::string::npos) continue;
+            const size_t end = s.find(' ', at);
+            s.replace(at, end - at, std::string(k) + "0");
+        }
+        log.push_back(s);
+    }
+    return log;
+}
+
+FgExpectation NoCamera() {
+    FgExpectation e = Pipeline();
+    e.pipeline = false;
+    return e;
+}
+
+std::vector<std::string> Replaced(std::vector<std::string> log, const std::string& from, const std::string& to) {
+    for (auto& l : log) {
+        const size_t at = l.find(from);
+        if (at != std::string::npos) l.replace(at, from.size(), to);
+    }
+    return log;
+}
+
+std::vector<std::string> Without(std::vector<std::string> log, const std::string& needle) {
+    std::vector<std::string> out;
+    for (const auto& l : log)
+        if (l.find(needle) == std::string::npos) out.push_back(l);
+    return out;
+}
+
+bool HasProblem(const FgCheckResult& r, const char* needle) {
+    for (const auto& p : r.problems)
+        if (p.find(needle) != std::string::npos) return true;
+    return false;
+}
+
+void PrintProblems(const FgCheckResult& r) {
+    for (const auto& p : r.problems) std::printf("  problem: %s\n", p.c_str());
+}
+
+}  // namespace
+
+TEST(TestappLogs_FgPipelineLogPasses) {
+    const FgCheckResult r = CheckFgLines(PipelineLog(), Pipeline());
+    PrintProblems(r);
+    CHECK(r.problems.empty());
+    CHECK(r.evidence.size() >= 5);  // the hook line and the four once-only lines
+}
+
+TEST(TestappLogs_FgPipelineProblems) {
+    const FgExpectation e = Pipeline();
+    CHECK(HasProblem(CheckFgLines(Without(PipelineLog(), "NGX hook: "), e), "fake_nvngx.dll"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "fake_nvngx.dll", "_nvngx.dll"), e), "fake_nvngx.dll"));
+    CHECK(HasProblem(CheckFgLines(Without(PipelineLog(), "constants: "), e), "constants: "));
+    CHECK(HasProblem(CheckFgLines(Without(PipelineLog(), "fg: first tags"), e), "first tags"));
+    CHECK(HasProblem(CheckFgLines(Without(PipelineLog(), "camera: first fresh"), e), "camera: first fresh"));
+    std::vector<std::string> twice = PipelineLog();
+    twice.push_back(twice[2]);
+    CHECK(HasProblem(CheckFgLines(twice, e), "capture: first counted evaluate"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "depth 39", "depth 28"), e), "first counted evaluate"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "mvec 34", "mvec 16"), e), "first counted evaluate"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "subrect 853x480", "subrect 0x0"), e), "first counted evaluate"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "flags 0x2", "flags 0x8"), e), "first counted evaluate"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "mv scale -853,-480", "mv scale 853,480"), e),
+                     "first counted evaluate"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "fov 56.00", "fov 90.00"), e), "first fresh camera"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "render 853x480", "render 1280x720"), e), "first fresh camera"));
+    // Statistics after the first line.
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "tagged=320", "tagged=200"), e), "tagged=200"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "camera_fresh=317", "camera_fresh=10"), e), "camera_fresh=10"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "captures=318", "captures=0"), e), "captures=0"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "captures=320 camera_fresh=320 tagged=320 fg_frames=0 "
+                                                          "generated=n/a double_evaluates=0",
+                                           "captures=320 camera_fresh=320 tagged=320 fg_frames=0 generated=n/a "
+                                           "double_evaluates=3"),
+                                  e),
+                     "double evaluates"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), "base_fps=318.0 presented_fps=318.0 skipped=0",
+                                           "base_fps=318.0 presented_fps=318.0 skipped=4"),
+                                  e),
+                     "deliver every frame"));
+    CHECK(HasProblem(CheckFgLines(Replaced(PipelineLog(), " captures=318 camera_fresh=317 tagged=317 fg_frames=0 "
+                                                          "generated=n/a double_evaluates=0",
+                                           ""),
+                                  e),
+                     "M3 fields"));
+    // Only the warm-up line: too short.
+    CHECK(HasProblem(CheckFgLines(Without(Without(PipelineLog(), "base_fps=320"), "base_fps=318"), e), "too short"));
+    // The warm-up line may be low.
+    CHECK(CheckFgLines(Replaced(PipelineLog(), "tagged=99", "tagged=1"), e).problems.empty());
+    // A reason warned twice within 10 s.
+    std::vector<std::string> spam = PipelineLog();
+    spam.push_back("20:00:05.000 [1] WARN fg: frame without DLSS-G: camera not fresh");
+    CHECK(HasProblem(CheckFgLines(spam, e), "camera not fresh"));
+}
+
+TEST(TestappLogs_FgNoCameraLogPasses) {
+    std::vector<std::string> log = NoCameraLog();
+    const FgCheckResult r = CheckFgLines(log, NoCamera());
+    PrintProblems(r);
+    CHECK(r.problems.empty());
+}
+
+TEST(TestappLogs_FgNoCameraProblems) {
+    const FgExpectation e = NoCamera();
+    CHECK(HasProblem(CheckFgLines(Without(NoCameraLog(), "fg: frame without DLSS-G"), e), "names the camera"));
+    CHECK(HasProblem(CheckFgLines(Replaced(NoCameraLog(), "camera not fresh", "no capture"), e), "names the camera"));
+    CHECK(HasProblem(CheckFgLines(PipelineLog(), e), "without a camera"));
+    CHECK(HasProblem(CheckFgLines(Replaced(NoCameraLog(), "captures=320", "captures=0"), e), "no captures"));
+    std::vector<std::string> fresh = NoCameraLog();
+    CHECK(HasProblem(CheckFgLines(Replaced(fresh, "captures=318 camera_fresh=0", "captures=318 camera_fresh=5"), e),
+                     "fresh camera or tags"));
+}

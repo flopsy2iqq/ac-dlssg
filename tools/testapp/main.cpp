@@ -37,8 +37,6 @@
 #include <wrl/client.h>
 
 #include <algorithm>
-#include <cctype>
-#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -95,7 +93,8 @@ constexpr float kRectangle[4] = {1.0f, 0.5f, 0.0f, 1.0f};
 constexpr unsigned char kBackgroundBytes[4] = {26, 51, 102, 255};
 constexpr unsigned char kRectangleBytes[4] = {255, 188, 0, 255};  // 0.5 linear is 188 in sRGB
 
-// --fake-ngx: the DLSS render size, CSP's DLSS Quality ratio of the window.
+// --fake-ngx: the DLSS render size, the Quality ratio (2/3) of the window, so
+// that the render and output sizes differ as in CSP's upscaling modes.
 constexpr UINT kRenderScaleNum = 2;
 constexpr UINT kRenderScaleDen = 3;
 constexpr wchar_t kFakeNgxDll[] = L"fake_nvngx.dll";
@@ -1292,13 +1291,6 @@ bool RunFrames(App& a) {
 
 // ---- final log checks
 
-bool ContainsNoCase(const std::string& text, const char* needle) {
-    std::string t = text, n = needle;
-    for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    for (auto& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return t.find(n) != std::string::npos;
-}
-
 // The per-frame DLSS-G-off warnings: at most one per distinct reason per 10 s.
 bool CheckFgReasonThrottle(const BridgeLog& log) {
     bool ok = true;
@@ -1307,117 +1299,23 @@ bool CheckFgReasonThrottle(const BridgeLog& log) {
     return ok;
 }
 
-// The one line that contains `needle`, or null (and a failure) when there is
-// none or more than one.
-const std::string* OnceOnly(const BridgeLog& log, const char* needle) {
-    const std::string* found = nullptr;
-    int n = 0;
-    for (const auto& l : log.lines)
-        if (l.find(needle) != std::string::npos && n++ == 0) found = &l;
-    if (n != 1) {
-        Fail("the bridge log has %d \"%s\" lines, expected one", n, needle + 7);
-        return nullptr;
-    }
-    Print("note: fg: %s", found->c_str());
-    return found;
-}
-
 // --expect-fg: the lines of the M3 log line contract for the test app's fake
-// DLSS calls (and camera).
+// DLSS calls (and camera), at the first DLSS feature's render size.
 bool CheckFgLog(const App& a, const BridgeLog& log) {
-    bool ok = true;
-    const bool pipeline = a.opt.expect_fg == ExpectFg::Pipeline;
-    const UINT rw = a.ngx_first_w, rh = a.ngx_first_h;
-
-    // The hook reached the fake module.
-    bool namesFake = false;
-    for (const auto& l : log.lines) {
-        if (l.find("] INFO NGX hook: installed on ") == std::string::npos) continue;
-        Print("note: fg: %s", l.c_str());
-        namesFake = namesFake || ContainsNoCase(l, "fake_nvngx.dll");
-    }
-    if (!namesFake) ok = Fail("the bridge log has no \"NGX hook: installed on\" line naming fake_nvngx.dll");
-
-    // The first counted evaluate: CSP's inputs at the first feature's size.
-    if (const std::string* l = OnceOnly(log, "] INFO capture: first counted evaluate: ")) {
-        testapp::FirstCapture c;
-        if (!testapp::ParseFirstCapture(*l, &c)) {
-            ok = Fail("the first counted evaluate line does not parse: %s", l->c_str());
-        } else if ((c.depthFormat != DXGI_FORMAT_R32_TYPELESS && c.depthFormat != DXGI_FORMAT_R32_FLOAT) ||
-                   c.depthW != rw || c.depthH != rh || c.mvecFormat != DXGI_FORMAT_R16G16_FLOAT || c.mvecW != rw ||
-                   c.mvecH != rh || c.subrectW != rw || c.subrectH != rh ||
-                   c.createFlags != acdb::kNgxDlssFlagMVLowRes || !(c.mvScaleX < 0 && c.mvScaleY < 0)) {
-            ok = Fail("the first counted evaluate is not the test app's: expected depth %d (or %d) %ux%u, mvec %d "
-                      "%ux%u, subrect %ux%u, create flags 0x%X, a negative mv scale: %s",
-                      DXGI_FORMAT_R32_TYPELESS, DXGI_FORMAT_R32_FLOAT, rw, rh, DXGI_FORMAT_R16G16_FLOAT, rw, rh, rw, rh,
-                      acdb::kNgxDlssFlagMVLowRes, l->c_str());
-        }
-    }
-
-    const char* const kCamera = "] INFO camera: first fresh snapshot: ";
-    const char* const kConstants = "] INFO constants: ";
-    const char* const kFirstTags = "] INFO fg: first tags and constants set (frame ";
-    if (pipeline) {
-        if (const std::string* l = OnceOnly(log, kCamera)) {
-            testapp::FirstCamera c;
-            if (!testapp::ParseFirstCamera(*l, &c)) {
-                ok = Fail("the first fresh camera line does not parse: %s", l->c_str());
-            } else if (std::fabs(c.fov - testapp::kFovVDeg) > 0.01f ||
-                       std::fabs(c.zNear - testapp::kClipNear) > 1e-4f || std::fabs(c.zFar - testapp::kClipFar) > 0.5f ||
-                       c.renderW != static_cast<float>(rw) || c.renderH != static_cast<float>(rh)) {
-                ok = Fail("the first fresh camera is not the test app's (fov %.0f, near %.1f, far %.0f, render "
-                          "%ux%u): %s",
-                          testapp::kFovVDeg, testapp::kClipNear, testapp::kClipFar, rw, rh, l->c_str());
-            }
-        }
-        if (!OnceOnly(log, kConstants)) ok = false;
-        if (!OnceOnly(log, kFirstTags)) ok = false;
-    } else {
-        for (const char* never : {kCamera, kFirstTags})
-            if (log.Has(never)) ok = Fail("the bridge log has \"%s\" without a camera", never + 7);
-        bool namesCamera = false;
-        for (const auto& l : log.lines)
-            if (l.find(testapp::kFgFrameWithoutTag) != std::string::npos && ContainsNoCase(l, "camera"))
-                namesCamera = true;
-        if (!namesCamera) ok = Fail("no \"fg: frame without DLSS-G:\" warning names the camera");
-    }
-
-    // The statistics after the first line (warm-up): every frame captured,
-    // with a fresh camera and tagged (pipeline), or captured but never
-    // tagged (no camera); no double evaluate; every frame delivered.
-    int counted = 0;
-    bool first = true;
-    for (const auto& l : log.lines) {
-        if (l.find(" stats: base_fps=") == std::string::npos) continue;
-        const testapp::Stats s = testapp::ParseStats(l);
-        const bool warmUp = first;
-        first = false;
-        if (!warmUp) ++counted;
-        if (!testapp::HasM3Stats(s)) {
-            ok = Fail("statistics without the M3 fields (captures ... double_evaluates): %s", l.c_str());
-            continue;
-        }
-        if (!pipeline && (s.Num("camera_fresh") != 0 || s.Num("tagged") != 0))
-            ok = Fail("statistics with a fresh camera or tags although no camera is written: %s", l.c_str());
-        if (warmUp) continue;
-        const double base = s.Num("base_fps");
-        const double need = kFgMinShare * base;
-        if (pipeline) {
-            for (const char* k : {"captures", "camera_fresh", "tagged"})
-                if (s.Num(k) < need)
-                    ok = Fail("%s=%.0f is below %.0f%% of base_fps=%.1f: %s", k, s.Num(k), kFgMinShare * 100, base,
-                              l.c_str());
-        } else if (s.Num("captures") <= 0) {
-            ok = Fail("no captures: %s", l.c_str());
-        }
-        if (s.Num("double_evaluates") != 0) ok = Fail("double evaluates: %s", l.c_str());
-        if (s.Num("skipped") != 0 || s.Num("failed") != 0)
-            ok = Fail("the proxy did not deliver every frame (skipped, failed): %s", l.c_str());
-    }
-    if (counted == 0) ok = Fail("no statistics line after the first one; the run is too short for --expect-fg");
-    return ok;
+    testapp::FgExpectation e;
+    e.pipeline = a.opt.expect_fg == ExpectFg::Pipeline;
+    e.renderW = a.ngx_first_w;
+    e.renderH = a.ngx_first_h;
+    e.fovVDeg = testapp::kFovVDeg;
+    e.clipNear = testapp::kClipNear;
+    e.clipFar = testapp::kClipFar;
+    e.minShare = kFgMinShare;
+    e.reasonPeriodMs = kFgReasonPeriodMs;
+    const testapp::FgCheckResult r = testapp::CheckFgLines(log.lines, e);
+    for (const auto& l : r.evidence) Print("note: fg: %s", l.c_str());
+    for (const auto& p : r.problems) Fail("%s", p.c_str());
+    return r.problems.empty();
 }
-
 bool CheckLogAfterRun(App& a) {
     const BridgeLog log = ReadBridgeLog(a.log_path);
     if (!log.found) return Fail("bridge log not found: %s", Narrow(a.log_path).c_str());
@@ -1527,7 +1425,8 @@ bool CheckLogAfterRun(App& a) {
         }
         if (!log.Has("stats: base_fps=")) Print("note: no statistics line (the run was shorter than a second)");
     }
-    if (!CheckFgReasonThrottle(log)) ok = false;
+    // --expect-fg checks the throttle with the rest.
+    if (a.opt.expect_fg == ExpectFg::None && !CheckFgReasonThrottle(log)) ok = false;
     if (a.opt.expect_fg != ExpectFg::None) {
         if (a.proxies_created == 0) {
             ok = Fail("--expect-fg needs a proxied swap chain");
