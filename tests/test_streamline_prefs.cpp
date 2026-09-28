@@ -123,6 +123,62 @@ TEST(SlPrefs_LogsThroughTheCallbackWithoutConsole) {
     CHECK(noCallback.logMessageCallback == nullptr);
 }
 
+// --- BuildDlssgOptions (spec 6.8 "DLSS-G mode", 6.11) -------------------------
+
+namespace {
+DlssgSizeHints ExampleHints() {
+    DlssgSizeHints h;
+    h.numBackBuffers = 3;
+    h.mvecDepthWidth = 1280;
+    h.mvecDepthHeight = 720;
+    h.colorWidth = 1920;
+    h.colorHeight = 1080;
+    h.colorBufferFormat = 28;  // DXGI_FORMAT_R8G8B8A8_UNORM
+    h.mvecBufferFormat = 34;   // DXGI_FORMAT_R16G16_FLOAT
+    h.depthBufferFormat = 41;  // DXGI_FORMAT_R32_FLOAT
+    return h;
+}
+uint32_t FlagBits(sl::DLSSGFlags f) { return static_cast<uint32_t>(f); }
+}  // namespace
+
+TEST(SlDlssgOptions_OnOffWithOneGeneratedFrameAndRetainedResources) {
+    const DlssgSizeHints h = ExampleHints();
+    sl::DLSSGOptions on = BuildDlssgOptions(true, h, false);
+    CHECK(on.mode == sl::DLSSGMode::eOn);
+    CHECK_EQ(on.numFramesToGenerate, 1u);
+    CHECK_EQ(FlagBits(on.flags), FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff));
+    sl::DLSSGOptions off = BuildDlssgOptions(false, h, false);
+    CHECK(off.mode == sl::DLSSGMode::eOff);
+    CHECK_EQ(off.numFramesToGenerate, 1u);
+    CHECK_EQ(FlagBits(off.flags), FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff));
+}
+
+TEST(SlDlssgOptions_CarryEverySizeAndFormatHint) {
+    const sl::DLSSGOptions o = BuildDlssgOptions(true, ExampleHints(), false);
+    CHECK_EQ(o.numBackBuffers, 3u);
+    CHECK_EQ(o.mvecDepthWidth, 1280u);
+    CHECK_EQ(o.mvecDepthHeight, 720u);
+    CHECK_EQ(o.colorWidth, 1920u);
+    CHECK_EQ(o.colorHeight, 1080u);
+    CHECK_EQ(o.colorBufferFormat, 28u);
+    CHECK_EQ(o.mvecBufferFormat, 34u);
+    CHECK_EQ(o.depthBufferFormat, 41u);
+    // No HUD-less colour and no UI buffer in v1 (spec 3), no dynamic resolution.
+    CHECK_EQ(o.hudLessBufferFormat, 0u);
+    CHECK_EQ(o.uiBufferFormat, 0u);
+    CHECK_EQ(o.dynamicResWidth, 0u);
+    CHECK_EQ(o.dynamicResHeight, 0u);
+    CHECK(o.enableUserInterfaceRecomposition == sl::Boolean::eFalse);
+    CHECK(o.queueParallelismMode == sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue);
+    CHECK(o.onErrorCallback == nullptr);
+}
+
+TEST(SlDlssgOptions_VramEstimateOnlyWhenAsked) {
+    const sl::DLSSGOptions o = BuildDlssgOptions(true, ExampleHints(), true);
+    CHECK_EQ(FlagBits(o.flags),
+             FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff) | FlagBits(sl::DLSSGFlags::eRequestVRAMEstimate));
+}
+
 // --- Init failure paths (child processes) ------------------------------------
 
 TEST(SlInit_MissingPluginDirFailsNamingTheFile) {
@@ -226,6 +282,17 @@ TEST(Child_SlRuntime_CallsBeforeInit) {
     CHECK(!rt.EnableReflexLowLatency());
     CHECK(!rt.ReflexLowLatencyAvailable());
     CHECK(rt.NewFrameToken(1) == nullptr);
+    // The M3 calls refuse too, without reaching Streamline.
+    CHECK(!rt.DlssgFunctionsResolved());
+    struct FakeToken : sl::FrameToken {
+        operator uint32_t() const override { return 1; }
+    } token;
+    CHECK(rt.SetDlssgOptions(true, DlssgSizeHints()) == sl::Result::eErrorNotInitialized);
+    sl::DLSSGState state{};
+    CHECK(rt.GetDlssgState(false, DlssgSizeHints(), &state) == sl::Result::eErrorNotInitialized);
+    CHECK(rt.SetTagsForFrame(token, 0, nullptr, nullptr, sl::Extent{}, nullptr) == sl::Result::eErrorNotInitialized);
+    CHECK(rt.SetNullTags(token, 0) == sl::Result::eErrorNotInitialized);
+    CHECK(rt.SetConstants(sl::Constants{}, token, 0) == sl::Result::eErrorNotInitialized);
     CHECK_EQ(rt.ErrorsLogged(), 0u);
     CHECK_EQ(rt.WarningsLogged(), 0u);
 

@@ -16,10 +16,12 @@
 #include <string>
 #include <vector>
 
+#include "camera_layout.h"
 #include "child_process.h"
 #include "config.h"
 #include "d3d12_presenter.h"
 #include "factory_hook.h"
+#include "frame_constants.h"
 #include "gpu_test_devices.h"
 #include "log.h"
 #include "pcl_sequencer.h"
@@ -546,6 +548,163 @@ TEST(Child_SlRuntime_RealDllsFrameLoop) {
 
     CHECK_EQ(rt.ErrorsLogged(), 0u);
     std::printf("  Streamline warnings: %u\n", rt.WarningsLogged());
+    Print("warnings in our log", log.Matching({" WARN "}));
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
+}
+
+// --- Tags, constants and the DLSS-G calls (M3) ------------------------------------
+
+namespace {
+
+// A camera at the origin looking down +z, 1280x720 render size.
+CameraLayout TestCamera(uint32_t frame) {
+    CameraLayout c{};
+    c.magic = kCameraMagic;
+    c.version = kCameraVersion;
+    c.frame = frame;
+    c.pos[2] = static_cast<float>(frame) * 0.1f;
+    c.fwd[2] = 1.0f;
+    c.up[1] = 1.0f;
+    c.side[0] = 1.0f;
+    c.fovVDeg = 60.0f;
+    c.clipNear = 0.1f;
+    c.clipFar = 1000.0f;
+    c.renderW = 160.0f;
+    c.renderH = 90.0f;
+    return c;
+}
+
+ComPtr<ID3D12Resource> CommittedTexture(ID3D12Device* dev, DXGI_FORMAT format, UINT w, UINT h,
+                                        D3D12_RESOURCE_FLAGS flags) {
+    D3D12_HEAP_PROPERTIES hp{};
+    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = w;
+    rd.Height = h;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = format;
+    rd.SampleDesc.Count = 1;
+    rd.Flags = flags;
+    ComPtr<ID3D12Resource> r;
+    dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                 IID_PPV_ARGS(&r));
+    return r;
+}
+
+}  // namespace
+
+TEST(SlRuntime_RealDllsTagsConstantsAndDlssgCalls) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlRuntime_RealDllsTagsConstantsAndDlssgCalls", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlRuntime_RealDllsTagsConstantsAndDlssgCalls) {
+    LogCapture log(L"sl_real_tags");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+
+    SlSession s;
+    bool skipped = false;
+    const bool created = s.Create(rt, &skipped);
+    if (skipped) {
+        s.Release(rt);
+        return;
+    }
+    REQUIRE(created);
+    REQUIRE(rt.EnableReflexLowLatency());
+
+    // Stand-ins for the capture slots: D3D12 textures in COMMON, as the
+    // shared slot textures are.
+    ComPtr<ID3D12Resource> depth =
+        CommittedTexture(s.native.Get(), DXGI_FORMAT_R32_FLOAT, 160, 90, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    ComPtr<ID3D12Resource> mvec = CommittedTexture(s.native.Get(), DXGI_FORMAT_R16G16_FLOAT, 160, 90,
+                                                   D3D12_RESOURCE_FLAG_NONE);
+    REQUIRE(depth && mvec);
+    ComPtr<ID3D12CommandAllocator> alloc;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    REQUIRE(SUCCEEDED(s.native->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))));
+    REQUIRE(SUCCEEDED(
+        s.native->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&list))));
+
+    const CameraLayout prev = TestCamera(1);
+    const CameraLayout cur = TestCamera(2);
+    ConstantsInput in;
+    in.cur = &cur;
+    in.prev = &prev;
+    in.capture.mvScaleX = -160.0f;
+    in.capture.mvScaleY = -90.0f;
+    in.capture.renderW = 160;
+    in.capture.renderH = 90;
+    in.capture.createFlags = dlss_create_flags::kMVLowRes;
+    sl::Constants consts;
+    std::string why;
+    REQUIRE(BuildFrameConstants(in, &consts, &why));
+
+    sl::FrameToken* token = rt.NewFrameToken(1);
+    REQUIRE(token != nullptr);
+    // The open command list of the frame, as open-shaders passes it.
+    const sl::Extent extent{0, 0, 160, 90};
+    CHECK(rt.SetTagsForFrame(*token, 0, depth.Get(), mvec.Get(), extent, list.Get()) == sl::Result::eOk);
+    CHECK(rt.SetConstants(consts, *token, 0) == sl::Result::eOk);
+    // eValidUntilPresent tags need no command list (verified in sl.common's
+    // ResourceTaggingForFrame::setTag, which only copies other lifecycles).
+    sl::FrameToken* token2 = rt.NewFrameToken(2);
+    REQUIRE(token2 != nullptr);
+    CHECK(rt.SetTagsForFrame(*token2, 0, depth.Get(), mvec.Get(), extent, nullptr) == sl::Result::eOk);
+    CHECK(rt.SetConstants(consts, *token2, 0) == sl::Result::eOk);
+    CHECK(rt.SetNullTags(*token2, 0) == sl::Result::eOk);
+
+    // DLSS-G mode and state: eOk where DLSS-G is supported; refused without a
+    // call into Streamline where it is not (the RTX 3080 without the spoof).
+    const bool dlssg = rt.DlssgSupported(s.luid, nullptr) && rt.DlssgFunctionsResolved();
+    std::printf("  DLSS-G functions resolved: %s\n", dlssg ? "yes" : "no");
+    DlssgSizeHints hints;
+    hints.numBackBuffers = SlSession::kBuffers;
+    hints.mvecDepthWidth = 160;
+    hints.mvecDepthHeight = 90;
+    hints.colorWidth = SlSession::kWidth;
+    hints.colorHeight = SlSession::kHeight;
+    hints.colorBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    hints.mvecBufferFormat = DXGI_FORMAT_R16G16_FLOAT;
+    hints.depthBufferFormat = DXGI_FORMAT_R32_FLOAT;
+    sl::DLSSGState state{};
+    const sl::Result setOff = rt.SetDlssgOptions(false, hints);
+    const sl::Result estimate = rt.GetDlssgState(true, hints, &state);
+    std::printf("  SetDlssgOptions(eOff): %s, GetDlssgState(estimate): %s, estimate %llu bytes, status %u\n",
+                SlResultName(setOff), SlResultName(estimate),
+                static_cast<unsigned long long>(state.estimatedVRAMUsageInBytes), static_cast<unsigned>(state.status));
+    if (dlssg) {
+        CHECK(setOff == sl::Result::eOk);
+        CHECK(estimate == sl::Result::eOk);
+    } else {
+        CHECK(setOff == sl::Result::eErrorFeatureMissing);
+        CHECK(estimate == sl::Result::eErrorFeatureMissing);
+    }
+
+    CHECK(SUCCEEDED(list->Close()));
+    ID3D12CommandList* lists[] = {list.Get()};
+    s.queue->ExecuteCommandLists(1, lists);
+    ComPtr<ID3D12Fence> fence;
+    REQUIRE(SUCCEEDED(s.native->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))));
+    REQUIRE(SUCCEEDED(s.queue->Signal(fence.Get(), 1)));
+    const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    fence->SetEventOnCompletion(1, event);
+    CHECK_EQ(WaitForSingleObject(event, 5000), static_cast<DWORD>(WAIT_OBJECT_0));
+    CloseHandle(event);
+
+    rt.Shutdown();
+    list.Reset();
+    alloc.Reset();
+    depth.Reset();
+    mvec.Reset();
+    fence.Reset();
+    s.Release(rt);
+    CHECK(log.Matching({"slSetTagForFrame failed"}).empty());
+    CHECK(log.Matching({"slSetConstants failed"}).empty());
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
     Print("warnings in our log", log.Matching({" WARN "}));
     Print("errors in our log", log.Matching({" ERROR "}));
     CHECK(log.Matching({" ERROR "}).empty());

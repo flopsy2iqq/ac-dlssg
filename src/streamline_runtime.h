@@ -46,6 +46,28 @@ sl::Preferences BuildPreferences(const std::wstring& pluginDir, const std::wstri
                                  const std::string& engineVersion, sl::PFun_LogMessageCallback* callback,
                                  SlPreferencesStorage* storage);
 
+// The size and format hints sl::DLSSGOptions 2.14.1 offers for the buffers the
+// bridge uses (colour = the Streamline chain's back buffers, depth and motion
+// vectors = the capture slots). Formats are DXGI_FORMAT values. DLSS-G uses
+// them to size its resources and for the video memory estimate (spec 6.11).
+// No HUD-less colour and no UI buffer in v1 (spec 3).
+struct DlssgSizeHints {
+    uint32_t numBackBuffers = 0;
+    uint32_t mvecDepthWidth = 0, mvecDepthHeight = 0;
+    uint32_t colorWidth = 0, colorHeight = 0;
+    uint32_t colorBufferFormat = 0;
+    uint32_t mvecBufferFormat = 0;
+    uint32_t depthBufferFormat = 0;
+};
+
+// Spec 6.8 "DLSS-G mode": mode eOn or eOff, numFramesToGenerate 1 (2X),
+// flags eRetainResourcesWhenOff (plus eRequestVRAMEstimate when asked), and
+// every hint above. Everything else keeps Streamline's defaults.
+sl::DLSSGOptions BuildDlssgOptions(bool on, const DlssgSizeHints& hints, bool requestVramEstimate);
+
+// The sl::Result's enumerator name ("eOk", "eErrorFeatureMissing", ...).
+const char* SlResultName(sl::Result r);
+
 class StreamlineRuntime {
 public:
     static StreamlineRuntime& Get();
@@ -92,6 +114,32 @@ public:
     sl::FrameToken* NewFrameToken(uint32_t frameIndex);
     void ReflexSleep(const sl::FrameToken& token);
     void Marker(PclMarker marker, const sl::FrameToken& token);
+
+    // M3. The DLSS-G calls exist only when SetDevice resolved them, which it
+    // does only when slIsFeatureSupported accepts the adapter.
+    bool DlssgFunctionsResolved() const;
+    // slDLSSGSetOptions(viewport 0, BuildDlssgOptions(on, hints, false)), on
+    // the presenting thread. eErrorNotInitialized before Init or after
+    // Shutdown, eErrorFeatureMissing without the DLSS-G functions.
+    sl::Result SetDlssgOptions(bool on, const DlssgSizeHints& hints);
+    // slDLSSGGetState(viewport 0, *state, options): options is null for a
+    // plain status poll, and BuildDlssgOptions(true, hints, true) when the
+    // video memory estimate is requested (expensive; spec 6.11 only). Same
+    // refusals as SetDlssgOptions; *state is left alone then.
+    sl::Result GetDlssgState(bool requestVramEstimate, const DlssgSizeHints& hints, sl::DLSSGState* state);
+    // slSetTagForFrame(token, viewport, {depth: kBufferTypeDepth, mvec:
+    // kBufferTypeMotionVectors}, 2, cmdList): both eValidUntilPresent, state
+    // D3D12_RESOURCE_STATE_COMMON, extent for both. cmdList may be null:
+    // Streamline 2.14.1 uses the command list only to copy tags of the other
+    // lifecycles (sl.common ResourceTaggingForFrame::setTag); the presenter
+    // passes the frame's open list, as open-shaders does. These three calls
+    // live in sl.common and work while DLSS-G is unsupported.
+    sl::Result SetTagsForFrame(const sl::FrameToken& token, uint32_t viewport, ID3D12Resource* depth,
+                               ID3D12Resource* mvec, const sl::Extent& extent, ID3D12GraphicsCommandList* cmdList);
+    // Both tags with a null resource (Streamline drops its references).
+    sl::Result SetNullTags(const sl::FrameToken& token, uint32_t viewport);
+    // slSetConstants(constants, token, viewport).
+    sl::Result SetConstants(const sl::Constants& constants, const sl::FrameToken& token, uint32_t viewport);
 
     // Logs the full path and file version of every loaded sl.*.dll and
     // nvngx_dlssg*.dll, and a WARN for each outside the plugin directory

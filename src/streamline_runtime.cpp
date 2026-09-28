@@ -12,6 +12,7 @@
 #include <new>
 #include <string_view>
 
+#include "fg_policy.h"
 #include "internal_call.h"
 #include "log.h"
 #include "module_version.h"
@@ -198,7 +199,40 @@ std::atomic<bool> g_token_failed{false};
 std::atomic<bool> g_sleep_failed{false};
 std::atomic<bool> g_marker_failed{false};
 
+// The M3 calls run every frame; each distinct failure is logged at most once
+// per 10 s.
+void LogThrottledFailure(const char* what, sl::Result r) {
+    static std::mutex mu;
+    static ReasonThrottle throttle(10000);
+    const std::string key = std::string(what) + ": " + ResultName(r);
+    bool log = false;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        log = throttle.ShouldLog(key, GetTickCount64());
+    }
+    if (log) LOGW("%s failed: %s (logged at most every 10 s)", what, ResultName(r));
+}
+
 }  // namespace
+
+const char* SlResultName(sl::Result r) { return ResultName(r); }
+
+sl::DLSSGOptions BuildDlssgOptions(bool on, const DlssgSizeHints& hints, bool requestVramEstimate) {
+    sl::DLSSGOptions o;
+    o.mode = on ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
+    o.numFramesToGenerate = 1;
+    o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+    if (requestVramEstimate) o.flags = o.flags | sl::DLSSGFlags::eRequestVRAMEstimate;
+    o.numBackBuffers = hints.numBackBuffers;
+    o.mvecDepthWidth = hints.mvecDepthWidth;
+    o.mvecDepthHeight = hints.mvecDepthHeight;
+    o.colorWidth = hints.colorWidth;
+    o.colorHeight = hints.colorHeight;
+    o.colorBufferFormat = hints.colorBufferFormat;
+    o.mvecBufferFormat = hints.mvecBufferFormat;
+    o.depthBufferFormat = hints.depthBufferFormat;
+    return o;
+}
 
 sl::Preferences BuildPreferences(const std::wstring& pluginDir, const std::wstring& logDir,
                                  const std::string& engineVersion, sl::PFun_LogMessageCallback* callback,
@@ -575,6 +609,105 @@ void StreamlineRuntime::Marker(PclMarker marker, const sl::FrameToken& token) {
     InternalCallScope internal;
     const sl::Result r = api->slPCLSetMarker(static_cast<sl::PCLMarker>(static_cast<uint32_t>(marker)), token);
     if (r != sl::Result::eOk) LogFirstFailure(g_marker_failed, "slPCLSetMarker", r);
+}
+
+bool StreamlineRuntime::DlssgFunctionsResolved() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return initialized_ && !shut_down_ && api_ && api_->slDLSSGSetOptions && api_->slDLSSGGetState;
+}
+
+sl::Result StreamlineRuntime::SetDlssgOptions(bool on, const DlssgSizeHints& hints) {
+    Api* api = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (initialized_ && !shut_down_) api = api_;
+    }
+    if (!api) return sl::Result::eErrorNotInitialized;
+    if (!api->slDLSSGSetOptions) return sl::Result::eErrorFeatureMissing;
+    const sl::DLSSGOptions options = BuildDlssgOptions(on, hints, false);
+    InternalCallScope internal;
+    const sl::Result r = api->slDLSSGSetOptions(sl::ViewportHandle(0u), options);
+    if (r != sl::Result::eOk) LogThrottledFailure(on ? "slDLSSGSetOptions(eOn)" : "slDLSSGSetOptions(eOff)", r);
+    return r;
+}
+
+sl::Result StreamlineRuntime::GetDlssgState(bool requestVramEstimate, const DlssgSizeHints& hints,
+                                            sl::DLSSGState* state) {
+    Api* api = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (initialized_ && !shut_down_) api = api_;
+    }
+    if (!api) return sl::Result::eErrorNotInitialized;
+    if (!api->slDLSSGGetState) return sl::Result::eErrorFeatureMissing;
+    if (!state) return sl::Result::eErrorMissingInputParameter;
+    // Options only for the estimate: with them DLSS-G computes it, which is
+    // too expensive for a status poll (DLSS-G programming guide, 13.0).
+    const sl::DLSSGOptions options = BuildDlssgOptions(true, hints, true);
+    sl::DLSSGState out;
+    InternalCallScope internal;
+    const sl::Result r =
+        api->slDLSSGGetState(sl::ViewportHandle(0u), out, requestVramEstimate ? &options : nullptr);
+    if (r == sl::Result::eOk) {
+        *state = out;
+    } else {
+        LogThrottledFailure(requestVramEstimate ? "slDLSSGGetState(eRequestVRAMEstimate)" : "slDLSSGGetState", r);
+    }
+    return r;
+}
+
+sl::Result StreamlineRuntime::SetTagsForFrame(const sl::FrameToken& token, uint32_t viewport, ID3D12Resource* depth,
+                                              ID3D12Resource* mvec, const sl::Extent& extent,
+                                              ID3D12GraphicsCommandList* cmdList) {
+    Api* api = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (initialized_ && !shut_down_) api = api_;
+    }
+    if (!api) return sl::Result::eErrorNotInitialized;
+    if (!depth || !mvec) return sl::Result::eErrorMissingInputParameter;
+    sl::Resource depthRes(sl::ResourceType::eTex2d, depth, static_cast<uint32_t>(D3D12_RESOURCE_STATE_COMMON));
+    sl::Resource mvecRes(sl::ResourceType::eTex2d, mvec, static_cast<uint32_t>(D3D12_RESOURCE_STATE_COMMON));
+    const sl::ResourceTag tags[] = {
+        sl::ResourceTag(&depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &extent),
+        sl::ResourceTag(&mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &extent),
+    };
+    InternalCallScope internal;
+    const sl::Result r = api->slSetTagForFrame(token, sl::ViewportHandle(viewport), tags, 2,
+                                               static_cast<sl::CommandBuffer*>(cmdList));
+    if (r != sl::Result::eOk) LogThrottledFailure("slSetTagForFrame", r);
+    return r;
+}
+
+sl::Result StreamlineRuntime::SetNullTags(const sl::FrameToken& token, uint32_t viewport) {
+    Api* api = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (initialized_ && !shut_down_) api = api_;
+    }
+    if (!api) return sl::Result::eErrorNotInitialized;
+    const sl::ResourceTag tags[] = {
+        sl::ResourceTag(nullptr, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent),
+        sl::ResourceTag(nullptr, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent),
+    };
+    InternalCallScope internal;
+    const sl::Result r = api->slSetTagForFrame(token, sl::ViewportHandle(viewport), tags, 2, nullptr);
+    if (r != sl::Result::eOk) LogThrottledFailure("slSetTagForFrame(null tags)", r);
+    return r;
+}
+
+sl::Result StreamlineRuntime::SetConstants(const sl::Constants& constants, const sl::FrameToken& token,
+                                           uint32_t viewport) {
+    Api* api = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (initialized_ && !shut_down_) api = api_;
+    }
+    if (!api) return sl::Result::eErrorNotInitialized;
+    InternalCallScope internal;
+    const sl::Result r = api->slSetConstants(constants, token, sl::ViewportHandle(viewport));
+    if (r != sl::Result::eOk) LogThrottledFailure("slSetConstants", r);
+    return r;
 }
 
 int StreamlineRuntime::LogLoadedModules() const {
