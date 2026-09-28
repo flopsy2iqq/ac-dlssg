@@ -97,7 +97,9 @@ public:
     // caller may destroy that sink: the presenter calls SetSink(nullptr) before
     // it is destroyed. Called from inside a sink call on the same thread it
     // swaps without waiting, because it would otherwise wait on its own caller.
-    // Install and Uninstall swap the sink the same way.
+    // Install and Uninstall swap the sink the same way. Never call SetSink or
+    // Uninstall with the loader lock held (DllMain): a sink call it waits for
+    // may itself need the loader lock.
     void SetSink(NgxEvaluateSink* sink);
     uint32_t HookedModules() const;
 
