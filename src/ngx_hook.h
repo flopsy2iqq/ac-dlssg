@@ -87,7 +87,10 @@ public:
     // first, never writing to an unloaded module) and rescans after a load.
     // Call from Present. Without queued work it takes no lock and calls nothing.
     void ProcessPendingRescan();
-    // Restores patched bytes of modules still loaded (tests / shutdown).
+    // Restores patched bytes of modules still loaded (tests / shutdown), only
+    // into the module that was hooked and only over our own patch. It frees the
+    // trampolines, so no NGX call may be in progress on another thread; to
+    // detach a sink while NGX runs, use SetSink(nullptr) instead.
     void Uninstall();
     // Swaps the sink atomically. When it returns, no call into the previous
     // sink is in progress on any other thread (it waits for them), so the

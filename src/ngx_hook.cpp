@@ -52,8 +52,8 @@ struct Layer {
     bool used = false;
     // A denoiser snippet (DLSS NR / RR), or a module whose entry points resolve
     // into one: hooked so nesting is tracked, forwarded, never counted (F4).
-    // Set before any of the layer's patches goes live.
-    bool neverCount = false;
+    // Set before any of the layer's patches goes live; read by the detours.
+    std::atomic<bool> neverCount{false};
     InlineHook create;
     InlineHook eval;
     InlineHook eval_c;
