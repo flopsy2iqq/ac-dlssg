@@ -21,6 +21,8 @@ add_library(acdb_core STATIC
     src/config.cpp
     src/compat.cpp
     src/gpu_info.cpp
+    src/present_flags.cpp
+    src/latency_semaphore.cpp
 )
 target_include_directories(acdb_core PUBLIC src)
 
@@ -30,6 +32,8 @@ add_executable(acdb_tests
     tests/test_ini_config.cpp
     tests/test_compat.cpp
     tests/test_gpu_info.cpp
+    tests/test_present_flags.cpp
+    tests/test_latency_semaphore.cpp
     tests/gpu_test_devices.cpp
 )
 # version: only the tests compare against VERSION.dll; the bridge never imports it.
