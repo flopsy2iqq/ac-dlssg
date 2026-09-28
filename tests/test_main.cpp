@@ -5,6 +5,7 @@
 #include <exception>
 #include <string>
 
+#include "child_process.h"
 #include "test_framework.h"
 
 namespace acdb_test {
@@ -59,6 +60,12 @@ int main(int argc, char** argv) {
             ++skipped;
             continue;
         }
+        // Child_ tests run only in the fresh process RunChildTest starts for them.
+        if (std::strncmp(tc.name, acdb_test::kChildTestPrefix, sizeof(acdb_test::kChildTestPrefix) - 1) == 0 &&
+            !acdb_test::IsSelectedChildTest(tc.name)) {
+            ++skipped;
+            continue;
+        }
         acdb_test::g_failures_in_test = 0;
         const DWORD seh = RunGuarded(&RunBody, &tc);
         if (seh != 0) {
@@ -75,5 +82,11 @@ int main(int argc, char** argv) {
         }
     }
     std::printf("\n%d passed, %d failed, %d filtered out\n", passed, failed, skipped);
+    // A child started for a test that does not exist (a renamed or misspelt
+    // Child_ test) ran nothing; that must not count as a pass in the parent.
+    if (acdb_test::IsChildProcess() && passed + failed != 1) {
+        std::printf("child process ran %d tests instead of exactly 1\n", passed + failed);
+        return failed > 0 ? failed : 100;
+    }
     return failed;
 }

@@ -1,0 +1,858 @@
+// StreamlineRuntime with the real Streamline 2.14.1 DLLs, which CMakeLists.txt
+// copies to <test exe dir>\sl (the layout of <game>\ac-dlssg\sl). Streamline
+// allows one slInit/slShutdown lifetime per process, so every test runs in a
+// child process; each one ends with slShutdown before any D3D12/DXGI object
+// is released (spec 6.3) and must exit cleanly.
+#include <windows.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl/client.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <initializer_list>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "child_process.h"
+#include "config.h"
+#include "d3d12_presenter.h"
+#include "factory_hook.h"
+#include "gpu_test_devices.h"
+#include "log.h"
+#include "pcl_sequencer.h"
+#include "proxy_swapchain.h"
+#include "streamline_runtime.h"
+#include "temp_dir.h"
+#include "test_framework.h"
+
+#ifdef ACDB_SL_BIN_DIR
+
+using Microsoft::WRL::ComPtr;
+using namespace acdb;
+
+namespace {
+
+constexpr DWORD kChildTimeoutMs = 30000;
+constexpr UINT kNvidiaVendorId = 0x10DE;
+
+std::wstring ExeDir() {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return std::filesystem::path(exe).parent_path().wstring();
+}
+
+std::wstring SlDir() { return ExeDir() + L"\\sl"; }
+
+// Streamline's own log file and NGX data; kept after the run for inspection.
+std::wstring SlLogDir() {
+    const std::wstring tmp = ExeDir() + L"\\test_tmp";
+    CreateDirectoryW(tmp.c_str(), nullptr);
+    return tmp + L"\\sl-logs";
+}
+
+ULONG RefCount(IUnknown* obj) {
+    obj->AddRef();
+    return obj->Release();
+}
+
+// Our log for the lifetime of the object, in a scratch directory.
+class LogCapture {
+public:
+    explicit LogCapture(const wchar_t* tag) : dir_(tag), path_(dir_.Path() / L"bridge.log") {
+        LogOpen(path_.wstring(), LogLevel::Debug);
+    }
+    ~LogCapture() { LogClose(); }
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+
+    std::vector<std::string> Lines() const {
+        std::vector<std::string> out;
+        const std::string all = acdb_test::ReadAll(path_);
+        size_t start = 0;
+        while (start < all.size()) {
+            size_t end = all.find('\n', start);
+            if (end == std::string::npos) end = all.size();
+            out.push_back(all.substr(start, end - start));
+            start = end + 1;
+        }
+        return out;
+    }
+
+    // Lines that contain every one of the given pieces.
+    std::vector<std::string> Matching(std::initializer_list<const char*> pieces) const {
+        std::vector<std::string> out;
+        for (const auto& line : Lines()) {
+            bool all = true;
+            for (const char* p : pieces) all = all && line.find(p) != std::string::npos;
+            if (all) out.push_back(line);
+        }
+        return out;
+    }
+
+private:
+    acdb_test::TempDir dir_;
+    std::filesystem::path path_;
+};
+
+void Print(const char* title, const std::vector<std::string>& lines) {
+    std::printf("  %s: %zu\n", title, lines.size());
+    for (const auto& l : lines) std::printf("    %s\n", l.c_str());
+}
+
+// A hidden, never shown top-level window for the Streamline chain.
+class HiddenWindow {
+public:
+    HiddenWindow(int width, int height) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"acdbSlTest";
+        RegisterClassExW(&wc);
+        RECT r{0, 0, width, height};
+        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"acdb sl test", WS_OVERLAPPEDWINDOW, 0, 0, r.right - r.left,
+                                r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+    }
+    ~HiddenWindow() {
+        if (hwnd_) DestroyWindow(hwnd_);
+        UnregisterClassW(L"acdbSlTest", GetModuleHandleW(nullptr));
+    }
+    HiddenWindow(const HiddenWindow&) = delete;
+    HiddenWindow& operator=(const HiddenWindow&) = delete;
+    HWND Get() const { return hwnd_; }
+    void Pump() const {
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+private:
+    HWND hwnd_ = nullptr;
+};
+
+// Everything the Streamline path of D3D12Presenter creates (spec 6.4 steps
+// 1-7), in that order. Release() follows spec 6.3: GPU idle, slShutdown,
+// then the D3D12/DXGI objects.
+struct SlSession {
+    static constexpr UINT kWidth = 320;
+    static constexpr UINT kHeight = 180;
+    static constexpr UINT kBuffers = 3;
+
+    acdb_test::GpuTestDevices dev;
+    LUID luid{};
+    ComPtr<ID3D12Device> native;    // what slSetD3DDevice gets
+    ComPtr<ID3D12Device> upgraded;  // Streamline's device proxy
+    ComPtr<ID3D12CommandQueue> queue;  // created from the proxy: a queue proxy
+    ComPtr<IDXGIFactory4> nativeFactory;
+    ComPtr<IDXGIFactory4> factory;  // Streamline's factory proxy
+    ComPtr<IDXGISwapChain4> chain;
+    bool tearing = false;
+    std::unique_ptr<HiddenWindow> window;
+
+    // Returns false (with a printed reason) when the machine cannot run it.
+    bool Create(StreamlineRuntime& rt, bool* skipped) {
+        *skipped = false;
+        if (!acdb_test::CreateGpuTestDevices(&dev)) {
+            *skipped = true;
+            return false;
+        }
+        DXGI_ADAPTER_DESC1 desc{};
+        dev.adapter->GetDesc1(&desc);
+        if (dev.warp || desc.VendorId != kNvidiaVendorId) {
+            std::printf("  SKIP: first hardware adapter is not NVIDIA (vendor 0x%04X)\n", desc.VendorId);
+            *skipped = true;
+            return false;
+        }
+        luid = desc.AdapterLuid;
+        std::printf("  adapter: %ls\n", desc.Description);
+        native = dev.device12;
+
+        std::string err;
+        if (!rt.SetDevice(native.Get(), &err)) {
+            std::printf("  SetDevice failed: %s\n", err.c_str());
+            return false;
+        }
+        std::string why;
+        const bool fg = rt.DlssgSupported(luid, &why);
+        std::printf("  DlssgSupported: %s (%s)\n", fg ? "yes" : "no", why.c_str());
+        CHECK(!why.empty());
+
+        // Upgrade leaves our reference to the native device alone and hands
+        // us one reference to the proxy.
+        void* p = native.Get();
+        if (!rt.Upgrade(&p) || p == native.Get()) {
+            std::printf("  Upgrade(device) failed\n");
+            return false;
+        }
+        upgraded.Attach(static_cast<ID3D12Device*>(p));
+
+        D3D12_COMMAND_QUEUE_DESC qd{};
+        qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        HRESULT hr = upgraded->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue));
+        if (FAILED(hr)) {
+            std::printf("  CreateCommandQueue on the proxy failed: 0x%08lX\n", static_cast<unsigned long>(hr));
+            return false;
+        }
+
+        hr = dev.adapter->GetParent(IID_PPV_ARGS(&nativeFactory));
+        if (FAILED(hr)) return false;
+        p = nativeFactory.Get();
+        if (!rt.Upgrade(&p) || p == nativeFactory.Get()) {
+            std::printf("  Upgrade(factory) failed\n");
+            return false;
+        }
+        factory.Attach(static_cast<IDXGIFactory4*>(p));
+
+        ComPtr<IDXGIFactory5> f5;
+        BOOL allow = FALSE;
+        if (SUCCEEDED(nativeFactory.As(&f5)) &&
+            SUCCEEDED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow)))) {
+            tearing = allow != FALSE;
+        }
+
+        window = std::make_unique<HiddenWindow>(kWidth, kHeight);
+        if (!window->Get()) return false;
+        DXGI_SWAP_CHAIN_DESC1 sd{};
+        sd.Width = kWidth;
+        sd.Height = kHeight;
+        sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sd.SampleDesc.Count = 1;
+        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        sd.BufferCount = kBuffers;
+        sd.Scaling = DXGI_SCALING_STRETCH;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        sd.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;  // never the waitable flag
+        ComPtr<IDXGISwapChain1> chain1;
+        hr = factory->CreateSwapChainForHwnd(queue.Get(), window->Get(), &sd, nullptr, nullptr, &chain1);
+        if (FAILED(hr)) {
+            std::printf("  CreateSwapChainForHwnd on the proxy factory failed: 0x%08lX\n",
+                        static_cast<unsigned long>(hr));
+            return false;
+        }
+        hr = chain1.As(&chain);
+        return SUCCEEDED(hr);
+    }
+
+    // Spec 6.3 order: the chain's frames are done, then slShutdown, then the
+    // releases (chain, queue, factories, devices), then the window.
+    void Release(StreamlineRuntime& rt) {
+        rt.Shutdown();
+        chain.Reset();
+        queue.Reset();
+        factory.Reset();
+        nativeFactory.Reset();
+        upgraded.Reset();
+        native.Reset();
+        dev = acdb_test::GpuTestDevices();
+        window.reset();
+    }
+};
+
+}  // namespace
+
+// --- Init, the log callback, the loaded modules and Shutdown -----------------
+
+TEST(SlRuntime_RealDllsInitLogAndShutDown) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlRuntime_RealDllsInitLogAndShutDown", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlRuntime_RealDllsInitLogAndShutDown) {
+    LogCapture log(L"sl_real_init");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    const bool ok = rt.Init(SlDir(), SlLogDir(), &err);
+    if (!ok) std::printf("  Init error: %s\n", err.c_str());
+    REQUIRE(ok);
+    CHECK(err.empty());
+    CHECK(rt.Initialized());
+    CHECK(!rt.IsShutDown());
+    CHECK(GetModuleHandleW(L"sl.interposer.dll") != nullptr);
+
+    // Streamline's lines reach our log through the callback.
+    const auto slLines = log.Matching({" sl: "});
+    std::printf("  Streamline log lines after slInit: %zu\n", slLines.size());
+    CHECK(!slLines.empty());
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+
+    // Every Streamline module comes from the plugin directory.
+    CHECK_EQ(rt.LogLoadedModules(), 0);
+    Print("modules", log.Matching({"Streamline module"}));
+
+    rt.Shutdown();
+    CHECK(rt.IsShutDown());
+    CHECK(rt.Initialized());
+    CHECK(!log.Matching({"slShutdown eOk"}).empty());
+    // Closed for the rest of the process: Init refuses, nothing reaches Streamline.
+    std::string again;
+    CHECK(!rt.Init(SlDir(), SlLogDir(), &again));
+    std::printf("  second Init: %s\n", again.c_str());
+    CHECK(again.find("shut down") != std::string::npos);
+    CHECK(rt.NewFrameToken(1) == nullptr);
+    CHECK(!rt.ReflexLowLatencyAvailable());
+    rt.Shutdown();  // no second slShutdown
+    CHECK_EQ(log.Matching({"slShutdown"}).size(), 1u);
+
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+    std::printf("  Streamline warnings: %u\n", rt.WarningsLogged());
+    Print("warnings and errors in our log", log.Matching({" WARN "}));
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
+}
+
+// --- Device, feature functions, proxies and IsProxied ------------------------
+
+TEST(SlRuntime_RealDllsDeviceProxiesAndRefCounts) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlRuntime_RealDllsDeviceProxiesAndRefCounts", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlRuntime_RealDllsDeviceProxiesAndRefCounts) {
+    LogCapture log(L"sl_real_device");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+
+    SlSession s;
+    bool skipped = false;
+    const bool created = s.Create(rt, &skipped);
+    if (skipped) {
+        s.Release(rt);
+        return;
+    }
+    REQUIRE(created);
+    CHECK(!log.Matching({"Streamline: device set, Reflex and PCL functions resolved"}).empty());
+    const auto dlssg = log.Matching({"Streamline: DLSS-G functions"});
+    Print("DLSS-G functions", dlssg);
+    CHECK_EQ(dlssg.size(), 1u);
+    CHECK(rt.ReflexLowLatencyAvailable());
+    CHECK(rt.EnableReflexLowLatency());
+
+    // What slGetNativeInterface does (Streamline 2.14.1, production build):
+    // for a proxy it returns the base object with one reference added; for
+    // anything else it returns the same pointer, also with one reference added.
+    auto* getNative = reinterpret_cast<PFun_slGetNativeInterface*>(
+        GetProcAddress(GetModuleHandleW(L"sl.interposer.dll"), "slGetNativeInterface"));
+    REQUIRE(getNative != nullptr);
+    {
+        const ULONG before = RefCount(s.native.Get());
+        void* out = nullptr;
+        CHECK(getNative(s.native.Get(), &out) == sl::Result::eOk);
+        CHECK(out == s.native.Get());
+        CHECK_EQ(RefCount(s.native.Get()), before + 1);
+        if (out) static_cast<IUnknown*>(out)->Release();
+        CHECK_EQ(RefCount(s.native.Get()), before);
+    }
+    ComPtr<IDXGISwapChain> nativeChain;
+    {
+        void* out = nullptr;
+        CHECK(getNative(s.chain.Get(), &out) == sl::Result::eOk);
+        REQUIRE(out != nullptr);
+        CHECK(out != static_cast<void*>(s.chain.Get()));
+        nativeChain.Attach(static_cast<IDXGISwapChain*>(out));  // takes the added reference
+    }
+
+    // IsProxied: right answer, and no reference gained or lost on the object
+    // or on the native object behind a proxy.
+    struct Case {
+        const char* name;
+        IUnknown* obj;
+        IUnknown* behind;  // the native object behind a proxy, or nullptr
+        bool proxied;
+    } cases[] = {
+        {"native device", s.native.Get(), nullptr, false},
+        {"native factory", s.nativeFactory.Get(), nullptr, false},
+        {"upgraded device", s.upgraded.Get(), s.native.Get(), true},
+        {"upgraded factory", s.factory.Get(), s.nativeFactory.Get(), true},
+        {"queue from the upgraded device", s.queue.Get(), nullptr, true},
+        {"chain from the upgraded factory", s.chain.Get(), nativeChain.Get(), true},
+    };
+    for (const auto& c : cases) {
+        const ULONG objBefore = RefCount(c.obj);
+        const ULONG behindBefore = c.behind ? RefCount(c.behind) : 0;
+        const bool proxied = rt.IsProxied(c.obj);
+        const ULONG objAfter = RefCount(c.obj);
+        const ULONG behindAfter = c.behind ? RefCount(c.behind) : 0;
+        std::printf("  IsProxied(%s) = %d, refs %lu -> %lu, native refs %lu -> %lu\n", c.name, proxied,
+                    static_cast<unsigned long>(objBefore), static_cast<unsigned long>(objAfter),
+                    static_cast<unsigned long>(behindBefore), static_cast<unsigned long>(behindAfter));
+        CHECK_EQ(proxied, c.proxied);
+        CHECK_EQ(objAfter, objBefore);
+        CHECK_EQ(behindAfter, behindBefore);
+    }
+    CHECK(!rt.IsProxied(nullptr));
+    nativeChain.Reset();
+
+    s.Release(rt);
+    CHECK(rt.IsShutDown());
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+    std::printf("  Streamline warnings: %u\n", rt.WarningsLogged());
+    Print("warnings in our log", log.Matching({" WARN "}));
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
+}
+
+// --- 120 frames with Reflex and the PCL marker sequence -------------------------
+
+TEST(SlRuntime_RealDllsFrameLoopWithReflexAndMarkers) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlRuntime_RealDllsFrameLoop", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlRuntime_RealDllsFrameLoop) {
+    LogCapture log(L"sl_real_frames");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+
+    SlSession s;
+    bool skipped = false;
+    const bool created = s.Create(rt, &skipped);
+    if (skipped) {
+        s.Release(rt);
+        return;
+    }
+    REQUIRE(created);
+    REQUIRE(rt.EnableReflexLowLatency());
+    CHECK(rt.IsProxied(s.chain.Get()));
+
+    // Back buffers through the proxy chain; everything else on the native device.
+    ComPtr<ID3D12Resource> buffers[SlSession::kBuffers];
+    for (UINT i = 0; i < SlSession::kBuffers; ++i) REQUIRE(SUCCEEDED(s.chain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]))));
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    hd.NumDescriptors = SlSession::kBuffers;
+    ComPtr<ID3D12DescriptorHeap> rtvHeap;
+    REQUIRE(SUCCEEDED(s.native->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtvHeap))));
+    const UINT rtvStep = s.native->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    ComPtr<ID3D12CommandAllocator> allocators[SlSession::kBuffers];
+    ComPtr<ID3D12GraphicsCommandList> lists[SlSession::kBuffers];
+    for (UINT i = 0; i < SlSession::kBuffers; ++i) {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += static_cast<SIZE_T>(i) * rtvStep;
+        s.native->CreateRenderTargetView(buffers[i].Get(), nullptr, h);
+        REQUIRE(SUCCEEDED(
+            s.native->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators[i]))));
+        REQUIRE(SUCCEEDED(s.native->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[i].Get(), nullptr,
+                                                      IID_PPV_ARGS(&lists[i]))));
+        lists[i]->Close();
+    }
+    ComPtr<ID3D12Fence> fence;
+    REQUIRE(SUCCEEDED(s.native->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))));
+    const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    REQUIRE(event != nullptr);
+    UINT64 fenceValue = 0;
+    UINT64 bufferValue[SlSession::kBuffers] = {};
+    auto waitFor = [&](UINT64 value) {
+        if (fence->GetCompletedValue() >= value) return true;
+        fence->SetEventOnCompletion(value, event);
+        return WaitForSingleObject(event, 2000) == WAIT_OBJECT_0;
+    };
+
+    constexpr uint32_t kFrames = 120;
+    PclSequencer seq;
+    uint32_t markers = 0;
+    uint32_t occluded = 0;
+    uint32_t presentFailures = 0;
+    bool indexSeen[SlSession::kBuffers] = {};
+    auto emit = [&](const std::vector<PclMarker>& list, const sl::FrameToken& token) {
+        for (PclMarker m : list) {
+            rt.Marker(m, token);
+            ++markers;
+        }
+    };
+    const ULONGLONG start = GetTickCount64();
+    for (uint32_t frame = 1; frame <= kFrames; ++frame) {
+        s.window->Pump();
+        // Spec 7 step 1: token, Reflex sleep, SimulationStart.
+        sl::FrameToken* token = rt.NewFrameToken(frame);
+        REQUIRE(token != nullptr);
+        CHECK_EQ(static_cast<uint32_t>(*token), frame);
+        rt.ReflexSleep(*token);
+        emit(seq.BeginFrame(frame), *token);
+
+        const UINT idx = s.chain->GetCurrentBackBufferIndex();
+        REQUIRE(idx < SlSession::kBuffers);
+        indexSeen[idx] = true;
+        REQUIRE(waitFor(bufferValue[idx]));
+        REQUIRE(SUCCEEDED(allocators[idx]->Reset()));
+        ID3D12GraphicsCommandList* cl = lists[idx].Get();
+        REQUIRE(SUCCEEDED(cl->Reset(allocators[idx].Get(), nullptr)));
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = buffers[idx].Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cl->ResourceBarrier(1, &b);
+        D3D12_CPU_DESCRIPTOR_HANDLE h = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += static_cast<SIZE_T>(idx) * rtvStep;
+        const float color[4] = {static_cast<float>(frame % 60) / 60.0f, 0.2f, 0.4f, 1.0f};
+        cl->ClearRenderTargetView(h, color, 0, nullptr);
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        cl->ResourceBarrier(1, &b);
+        REQUIRE(SUCCEEDED(cl->Close()));
+        ID3D12CommandList* submit[] = {cl};
+        s.queue->ExecuteCommandLists(1, submit);
+
+        // Spec 7 steps 4-6: markers around the Present on the proxy chain.
+        emit(seq.BeforePresent(), *token);
+        const HRESULT hr = s.chain->Present(0, s.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        if (hr == DXGI_STATUS_OCCLUDED) ++occluded;
+        if (FAILED(hr)) {
+            if (presentFailures++ == 0) std::printf("  Present failed: 0x%08lX\n", static_cast<unsigned long>(hr));
+        }
+        emit(seq.AfterPresent(), *token);
+
+        bufferValue[idx] = ++fenceValue;
+        REQUIRE(SUCCEEDED(s.queue->Signal(fence.Get(), fenceValue)));
+    }
+    const ULONGLONG elapsed = GetTickCount64() - start;
+    CHECK(waitFor(fenceValue));
+    std::printf("  %u frames in %llu ms, %u markers, %u occluded, tearing %d\n", kFrames, elapsed, markers, occluded,
+                s.tearing);
+    CHECK_EQ(presentFailures, 0u);
+    CHECK_EQ(markers, kFrames * 6u);
+    CHECK_EQ(seq.AbandonedFrames(), 0u);
+    CHECK_EQ(seq.OutOfOrderCalls(), 0u);
+    for (bool seen : indexSeen) CHECK(seen);
+    // None of the per-frame calls failed (each logs its first failure).
+    CHECK(log.Matching({"slGetNewFrameToken failed"}).empty());
+    CHECK(log.Matching({"slReflexSleep failed"}).empty());
+    CHECK(log.Matching({"slPCLSetMarker failed"}).empty());
+
+    // Every Streamline module, NGX's DLSS-G snippet included, is ours.
+    CHECK_EQ(rt.LogLoadedModules(), 0);
+    Print("modules", log.Matching({"Streamline module"}));
+
+    // Spec 6.3: slShutdown before any D3D12/DXGI object is released.
+    rt.Shutdown();
+    CloseHandle(event);
+    for (auto& l : lists) l.Reset();
+    for (auto& a : allocators) a.Reset();
+    for (auto& b : buffers) b.Reset();
+    rtvHeap.Reset();
+    fence.Reset();
+    s.Release(rt);
+    CHECK(rt.IsShutDown());
+    std::string again;
+    CHECK(!rt.Init(SlDir(), SlLogDir(), &again));
+    CHECK(again.find("shut down") != std::string::npos);
+
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+    std::printf("  Streamline warnings: %u\n", rt.WarningsLogged());
+    Print("warnings in our log", log.Matching({" WARN "}));
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
+}
+
+// --- D3D12Presenter and ProxySwapChain on the Streamline path ------------------
+
+namespace {
+
+// The test devices when the first hardware adapter is NVIDIA; false (skip) otherwise.
+bool NvidiaDevices(acdb_test::GpuTestDevices* d) {
+    if (!acdb_test::CreateGpuTestDevices(d)) return false;
+    DXGI_ADAPTER_DESC1 desc{};
+    d->adapter->GetDesc1(&desc);
+    if (d->warp || desc.VendorId != kNvidiaVendorId) {
+        std::printf("  SKIP: first hardware adapter is not NVIDIA (vendor 0x%04X)\n", desc.VendorId);
+        return false;
+    }
+    return true;
+}
+
+// CSP's main swap chain (spec section 4): waitable, tearing.
+DXGI_SWAP_CHAIN_DESC1 CspDesc(UINT w, UINT h) {
+    DXGI_SWAP_CHAIN_DESC1 d{};
+    d.Width = w;
+    d.Height = h;
+    d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    d.SampleDesc.Count = 1;
+    d.BufferUsage = DXGI_USAGE_SHADER_INPUT | DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    d.BufferCount = 2;
+    d.Scaling = DXGI_SCALING_STRETCH;
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    d.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    return d;
+}
+
+// Stands in for the hidden chain's buffer 0.
+struct Source11 {
+    ComPtr<ID3D11Texture2D> tex;
+    ComPtr<ID3D11RenderTargetView> rtv;
+};
+
+Source11 CreateSource11(ID3D11Device* dev, UINT w, UINT h) {
+    Source11 s;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if (SUCCEEDED(dev->CreateTexture2D(&td, nullptr, &s.tex))) dev->CreateRenderTargetView(s.tex.Get(), nullptr, &s.rtv);
+    return s;
+}
+
+bool PresentOk(HRESULT hr) { return hr == S_OK || hr == DXGI_STATUS_OCCLUDED; }
+
+size_t FirstLine(const std::vector<std::string>& lines, const char* piece) {
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].find(piece) != std::string::npos) return i;
+    }
+    return std::string::npos;
+}
+
+// Per-frame Streamline calls never failed (the runtime logs each one's first failure).
+void CheckNoPerFrameFailures(const LogCapture& log) {
+    CHECK(log.Matching({"slGetNewFrameToken failed"}).empty());
+    CHECK(log.Matching({"slReflexSleep failed"}).empty());
+    CHECK(log.Matching({"slPCLSetMarker failed"}).empty());
+}
+
+}  // namespace
+
+TEST(SlPresenter_FramesMarkersResizeAndShutdown) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlPresenter_FramesMarkersResizeAndShutdown", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlPresenter_FramesMarkersResizeAndShutdown) {
+    LogCapture log(L"sl_presenter");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+    acdb_test::GpuTestDevices d;
+    if (!NvidiaDevices(&d)) {
+        rt.Shutdown();
+        return;
+    }
+    HiddenWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    {
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = CspDesc(640, 360);
+        info.streamline = &rt;
+        auto p = D3D12Presenter::Create(info, &err);
+        if (!p) std::printf("  D3D12Presenter::Create: %s\n", err.c_str());
+        REQUIRE(p != nullptr);
+        CHECK(p->UsesStreamline());
+        CHECK(rt.IsProxied(p->Chain()));
+        DXGI_SWAP_CHAIN_DESC1 cd{};
+        CHECK(SUCCEEDED(p->Chain()->GetDesc1(&cd)));
+        CHECK_EQ(cd.BufferCount, 3u);
+        CHECK_EQ(cd.Format, DXGI_FORMAT_R8G8B8A8_UNORM);
+        // CSP's chain is waitable; the Streamline chain never is (spec 6.3).
+        CHECK((cd.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) == 0);
+        CHECK(!p->HasLatencyWaitable());
+        CHECK(!log.Matching({"Streamline: Reflex low latency on"}).empty());
+        CHECK_EQ(p->FramesWithMarkers(), 0u);  // creation only started frame 1
+
+        auto frames = [&](const Source11& s, int n) {
+            int bad = 0;
+            for (int i = 0; i < n; ++i) {
+                const float color[4] = {static_cast<float>(i % 60) / 60.0f, 0.25f, 0.75f, 1.0f};
+                d.ctx11->ClearRenderTargetView(s.rtv.Get(), color);
+                const HRESULT hr = p->PresentFrame(d.ctx11.Get(), s.tex.Get(), 0, 0);
+                window.Pump();
+                if (!PresentOk(hr) && bad++ == 0)
+                    std::printf("  PresentFrame: 0x%08lX\n", static_cast<unsigned long>(hr));
+            }
+            return bad;
+        };
+        Source11 src = CreateSource11(d.device11.Get(), 640, 360);
+        REQUIRE(src.rtv);
+        const ULONGLONG start = GetTickCount64();
+        CHECK_EQ(frames(src, 120), 0);
+        std::printf("  120 frames in %llu ms\n", GetTickCount64() - start);
+        CHECK_EQ(p->FramesWithMarkers(), 120u);
+        CHECK_EQ(p->MarkerProblems(), 0u);
+
+        // Resize through the proxy chain; frames and markers continue.
+        CHECK(SUCCEEDED(p->Resize(800, 450)));
+        CHECK(SUCCEEDED(p->Chain()->GetDesc1(&cd)));
+        CHECK_EQ(cd.Width, 800u);
+        CHECK_EQ(cd.Height, 450u);
+        CHECK((cd.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) == 0);
+        Source11 big = CreateSource11(d.device11.Get(), 800, 450);
+        REQUIRE(big.rtv);
+        CHECK_EQ(frames(big, 30), 0);
+        // One more frame after a second, so that a stats line is written.
+        Sleep(1000);
+        CHECK_EQ(frames(big, 1), 0);
+        CHECK_EQ(p->FramesWithMarkers(), 151u);
+        CHECK_EQ(p->MarkerProblems(), 0u);
+        CHECK(!p->Stopped());
+        CHECK(!rt.IsShutDown());
+
+        p->ShutdownStreamlineOnRelease();
+        p.reset();
+    }
+    CHECK(rt.IsShutDown());
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+
+    // Spec 6.3: slShutdown after the drain and before the D3D12/DXGI releases.
+    const auto lines = log.Lines();
+    const size_t shutdownAt = FirstLine(lines, "Streamline: slShutdown eOk");
+    const size_t releasedAt = FirstLine(lines, "presenter released");
+    CHECK(shutdownAt != std::string::npos);
+    CHECK(releasedAt != std::string::npos);
+    CHECK(shutdownAt < releasedAt);
+    const auto stats = log.Matching({" stats: "});
+    Print("stats lines", stats);
+    CHECK(!stats.empty());
+    for (const auto& l : stats) CHECK(l.find(" streamline=on reflex=on pcl_problems=0") != std::string::npos);
+    CheckNoPerFrameFailures(log);
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+    std::printf("  Streamline warnings: %u\n", rt.WarningsLogged());
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
+}
+
+TEST(SlProxy_FinalReleaseShutsStreamlineDown) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlProxy_FinalReleaseShutsStreamlineDown", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlProxy_FinalReleaseShutsStreamlineDown) {
+    LogCapture log(L"sl_proxy");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+    acdb_test::GpuTestDevices d;
+    if (!NvidiaDevices(&d)) {
+        rt.Shutdown();
+        return;
+    }
+    HiddenWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    ComPtr<IDXGIFactory2> factory;
+    REQUIRE(SUCCEEDED(d.factory.As(&factory)));
+    CHECK_EQ(ProxySwapChain::LiveCount(), 0);
+
+    ComPtr<IDXGISwapChain1> chain;
+    HRESULT hr = ProxySwapChain::Create(factory.Get(), d.device11.Get(), window.Get(), CspDesc(640, 360), nullptr,
+                                        Config(), &rt, chain.GetAddressOf(), &err);
+    if (FAILED(hr)) std::printf("  ProxySwapChain::Create: 0x%08lX %s\n", static_cast<unsigned long>(hr), err.c_str());
+    REQUIRE(SUCCEEDED(hr) && chain);
+    {
+        ComPtr<ID3D11Texture2D> buffer;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        REQUIRE(SUCCEEDED(chain->GetBuffer(0, IID_PPV_ARGS(&buffer))));
+        REQUIRE(SUCCEEDED(d.device11->CreateRenderTargetView(buffer.Get(), nullptr, &rtv)));
+        int bad = 0;
+        for (int i = 0; i < 20; ++i) {
+            const float color[4] = {static_cast<float>(i) / 20.0f, 0.5f, 0.25f, 1.0f};
+            d.ctx11->ClearRenderTargetView(rtv.Get(), color);
+            if (!PresentOk(chain->Present(0, 0))) ++bad;
+            window.Pump();
+        }
+        CHECK_EQ(bad, 0);
+        d.ctx11->ClearState();
+        d.ctx11->Flush();
+    }
+
+    // While the chain lives, a main-window chain would be proxied.
+    ProxyDecisionInputs in;
+    in.is_d3d11_device = in.is_main_window = in.bootstrap_possible = in.compat_ok = true;
+    in.streamline_shut_down = rt.IsShutDown();
+    CHECK(ShouldProxy(in));
+
+    // Only the final Release shuts Streamline down.
+    ComPtr<IDXGISwapChain4> extra;
+    CHECK(SUCCEEDED(chain.As(&extra)));
+    chain.Reset();
+    CHECK(!rt.IsShutDown());
+    extra.Reset();
+    CHECK_EQ(ProxySwapChain::LiveCount(), 0);
+    CHECK(rt.IsShutDown());
+    const auto lines = log.Lines();
+    const size_t shutdownAt = FirstLine(lines, "Streamline: slShutdown eOk");
+    const size_t releasedAt = FirstLine(lines, "presenter released");
+    CHECK(shutdownAt != std::string::npos);
+    CHECK(shutdownAt < releasedAt);
+    CheckNoPerFrameFailures(log);
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
+
+    // Afterwards the hook passes every chain through (spec 6.3, 8).
+    in.streamline_shut_down = rt.IsShutDown();
+    CHECK(!ShouldProxy(in));
+    // A proxy that tried Streamline anyway fails cleanly and creates nothing.
+    ComPtr<IDXGISwapChain1> second;
+    std::string secondErr;
+    hr = ProxySwapChain::Create(factory.Get(), d.device11.Get(), window.Get(), CspDesc(640, 360), nullptr, Config(), &rt,
+                                second.GetAddressOf(), &secondErr);
+    std::printf("  second proxy after shutdown: 0x%08lX %s\n", static_cast<unsigned long>(hr), secondErr.c_str());
+    CHECK(FAILED(hr));
+    CHECK(!second);
+    CHECK(secondErr.find("shut down") != std::string::npos);
+    CHECK_EQ(ProxySwapChain::LiveCount(), 0);
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+}
+
+// A creation failure after slSetD3DDevice must not destroy the device while
+// Streamline still holds it (Streamline's guide: slShutdown before destroying
+// devices): the failed presenter shuts Streamline down before its releases,
+// and later chains pass through (spec 6.3, 8, 9).
+TEST(SlPresenter_CreationFailureAfterSetDeviceShutsStreamlineDown) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlPresenter_CreationFailureAfterSetDevice", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlPresenter_CreationFailureAfterSetDevice) {
+    LogCapture log(L"sl_create_fail");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+    acdb_test::GpuTestDevices d;
+    if (!NvidiaDevices(&d)) {
+        rt.Shutdown();
+        return;
+    }
+    HiddenWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    // A flip-model chain already on the window makes the D3D12 chain creation
+    // (step 5, after slSetD3DDevice and the device proxy) fail.
+    ComPtr<IDXGIFactory2> factory;
+    REQUIRE(SUCCEEDED(d.factory.As(&factory)));
+    DXGI_SWAP_CHAIN_DESC1 cd = CspDesc(640, 360);
+    cd.Flags = 0;
+    ComPtr<IDXGISwapChain1> occupant;
+    REQUIRE(SUCCEEDED(factory->CreateSwapChainForHwnd(d.device11.Get(), window.Get(), &cd, nullptr, nullptr,
+                                                      occupant.GetAddressOf())));
+    {
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = CspDesc(640, 360);
+        info.streamline = &rt;
+        auto p = D3D12Presenter::Create(info, &err);
+        std::printf("  D3D12Presenter::Create on an occupied window: %s\n", err.c_str());
+        CHECK(p == nullptr);
+        CHECK(err.find("CreateSwapChainForHwnd") != std::string::npos);
+    }
+    CHECK(rt.IsShutDown());
+    const auto lines = log.Lines();
+    const size_t shutdownAt = FirstLine(lines, "Streamline: slShutdown eOk");
+    const size_t releasedAt = FirstLine(lines, "presenter released");
+    CHECK(shutdownAt != std::string::npos);
+    CHECK(releasedAt != std::string::npos);
+    CHECK(shutdownAt < releasedAt);
+    occupant.Reset();
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+}
+
+#endif  // ACDB_SL_BIN_DIR

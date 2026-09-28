@@ -434,5 +434,8 @@ FodyWeavers.xsd
 # CMake build output
 build/
 
+# Third-party headers and binaries staged by tools/fetch-deps.ps1.
+deps/
+
 # Output of tools/collect-sysinfo.ps1
 tools/ac-dlssg-sysinfo/

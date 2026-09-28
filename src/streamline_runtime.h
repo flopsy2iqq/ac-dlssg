@@ -1,0 +1,129 @@
+#pragma once
+// NVIDIA Streamline for the bridge (spec 6.8). One process-wide instance.
+// Streamline's headers come from the pinned SDK (deps/streamline-2.14.1/include);
+// sl.interposer.dll is loaded at runtime by absolute path, never linked.
+#include <windows.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+
+#include <sl.h>
+#include <sl_dlss_g.h>
+#include <sl_pcl.h>
+#include <sl_reflex.h>
+
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <string>
+
+#include "pcl_sequencer.h"
+
+namespace acdb {
+
+// Fixed project id for production Streamline, which disables NGX features
+// unless projectId and engineVersion are both non-empty (spec 6.8).
+constexpr const char kSlProjectId[] = "3f0c9a52-7a4e-4f7e-9b0d-5f1c2a8e6d41";
+
+// Storage that the sl::Preferences returned by BuildPreferences points into;
+// it must outlive the slInit call.
+struct SlPreferencesStorage {
+    std::wstring plugin_dir;
+    std::wstring log_dir;
+    std::string engine_version;
+    const wchar_t* plugin_paths[1] = {};
+    sl::Feature features[3] = {};
+};
+
+// Spec 6.8:
+//  flags = eUseManualHooking | eUseFrameBasedResourceTagging | eDisableCLStateTracking
+//          (no eAllowOTA, no eLoadDownloadedPlugins);
+//  featuresToLoad = {kFeatureDLSS_G, kFeatureReflex, kFeaturePCL};
+//  pathsToPlugins = {pluginDir}; pathToLogsAndData = logDir;
+//  renderAPI = eD3D12; engine = eCustom; engineVersion = engineVersion;
+//  projectId = kSlProjectId; logLevel = eDefault; showConsole = false;
+//  logMessageCallback = callback (may be null in tests).
+sl::Preferences BuildPreferences(const std::wstring& pluginDir, const std::wstring& logDir,
+                                 const std::string& engineVersion, sl::PFun_LogMessageCallback* callback,
+                                 SlPreferencesStorage* storage);
+
+class StreamlineRuntime {
+public:
+    static StreamlineRuntime& Get();
+
+    // Verifies sl.interposer.dll in pluginDir with sl::security::verifyEmbeddedSignature,
+    // loads it with LoadLibraryW by absolute path, resolves the sl* exports
+    // with GetProcAddress and calls slInit(BuildPreferences(...), sl::kSDKVersion)
+    // under InternalCallScope. Streamline's log lines go to our log prefixed
+    // "sl: " at the matching level. Idempotent: a second call returns the first
+    // result; after Shutdown every call fails (one lifetime per process).
+    // Returns false with *error when any step fails; the process then
+    // runs without the bridge.
+    bool Init(const std::wstring& pluginDir, const std::wstring& logDir, std::string* error);
+    // Lock-free reads: FactoryHook asks from the thread creating a chain while
+    // another thread may be in Shutdown.
+    bool Initialized() const { return initialized_.load(); }
+    bool IsShutDown() const { return shut_down_.load(); }
+
+    // slSetD3DDevice(nativeDevice), then resolves slReflexSetOptions,
+    // slReflexGetState, slReflexSleep, slPCLSetMarker, slDLSSGSetOptions and
+    // slDLSSGGetState with slGetFeatureFunction. Missing DLSS-G functions are
+    // not an error (M2 does not use them); missing Reflex/PCL functions are.
+    // The DLSS-G functions are requested only when slIsFeatureSupported
+    // accepts the device's adapter (otherwise Streamline logs an error per
+    // request).
+    bool SetDevice(ID3D12Device* nativeDevice, std::string* error);
+
+    // slIsFeatureSupported(kFeatureDLSS_G, AdapterInfo{luid}). *why gets the
+    // sl::Result name and, when unsupported, the reason text.
+    bool DlssgSupported(const LUID& luid, std::string* why) const;
+
+    // slUpgradeInterface; true on sl::Result::eOk.
+    bool Upgrade(void** iface) const;
+    // True when slGetNativeInterface returns an object other than obj (the
+    // extra reference it adds is released).
+    bool IsProxied(IUnknown* obj) const;
+
+    // slReflexSetOptions({mode = eLowLatency}); true on eOk.
+    bool EnableReflexLowLatency();
+    // slReflexGetState().lowLatencyAvailable.
+    bool ReflexLowLatencyAvailable() const;
+
+    // slGetNewFrameToken with the caller's frame index; nullptr on failure.
+    sl::FrameToken* NewFrameToken(uint32_t frameIndex);
+    void ReflexSleep(const sl::FrameToken& token);
+    void Marker(PclMarker marker, const sl::FrameToken& token);
+
+    // Logs the full path and file version of every loaded sl.*.dll and
+    // nvngx_dlssg*.dll, and a WARN for each outside the plugin directory
+    // (an OTA override or another mod's copy, spec 6.8). Returns that count.
+    int LogLoadedModules() const;
+
+    // slShutdown() once; later calls do nothing. After it, Initialized()
+    // stays true and IsShutDown() is true for the rest of the process.
+    void Shutdown();
+
+    // Streamline log lines seen at error and warning level (tests).
+    uint32_t ErrorsLogged() const { return errors_.load(); }
+    uint32_t WarningsLogged() const { return warnings_.load(); }
+
+private:
+    StreamlineRuntime() = default;
+    static void OnLogMessage(sl::LogType type, const char* message);
+
+    mutable std::mutex mu_;
+    bool init_done_ = false;
+    // Written under mu_; atomic for the lock-free getters above.
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> shut_down_{false};
+    std::string init_error_;
+    std::wstring plugin_dir_;
+    HMODULE interposer_ = nullptr;
+    SlPreferencesStorage storage_;
+    std::atomic<uint32_t> errors_{0};
+    std::atomic<uint32_t> warnings_{0};
+    // Resolved entry points (implementation-defined function pointer types).
+    struct Api;
+    Api* api_ = nullptr;
+};
+
+}  // namespace acdb
