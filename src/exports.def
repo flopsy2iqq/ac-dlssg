@@ -1,0 +1,15 @@
+EXPORTS
+    CreateDXGIFactory=Bridge_CreateDXGIFactory
+    CreateDXGIFactory1=Bridge_CreateDXGIFactory1
+    CreateDXGIFactory2=Bridge_CreateDXGIFactory2
+    DXGIGetDebugInterface1=Bridge_DXGIGetDebugInterface1
+    DXGIDeclareAdapterRemovalSupport=Bridge_DXGIDeclareAdapterRemovalSupport
+    DXGIDisableVBlankVirtualization=Bridge_DXGIDisableVBlankVirtualization
+    DXGIReportAdapterConfiguration=Bridge_DXGIReportAdapterConfiguration
+    DXGIDumpJournal=Bridge_DXGIDumpJournal
+    CompatValue=Bridge_CompatValue
+    CompatString=Bridge_CompatString
+    DXGID3D10CreateDevice=Bridge_DXGID3D10CreateDevice
+    DXGID3D10CreateLayeredDevice=Bridge_DXGID3D10CreateLayeredDevice
+    DXGID3D10GetLayeredDeviceSize=Bridge_DXGID3D10GetLayeredDeviceSize
+    DXGID3D10RegisterLayers=Bridge_DXGID3D10RegisterLayers

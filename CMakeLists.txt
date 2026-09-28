@@ -21,10 +21,12 @@ add_library(acdb_core STATIC
     src/config.cpp
     src/compat.cpp
     src/gpu_info.cpp
+    src/module_version.cpp
     src/present_flags.cpp
     src/latency_semaphore.cpp
     src/internal_call.cpp
     src/system_dxgi.cpp
+    src/bootstrap.cpp
     src/vtable_patch.cpp
     src/factory_hook.cpp
     src/hidden_chain.cpp
@@ -36,6 +38,13 @@ add_library(acdb_core STATIC
 )
 target_include_directories(acdb_core PUBLIC src)
 
+add_library(ac-dlssg SHARED
+    src/dllmain.cpp
+    src/dxgi_exports.cpp
+    src/exports.def
+)
+target_link_libraries(ac-dlssg PRIVATE acdb_core)
+
 enable_testing()
 add_executable(acdb_tests
     tests/test_main.cpp
@@ -45,16 +54,25 @@ add_executable(acdb_tests
     tests/test_present_flags.cpp
     tests/test_latency_semaphore.cpp
     tests/test_vtable_patch.cpp
+    tests/test_factory_hook.cpp
     tests/test_hidden_chain.cpp
     tests/test_fence_pair.cpp
     tests/test_stall_watchdog.cpp
     tests/test_presenter.cpp
     tests/test_proxy_swapchain.cpp
+    tests/test_module_version.cpp
+    tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
 # version: only the tests compare against VERSION.dll; the bridge never imports it.
 target_link_libraries(acdb_tests PRIVATE acdb_core d3d11 d3d12 dxgi version)
+# The DLL-level test loads the built bridge DLL.
+target_compile_definitions(acdb_tests PRIVATE ACDB_DLL_PATH="$<TARGET_FILE:ac-dlssg>")
+add_dependencies(acdb_tests ac-dlssg)
 add_test(NAME unit COMMAND acdb_tests)
+# The import allow-list of spec 6.1 and 12.
+add_test(NAME imports COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+         -File "${CMAKE_SOURCE_DIR}/tools/check-imports.ps1" -Dll "$<TARGET_FILE:ac-dlssg>")
 # The D3D runtime keeps a shader-cache folder per test executable under
 # %LOCALAPPDATA%\D3DSCache; it is removed after the GPU tests.
 add_test(NAME clean_shader_cache COMMAND powershell -NoProfile -ExecutionPolicy Bypass
