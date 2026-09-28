@@ -104,13 +104,13 @@ TEST(FgGate_ReplayAndCameraJumpDoNotTurnItOff) {
 }
 
 TEST(FgGate_FirstFailingConditionIsReported) {
-    // The user's switch beats everything; support beats per-frame reasons;
-    // a missing capture beats the camera.
+    // Support beats everything (the user's switch cannot fix it); the user's
+    // switch beats per-frame reasons; a missing capture beats the camera.
     FgGateInputs in;  // everything false
-    CHECK(Contains(DecideFg(in).reason, "off by the user"));
-    in.userOn = true;
     CHECK(Contains(DecideFg(in).reason, "not supported"));
     in.supported = true;
+    CHECK(Contains(DecideFg(in).reason, "off by the user"));
+    in.userOn = true;
     CHECK(Contains(DecideFg(in).reason, "no DLSS evaluate"));
     in.captured = true;
     in.mvScaleMissing = true;

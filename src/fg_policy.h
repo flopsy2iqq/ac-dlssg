@@ -45,8 +45,8 @@ struct FgGateResult {
 };
 
 // The first failing condition, in this order:
-//  1. !userOn          "off by the user (start_with_fg or the hotkey)"
-//  2. !supported       "not supported on this adapter"
+//  1. !supported       "not supported on this adapter"
+//  2. !userOn          "off by the user (start_with_fg or the hotkey)"
 //  3. stateFailure     "DLSS-G status <stateFailure>"
 //  4. stalled          "D3D12 stall"                            (per frame)
 //  5. aspectRefusal    aspectRefusal

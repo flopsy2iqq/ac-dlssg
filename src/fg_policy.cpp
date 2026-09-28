@@ -23,8 +23,8 @@ FgGateResult Off(std::string reason, bool perFrame) {
 }  // namespace
 
 FgGateResult DecideFg(const FgGateInputs& in) {
-    if (!in.userOn) return Off("off by the user (start_with_fg or the hotkey)", false);
     if (!in.supported) return Off("not supported on this adapter", false);
+    if (!in.userOn) return Off("off by the user (start_with_fg or the hotkey)", false);
     if (!in.stateFailure.empty()) return Off("DLSS-G status " + in.stateFailure, false);
     if (in.stalled) return Off("D3D12 stall", true);
     if (!in.aspectRefusal.empty()) return Off(in.aspectRefusal, false);
