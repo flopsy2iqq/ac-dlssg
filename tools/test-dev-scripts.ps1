@@ -29,6 +29,9 @@
   only deleted when it holds the marker file this script writes, so a folder
   that was not created by this script is never removed.
 
+  One case reads collect-sysinfo.ps1 without running it: the wording of its
+  HAGS section, and that it contains no command that changes the system.
+
   Exits 0 when every check passes, 1 otherwise.
 
 .EXAMPLE
@@ -1154,6 +1157,32 @@ Invoke-Case 'Q: helpers (Steam library discovery, PE check on real builds)' {
             Write-Host "    skip  no $config build of ac-dlssg.dll"
         }
     }
+}
+
+# ---------------------------------------------------------------------------
+# collect-sysinfo.ps1 runs dxdiag and writes its report next to itself, so it
+# is checked as text, never run.
+Invoke-Case 'R: collect-sysinfo.ps1 (HAGS section, read-only)' {
+    $path = Join-Path $tools 'collect-sysinfo.ps1'
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+    Check (@($errors).Count -eq 0) 'collect-sysinfo.ps1 parses'
+    $text = [IO.File]::ReadAllText($path)
+    $m = [regex]::Match($text, "(?s)Section 'Hardware-accelerated GPU scheduling \(registry\)'(.*?)\r?\nSection ")
+    Check $m.Success 'the HAGS section exists'
+    $section = if ($m.Success) { $m.Groups[1].Value } else { '' }
+    Check ($section -match 'can be absent while HAGS is on') 'it says HwSchMode can be absent while HAGS is on'
+    Check ($section -match 'Hardware Scheduling' -and $section -match 'DirectX diagnostic') `
+        'it points at the per-adapter ''Hardware Scheduling'' lines in the DirectX diagnostic section'
+    Check ($section -notmatch '\(off, or not offered') 'a missing HwSchMode is not reported as off'
+    $writers = @('Set-ItemProperty', 'New-ItemProperty', 'Remove-ItemProperty', 'Rename-ItemProperty',
+        'Clear-ItemProperty', 'Set-Item', 'Remove-Item', 'Set-Content', 'Add-Content', 'reg', 'reg.exe', 'bcdedit',
+        'Set-Service', 'Stop-Service', 'Stop-Process')
+    $commands = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) |
+        ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+    $bad = @($commands | Where-Object { $writers -contains $_ } | Sort-Object -Unique)
+    Check ($bad.Count -eq 0) "no command that changes the system ($($bad -join ', '))"
 }
 
 # ---------------------------------------------------------------------------
