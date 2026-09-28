@@ -51,3 +51,21 @@ extern "C" int __cdecl NVSDK_NGX_D3D11_EvaluateFeature_C(void*, const void*, con
     --t_depth;
     return g_state.evalResult;
 }
+
+namespace {
+constexpr int kNgxFailInvalidParameter = static_cast<int>(0xBAD00005);  // NVSDK_NGX_Result_FAIL_InvalidParameter
+}  // namespace
+
+extern "C" int __cdecl NVSDK_NGX_D3D11_AllocateParameters(acdb::NgxParameter** outParams) {
+    if (!outParams) return kNgxFailInvalidParameter;
+    *outParams = new FakeNgxParam();
+    InterlockedIncrement(&g_state.allocatedParams);
+    return acdb::kNgxSuccess;
+}
+
+extern "C" int __cdecl NVSDK_NGX_D3D11_DestroyParameters(acdb::NgxParameter* params) {
+    if (!params) return kNgxFailInvalidParameter;
+    delete static_cast<FakeNgxParam*>(params);
+    InterlockedIncrement(&g_state.destroyedParams);
+    return acdb::kNgxSuccess;
+}

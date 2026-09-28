@@ -22,11 +22,18 @@
 // is the same evidence a user has in the game. The build puts the Streamline
 // DLLs in <exe dir>\ac-dlssg\sl, as the installer does in the game folder.
 //
+// M3: --fake-ngx plays CSP's DLSS calls against fake_nvngx.dll (the build's
+// fake NGX module, next to the exe) and --fake-camera plays the CSP Lua app
+// that publishes the camera (tools/testapp/fake_csp.h). With --expect-fg the
+// bridge log must then show the capture -> camera -> constants -> tags path
+// (the log lines of the M3 contract). DLSS-G itself never runs here.
+//
 // Exit codes: 0 every check passed, 1 a check failed (the reason is printed),
 // 2 usage or set-up error.
 #include <windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
+#include <tlhelp32.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -37,6 +44,9 @@
 #include <cwchar>
 #include <string>
 #include <vector>
+
+#include "fake_csp.h"
+#include "log_checks.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -83,7 +93,21 @@ constexpr float kRectangle[4] = {1.0f, 0.5f, 0.0f, 1.0f};
 constexpr unsigned char kBackgroundBytes[4] = {26, 51, 102, 255};
 constexpr unsigned char kRectangleBytes[4] = {255, 188, 0, 255};  // 0.5 linear is 188 in sRGB
 
+// --fake-ngx: the DLSS render size, the Quality ratio (2/3) of the window, so
+// that the render and output sizes differ as in CSP's upscaling modes.
+constexpr UINT kRenderScaleNum = 2;
+constexpr UINT kRenderScaleDen = 3;
+constexpr wchar_t kFakeNgxDll[] = L"fake_nvngx.dll";
+constexpr double kFakeCameraFps = 60.0;  // simulated time step of the fake drive
+// --expect-fg: the capture, camera and tag counts of each statistics line
+// after the first must reach this share of base_fps.
+constexpr double kFgMinShare = 0.9;
+// The bridge logs each distinct per-frame DLSS-G-off reason at most once per
+// 10 s (M3 contract); the timestamps have millisecond resolution.
+constexpr double kFgReasonPeriodMs = 10000.0 - 50.0;
+
 enum class Expect { Any, Proxy, Passthrough };
+enum class ExpectFg { None, Pipeline, NoCamera };
 
 struct Options {
     int frames = 600;
@@ -99,6 +123,10 @@ struct Options {
     int gpu_load = 0;       // extra 4096x4096 RGBA16F copies per frame, to make frames GPU-bound
     int cpu_load_ms = 0;    // CPU busy time per frame, to make frames CPU-bound
     Expect expect = Expect::Any;
+    std::string passthrough_reason;  // --expect-passthrough-reason: the text the pass-through must name
+    bool fake_ngx = false;           // CSP's DLSS calls against fake_nvngx.dll
+    bool fake_camera = false;        // the CSP Lua app's camera writer
+    ExpectFg expect_fg = ExpectFg::None;
     std::wstring fixture = L"default";
 };
 
@@ -358,6 +386,15 @@ struct App {
     int queue_depth_samples = 0;
     double probe_max_ms = 0;
     int probe_max_frame = -1;
+
+    // M3 (--fake-ngx, --fake-camera).
+    HMODULE ngx_module = nullptr;      // fake_nvngx.dll
+    testapp::FakeNgx ngx;
+    UINT ngx_first_w = 0, ngx_first_h = 0;  // render size of the first DLSS feature
+    testapp::CameraWriter camera;
+    uint32_t camera_writes = 0;
+    double camera_last_ms = 0;
+    bool frames_done = false;          // RunFrames presented every frame
 };
 
 std::wstring ExeDir() {
@@ -668,7 +705,14 @@ bool ClassifyChain(App& a) {
     if (a.is_proxy) ++a.proxies_created;
     Print("swap chain %d: %s (bridge log: %s)", a.chains_created, a.is_proxy ? "proxy" : "pass-through",
           d.line.c_str());
-    if (d.creation_failed) return Fail("the bridge wanted a proxy but its creation failed");
+    // --expect-passthrough-reason: the decision line, or the line of a proxy
+    // creation that failed (a presenter refused by Streamline), names it.
+    const bool namesReason =
+        !a.opt.passthrough_reason.empty() && d.line.find(a.opt.passthrough_reason) != std::string::npos;
+    if (d.creation_failed && !namesReason) return Fail("the bridge wanted a proxy but its creation failed");
+    if (!a.opt.passthrough_reason.empty() && !a.is_proxy && !namesReason)
+        return Fail("swap chain %d: the pass-through does not name \"%s\"", a.chains_created,
+                    a.opt.passthrough_reason.c_str());
     // Streamline allows one Init/Shutdown per process and the final Release
     // of a proxy shuts it down (spec 6.3, 8): after that, --expect-proxy
     // expects pass-through chains with that reason.
@@ -855,6 +899,110 @@ bool CreateChain(App& a) {
     return FetchBufferAndViews(a) && CheckChainIdentity(a);
 }
 
+// ---- CSP stand-ins (M3)
+
+// A process named acs.exe: a running game shares the camera section.
+bool GameRunning() {
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    for (BOOL more = Process32FirstW(snap, &pe); more && !found; more = Process32NextW(snap, &pe))
+        found = _wcsicmp(pe.szExeFile, L"acs.exe") == 0;
+    CloseHandle(snap);
+    return found;
+}
+
+UINT RenderSizeOf(UINT windowSize) { return std::max(windowSize * kRenderScaleNum / kRenderScaleDen, 1u); }
+
+// (Re)creates the DLSS feature for the current window size, as CSP does at
+// start and after a resize.
+bool CreateFakeFeature(App& a) {
+    const UINT rw = RenderSizeOf(a.width);
+    const UINT rh = RenderSizeOf(a.height);
+    std::string err;
+    if (!a.ngx.CreateFeature(a.device.Get(), a.ctx.Get(), rw, rh, a.width, a.height, &err))
+        return Fail("fake NGX: %s", err.c_str());
+    if (a.ngx.Creates() == 1) {
+        a.ngx_first_w = rw;
+        a.ngx_first_h = rh;
+    }
+    Print("fake NGX: DLSS feature %u created: render %ux%u, output %ux%u, create flags 0x%X", a.ngx.Creates(), rw, rh,
+          a.width, a.height, acdb::kNgxDlssFlagMVLowRes);
+    return true;
+}
+
+// After the swap chain exists, as CSP initialises DLSS and its Lua apps.
+bool SetUpCspFakes(App& a) {
+    if (a.opt.fake_ngx) {
+        const std::wstring path = a.exe_dir + L"\\" + kFakeNgxDll;
+        a.ngx_module = LoadLibraryW(path.c_str());
+        if (!a.ngx_module)
+            return Fail("fake NGX: LoadLibraryW(%s) failed: error %lu", Narrow(path).c_str(), GetLastError());
+        std::string err;
+        if (!a.ngx.Attach(a.ngx_module, &err)) return Fail("fake NGX: %s: %s", Narrow(path).c_str(), err.c_str());
+        Print("fake NGX: loaded %s", Narrow(path).c_str());
+        if (!CreateFakeFeature(a)) return false;
+    }
+    if (a.opt.fake_camera) {
+        std::string err;
+        if (!a.camera.Open(testapp::kCameraSectionName, &err))
+            return Fail("fake camera: %s: %s", Narrow(testapp::kCameraSectionName).c_str(), err.c_str());
+        a.camera_last_ms = NowMs();
+        Print("fake camera: writing %s once per frame (frame counter continues at %u)",
+              Narrow(testapp::kCameraSectionName).c_str(), a.camera.Frame());
+    }
+    return true;
+}
+
+// Once per frame before the DLSS evaluate, like the Lua app's
+// render.onSceneReady: the fake drive at kFakeCameraFps simulated frames per
+// second, with the current DLSS render size (the window's without DLSS).
+void WriteFakeCamera(App& a, int frame) {
+    const double now = NowMs();
+    const float rw = static_cast<float>(a.opt.fake_ngx ? a.ngx.RenderWidth() : a.width);
+    const float rh = static_cast<float>(a.opt.fake_ngx ? a.ngx.RenderHeight() : a.height);
+    const float dt = static_cast<float>((now - a.camera_last_ms) / 1000.0);
+    a.camera.Write(testapp::PathPose(frame / kFakeCameraFps), rw, rh, dt, frame * 1000.0 / kFakeCameraFps);
+    a.camera_last_ms = now;
+    ++a.camera_writes;
+}
+
+// Every call the test app made reached the fake module, and every frame was
+// evaluated once.
+bool CheckCspFakes(App& a) {
+    bool ok = true;
+    if (a.opt.fake_ngx && a.ngx.State()) {
+        const FakeNgxState* s = a.ngx.State();
+        Print("fake NGX: %u create(s) and %u evaluate(s) made; fake_nvngx.dll counted %ld and %ld", a.ngx.Creates(),
+              a.ngx.Evaluates(), s->createCalls, s->evalCalls);
+        if (s->createCalls != static_cast<long>(a.ngx.Creates()) ||
+            s->evalCalls != static_cast<long>(a.ngx.Evaluates()))
+            ok = Fail("fake NGX: fake_nvngx.dll did not see every call the test app made");
+        if (a.frames_done && a.ngx.Evaluates() != static_cast<uint32_t>(a.opt.frames))
+            ok = Fail("fake NGX: %u evaluates for %d frames", a.ngx.Evaluates(), a.opt.frames);
+    }
+    if (a.opt.fake_camera) {
+        Print("fake camera: %u records written, frame counter %u", a.camera_writes, a.camera.Frame());
+        if (a.frames_done && a.camera_writes != static_cast<uint32_t>(a.opt.frames))
+            ok = Fail("fake camera: %u records for %d frames", a.camera_writes, a.opt.frames);
+    }
+    return ok;
+}
+
+void ReleaseCspFakes(App& a) {
+    if (a.opt.fake_ngx && a.ngx.State()) {
+        const FakeNgxState* s = a.ngx.State();
+        a.ngx.Release();
+        if (s->allocatedParams != s->destroyedParams)
+            Fail("fake NGX: %ld parameter blocks allocated, %ld destroyed", s->allocatedParams, s->destroyedParams);
+    }
+    a.camera.Close();
+    // fake_nvngx.dll stays loaded, as NGX does in CSP: the bridge's hook
+    // patched it.
+}
+
 bool ResizeChain(App& a, UINT width, UINT height) {
     Print("resize to %ux%u", width, height);
     const SIZE size = WindowSizeForClient(width, height);
@@ -878,7 +1026,8 @@ bool ResizeChain(App& a, UINT width, UINT height) {
         a.proxy_resizes.push_back(line);
     }
     if (!CheckDesc1(a, "after ResizeBuffers")) return false;
-    return FetchBufferAndViews(a);
+    if (!FetchBufferAndViews(a)) return false;
+    return !a.opt.fake_ngx || CreateFakeFeature(a);
 }
 
 bool RecreateChain(App& a) {
@@ -1068,8 +1217,16 @@ bool RunFrames(App& a) {
         const double tWaited = NowMs();
         if (a.opt.vsync && f >= kQueueDepthFirstFrame) SampleQueueDepth(a);
 
+        // CSP's order: the Lua app's camera before the scene, DLSS after it,
+        // then post-processing, UI and Present.
+        if (a.opt.fake_camera) WriteFakeCamera(a, f);
         const RECT rect = RectangleFor(a, f);
         Render(a, rect);
+        if (a.opt.fake_ngx) {
+            std::string err;
+            if (!a.ngx.Evaluate(a.ctx.Get(), static_cast<uint32_t>(f), &err))
+                return Fail("frame %d: fake NGX: %s", f, err.c_str());
+        }
         if (f == verifyAt && !VerifyBuffer(a, rect, f)) return false;
         if (a.opt.stall && f >= kStallProbeFirst && f <= kStallProbeLast && !BlockingReadback(a, f)) return false;
 
@@ -1108,6 +1265,7 @@ bool RunFrames(App& a) {
                   tRendered - tWaited, tPresented - tRendered);
         if (dt > limit) return Fail("frame %d took %.0f ms (limit %lu ms)", f, dt, limit);
     }
+    a.frames_done = true;
     const double total = NowMs() - start;
     const double fps = total > 0 ? a.opt.frames * 1000.0 / total : 0.0;
     const UINT refresh = RefreshRateOf(a.hwnd);
@@ -1133,25 +1291,48 @@ bool RunFrames(App& a) {
 
 // ---- final log checks
 
-// A stats line (d3d12_presenter.cpp) ends with " streamline=on reflex=on
-// pcl_problems=0 vram_mib=<usage>/<budget>", both in MiB, the budget not zero.
-bool StatsTailOk(const std::string& line) {
-    constexpr char kTail[] = " streamline=on reflex=on pcl_problems=0 vram_mib=";
-    const size_t at = line.rfind(kTail);
-    if (at == std::string::npos) return false;
-    const std::string vram = line.substr(at + sizeof(kTail) - 1);
-    const size_t slash = vram.find('/');
-    if (slash == 0 || slash == std::string::npos || slash + 1 == vram.size()) return false;
-    for (size_t i = 0; i < vram.size(); ++i)
-        if (i != slash && (vram[i] < '0' || vram[i] > '9')) return false;
-    return std::strtoull(vram.c_str() + slash + 1, nullptr, 10) > 0;
+// The per-frame DLSS-G-off warnings: at most one per distinct reason per 10 s.
+bool CheckFgReasonThrottle(const BridgeLog& log) {
+    bool ok = true;
+    for (const auto& v : testapp::FgReasonThrottleViolations(log.lines, kFgReasonPeriodMs))
+        ok = Fail("\"fg: frame without DLSS-G:\" more than once per 10 s: %s", v.c_str());
+    return ok;
 }
 
+// --expect-fg: the lines of the M3 log line contract for the test app's fake
+// DLSS calls (and camera), at the first DLSS feature's render size.
+bool CheckFgLog(const App& a, const BridgeLog& log) {
+    testapp::FgExpectation e;
+    e.pipeline = a.opt.expect_fg == ExpectFg::Pipeline;
+    e.renderW = a.ngx_first_w;
+    e.renderH = a.ngx_first_h;
+    e.fovVDeg = testapp::kFovVDeg;
+    e.clipNear = testapp::kClipNear;
+    e.clipFar = testapp::kClipFar;
+    e.minShare = kFgMinShare;
+    e.reasonPeriodMs = kFgReasonPeriodMs;
+    const testapp::FgCheckResult r = testapp::CheckFgLines(log.lines, e);
+    for (const auto& l : r.evidence) Print("note: fg: %s", l.c_str());
+    for (const auto& p : r.problems) Fail("%s", p.c_str());
+    return r.problems.empty();
+}
 bool CheckLogAfterRun(App& a) {
     const BridgeLog log = ReadBridgeLog(a.log_path);
     if (!log.found) return Fail("bridge log not found: %s", Narrow(a.log_path).c_str());
     bool ok = true;
     for (const auto& line : log.lines) {
+        // --expect-passthrough-reason: the lines that name the expected
+        // reason are the evidence of the pass-through, whatever their level.
+        if (!a.opt.passthrough_reason.empty() && line.find(a.opt.passthrough_reason) != std::string::npos) {
+            Print("note: expected pass-through reason: %s", line.c_str());
+            continue;
+        }
+        // M3: the throttled per-frame DLSS-G-off reasons are expected in the
+        // test app, which has no DLSS-G (checked below and with --expect-fg).
+        if (line.find(testapp::kFgFrameWithoutTag) != std::string::npos) {
+            Print("note: fg warning: %s", line.c_str());
+            continue;
+        }
         // Streamline's own lines ("sl: ") included: none may be an error.
         if (line.find("] ERROR ") != std::string::npos) ok = Fail("bridge log error: %s", line.c_str());
         // Streamline's warnings are its own (without the spoof: no DLSS-G on
@@ -1214,11 +1395,11 @@ bool CheckLogAfterRun(App& a) {
         }
         if (dlssg != a.proxies_created)
             ok = Fail("the bridge log has %d DLSS-G support lines for %d presenters", dlssg, a.proxies_created);
-        for (const auto& l : log.lines)
-            if (l.find(" stats: base_fps=") != std::string::npos && !StatsTailOk(l))
-                ok = Fail("statistics without streamline=on reflex=on pcl_problems=0 vram_mib=<usage>/<budget> at "
-                          "the end: %s",
-                          l.c_str());
+        for (const auto& l : log.lines) {
+            if (l.find(" stats: base_fps=") == std::string::npos) continue;
+            const std::string problem = testapp::StatsProblem(testapp::ParseStats(l));
+            if (!problem.empty()) ok = Fail("statistics line: %s: %s", problem.c_str(), l.c_str());
+        }
         if (!log.Has(" presenter: VRAM (local) budget "))
             ok = Fail("the bridge log does not show the presenter's VRAM budget and usage");
         if (a.opt.stall) {
@@ -1244,6 +1425,15 @@ bool CheckLogAfterRun(App& a) {
         }
         if (!log.Has("stats: base_fps=")) Print("note: no statistics line (the run was shorter than a second)");
     }
+    // --expect-fg checks the throttle with the rest.
+    if (a.opt.expect_fg == ExpectFg::None && !CheckFgReasonThrottle(log)) ok = false;
+    if (a.opt.expect_fg != ExpectFg::None) {
+        if (a.proxies_created == 0) {
+            ok = Fail("--expect-fg needs a proxied swap chain");
+        } else if (!CheckFgLog(a, log)) {
+            ok = false;
+        }
+    }
     return ok;
 }
 
@@ -1253,7 +1443,8 @@ void Usage() {
     std::puts(
         "usage: testapp [--frames N] [--vsync] [--resize] [--test-present] [--recreate] [--stall]\n"
         "               [--expect-proxy | --expect-passthrough] [--fixture NAME] [--fps-cap N] [--hidden]\n"
-        "               [--via-dxgi | --standalone]\n"
+        "               [--via-dxgi | --standalone] [--expect-passthrough-reason TEXT]\n"
+        "               [--fake-ngx] [--fake-camera] [--expect-fg pipeline|no-camera]\n"
         "  --frames N            frames to present (default 600)\n"
         "  --vsync               Present(1, 0) instead of Present(0, ALLOW_TEARING)\n"
         "  --resize              ResizeBuffers to 1600x900 at frame 200 and back to 1280x720 at frame 400\n"
@@ -1272,7 +1463,19 @@ void Usage() {
         "  --via-dxgi            the factory from dxgi.dll next to the exe (ReShade with [PROXY]\n"
         "                        ProxyLibrary=ac-dlssg.dll) instead of loading the bridge directly\n"
         "  --standalone          the bridge is dxgi.dll next to the exe: bound at process start through\n"
-        "                        d3d11.dll's import, the factory from LoadLibraryW(L\"dxgi.dll\") by name");
+        "                        d3d11.dll's import, the factory from LoadLibraryW(L\"dxgi.dll\") by name\n"
+        "  --expect-passthrough-reason TEXT\n"
+        "                        the pass-through's decision line, or the line of its failed proxy creation,\n"
+        "                        names TEXT; lines naming TEXT may be warnings or errors\n"
+        "  --fake-ngx            CSP's DLSS calls against fake_nvngx.dll next to the exe: one SuperSampling\n"
+        "                        create (render size 2/3 of the window, MVLowRes), then per frame an evaluate\n"
+        "                        with depth, ping-ponged motion vectors, Halton jitter, MV.Scale and Reset\n"
+        "  --fake-camera         the CSP Lua app's camera: Local\\AcDlssg.Camera.v1 written before every frame\n"
+        "                        (refused while acs.exe runs, which shares that section)\n"
+        "  --expect-fg MODE      pipeline: the bridge log shows the capture, camera, constants and first-tags\n"
+        "                        lines, and the statistics captures, camera_fresh and tagged at 90% of base_fps;\n"
+        "                        no-camera: captures, but no fresh camera and no tags, and a warning naming\n"
+        "                        the camera");
 }
 
 bool ParseInt(const wchar_t* s, int minimum, int* out) {
@@ -1322,11 +1525,31 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
         } else if (arg == L"--expect-passthrough") {
             if (o->expect == Expect::Proxy) return false;
             o->expect = Expect::Passthrough;
+        } else if (arg == L"--expect-passthrough-reason" && hasValue) {
+            o->passthrough_reason = Narrow(argv[++i]);
+            if (o->passthrough_reason.empty()) return false;
+        } else if (arg == L"--fake-ngx") {
+            o->fake_ngx = true;
+        } else if (arg == L"--fake-camera") {
+            o->fake_camera = true;
+        } else if (arg == L"--expect-fg" && hasValue) {
+            const std::wstring mode = argv[++i];
+            if (mode == L"pipeline") {
+                o->expect_fg = ExpectFg::Pipeline;
+            } else if (mode == L"no-camera") {
+                o->expect_fg = ExpectFg::NoCamera;
+            } else {
+                return false;
+            }
         } else {
             return false;
         }
     }
     if (o->stall && o->fps_cap == 0) o->fps_cap = kStallFpsCap;
+    // The DLSS evaluate is what --expect-fg checks; a pipeline needs the camera.
+    if (o->expect_fg != ExpectFg::None && !o->fake_ngx) return false;
+    if (o->expect_fg == ExpectFg::Pipeline && !o->fake_camera) return false;
+    if (o->expect_fg == ExpectFg::NoCamera && o->fake_camera) return false;
     return true;
 }
 
@@ -1340,6 +1563,13 @@ int Run(App& a) {
     }
     if (!DirExists(a.exe_dir + L"\\extension\\config"))
         Print("note: %s\\extension\\config does not exist", Narrow(a.exe_dir).c_str());
+    // The camera section is per logon session: the game's bridge would read
+    // the fake camera, and the bridge here the game's.
+    if ((a.opt.fake_camera || a.opt.fake_ngx) && GameRunning()) {
+        Print("acs.exe is running; --fake-camera and --fake-ngx would share %s with it",
+              Narrow(testapp::kCameraSectionName).c_str());
+        return 2;
+    }
 
     // Read by the bridge's bootstrap and presenter; set before the DLL runs.
     SetEnvironmentVariableW(L"ACDLSSG_DOCS_DIR", docs.c_str());
@@ -1359,7 +1589,9 @@ int Run(App& a) {
     }
     PumpMessages();
 
-    bool ok = CreateDevice(a) && CreateChain(a) && RunFrames(a);
+    bool ok = CreateDevice(a) && CreateChain(a) && SetUpCspFakes(a) && RunFrames(a);
+    if (!CheckCspFakes(a)) ok = false;
+    ReleaseCspFakes(a);
     const int created = a.chains_created;
     ReleaseChain(a);
     if (const int hidden = CountBridgeHiddenWindows(); hidden != 0)
@@ -1389,6 +1621,14 @@ int Run(App& a) {
 int wmain(int argc, wchar_t** argv) {
     // Unbuffered, so that a run killed on timeout still shows how far it got.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    // The NGX runtime that Streamline loads here can start nvngx_update.exe
+    // with inherited handles; with the pipes of run-testapp.ps1 among them,
+    // the script's reads would wait for the updater to exit, minutes after
+    // this process has.
+    for (const DWORD std : {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE, STD_INPUT_HANDLE}) {
+        const HANDLE h = GetStdHandle(std);
+        if (h && h != INVALID_HANDLE_VALUE) SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+    }
     App app;
     if (!ParseArgs(argc, argv, &app.opt)) {
         Usage();

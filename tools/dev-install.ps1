@@ -23,10 +23,14 @@
       EnableProxyLibrary/ProxyLibrary lines) in
       <game>\ac-dlssg\install\dev-manifest.json before changing anything;
     - copies the Streamline DLLs and the license files next to them into
-      <game>\ac-dlssg\sl, then the bridge DLL, each through a .new file, a
-      hash check and a rename;
-    - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults and
-      log_level=debug when it does not exist.
+      <game>\ac-dlssg\sl, then the CSP Lua app (apps\lua\AcDlssg, which
+      publishes the camera to the bridge) into <game>\apps\lua\AcDlssg, then
+      the bridge DLL, each file through a .new file, a hash check and a
+      rename (spec 12 order). A <game>\apps\lua\AcDlssg that no previous run
+      of this script installed is refused in every mode, even with -Force;
+    - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults, the M3 keys
+      and log_level=debug when it does not exist, and names the M3 keys an
+      existing one lacks (the bridge then uses their defaults).
   When Windows denies writing into the game folder (a game under Program
   Files), it says to run it again from an elevated PowerShell.
 
@@ -64,6 +68,11 @@
   Default: deps\streamline-2.14.1\bin\x64 in the work tree this script
   belongs to, staged by tools\fetch-deps.ps1.
 
+.PARAMETER LuaApp
+  The CSP Lua app folder to install as <game>\apps\lua\AcDlssg. Default:
+  apps\lua\AcDlssg next to the tools folder this script is in (the
+  repository's, or the test package's).
+
 .PARAMETER Mode
   Auto (default), ReShade or Standalone; see the description.
 
@@ -80,6 +89,7 @@ param(
     [string]$GameDir,
     [string]$Dll,
     [string]$StreamlineDir,
+    [string]$LuaApp,
     [ValidateSet('Auto', 'ReShade', 'Standalone')]
     [string]$Mode = 'Auto',
     [switch]$Force
@@ -165,9 +175,46 @@ function Get-DefaultConfigText {
         'start_with_fg=1',
         'hotkey=ctrl+f10',
         '; max_frame_latency=1..16 overrides the value CSP sets; unset by default.',
-        'log_level=debug'
+        'log_level=debug',
+        '; Frame generation (M3). When Streamline says this GPU cannot run DLSS-G (an RTX 30',
+        '; without the dlssg_for_sm86 files), 0 lets the game run without the bridge;',
+        '; 1 keeps the bridge presenting without frame generation.',
+        'proxy_without_fg=0',
+        '; 1 sets the DLSS-G tags and constants every frame even while DLSS-G is',
+        '; unsupported or off (a test switch).',
+        'tag_without_fg=0',
+        '; Video memory (MiB) that must stay free in the budget before DLSS-G is turned on.',
+        'fg_vram_headroom_mib=512',
+        '; Camera checks for frame generation: 1 takes the other side of the CSP camera',
+        '; as the screen''s right (mirrors the reprojection).',
+        'camera_flip_handedness=0',
+        '; 1 negates only the right vector DLSS-G receives; the matrices stay.',
+        'camera_negate_side=0'
     )
     return ($lines -join "`r`n") + "`r`n"
+}
+
+# The ac-dlssg.ini keys M3 added; an existing ini without them gets the
+# bridge's defaults for them.
+$script:AcdbM3ConfigKeys = @('proxy_without_fg', 'tag_without_fg', 'fg_vram_headroom_mib', 'camera_flip_handedness',
+    'camera_negate_side')
+
+# The CSP Lua app that publishes the camera (spec 6.6): installed as
+# <game>\apps\lua\AcDlssg, like CSP's other Lua apps.
+$script:AcdbLuaAppRelDir = 'apps\lua\AcDlssg'
+
+# The app's files in $Dir; it must hold manifest.ini (CSP loads no app
+# without it) and AcDlssg.lua.
+function Get-LuaAppSources([string]$Dir) {
+    if (-not $Dir -or -not (Test-Path -LiteralPath $Dir -PathType Container)) {
+        Stop-Refused "the CSP Lua app folder $Dir was not found. Pass -LuaApp <folder with manifest.ini and AcDlssg.lua>."
+    }
+    foreach ($name in @('manifest.ini', 'AcDlssg.lua')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Dir $name) -PathType Leaf)) {
+            Stop-Refused "the CSP Lua app in $Dir has no $name; it cannot be installed."
+        }
+    }
+    return @(Get-ChildItem -LiteralPath $Dir -File -Recurse | Sort-Object FullName | ForEach-Object { $_.FullName })
 }
 
 function Write-Manifest([string]$Path, $Manifest) {
@@ -323,6 +370,11 @@ try {
     $slSources = @(Get-StreamlineSources $slSourceDir)
     Step "Streamline: $slSourceDir ($($script:AcdbSlDlls.Count) DLLs signed by $($script:AcdbSlSignerCn), $($slSources.Count - $script:AcdbSlDlls.Count) license files)"
 
+    if (-not $LuaApp) { $LuaApp = Join-Path $PSScriptRoot '..\apps\lua\AcDlssg' }
+    $luaSources = @(Get-LuaAppSources $LuaApp)
+    $luaSourceDir = Get-NormalizedPath (Resolve-Path -LiteralPath $LuaApp).ProviderPath
+    Step "CSP Lua app: $luaSourceDir ($($luaSources.Count) files)"
+
     $dxgi = Join-Path $game 'dxgi.dll'
     $dataDir = Join-Path $game $script:AcdbDataDirName
     $installDir = Join-Path $dataDir 'install'
@@ -391,10 +443,36 @@ try {
         }
         $slPlans += New-FilePlan $file $slTarget $rel $slRecorded[$rel.ToLowerInvariant()]
     }
+    # The Lua app after Streamline and before the bridge (spec 12 order). A
+    # folder of that name that this script did not install may be another app:
+    # refused. The folders a first install creates are recorded, deepest first,
+    # so that the uninstaller removes them again when they are empty.
+    $luaDir = Join-Path $game $script:AcdbLuaAppRelDir
+    $luaRecorded = @{}
+    $luaOldFiles = @()
+    $luaCreatedDirs = @()
+    if ($manifest -and $manifest.PSObject.Properties['luaApp'] -and $manifest.luaApp) {
+        $luaOldFiles = @($manifest.luaApp.files)
+        foreach ($f in $luaOldFiles) { $luaRecorded[([string]$f.path).ToLowerInvariant()] = [string]$f.sha256 }
+        $luaCreatedDirs = @($manifest.luaApp.createdDirs | ForEach-Object { [string]$_ })
+    } else {
+        if (Test-Path -LiteralPath $luaDir) {
+            Stop-Refused ("$luaDir exists but was not installed by this script; it may be another CSP app of that " +
+                'name. If you no longer use it, remove or rename it, then run this again.')
+        }
+        for ($rel = $script:AcdbLuaAppRelDir; $rel; $rel = Split-Path -Parent $rel) {
+            if (-not (Test-Path -LiteralPath (Join-Path $game $rel))) { $luaCreatedDirs += $rel }
+        }
+    }
+    $luaPlans = @()
+    foreach ($file in $luaSources) {
+        $rel = "$($script:AcdbLuaAppRelDir)\$($file.Substring($luaSourceDir.Length + 1))"
+        $luaPlans += New-FilePlan $file (Join-Path $game $rel) $rel $luaRecorded[$rel.ToLowerInvariant()]
+    }
     $dllRecorded = $null
     if ($manifest) { $dllRecorded = [string]$manifest.dll.sha256 }
     $dllPlan = New-FilePlan $source $target $targetRel $dllRecorded
-    $plans = @($slPlans) + @($dllPlan)
+    $plans = @($slPlans) + @($luaPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
     $foreign = @($plans | Where-Object { $_.Foreign })
     if ($foreign.Count -gt 0 -and -not $Force) {
@@ -467,9 +545,14 @@ try {
     foreach ($f in $slOldFiles) {
         if (-not ($slPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $slFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
     }
-    # Schema 2 adds mode; dev-uninstall.ps1 reads a schema 1 manifest as reshade.
+    $luaFiles = @($luaPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
+    foreach ($f in $luaOldFiles) {
+        if (-not ($luaPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $luaFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
+    }
+    # Schema 2 adds mode, schema 3 luaApp; dev-uninstall.ps1 reads a schema 1
+    # manifest as reshade and one without luaApp as one without the Lua app.
     $newManifest = [ordered]@{
-        schema       = 2
+        schema       = 3
         tool         = 'tools\dev-install.ps1'
         mode         = $chosen.Mode
         state        = 'installing'
@@ -478,6 +561,7 @@ try {
         gameDir      = $game
         reshade      = $reshadeRecord
         streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
+        luaApp       = [ordered]@{ source = $luaSourceDir; dir = $script:AcdbLuaAppRelDir; createdDirs = $luaCreatedDirs; files = $luaFiles }
         dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }
     }
@@ -503,6 +587,11 @@ try {
 
     if ($configExisted) {
         Step "kept the existing $config"
+        $configDoc = Read-IniDoc $config
+        $lacking = @($script:AcdbM3ConfigKeys | Where-Object { $null -eq (Get-IniFirstValue $configDoc 'bridge' $_) })
+        if ($lacking.Count -gt 0) {
+            Step "note: it lacks the M3 keys $($lacking -join ', '); the bridge uses their defaults (see Get-DefaultConfigText in tools\dev-install.ps1)"
+        }
     } else {
         $rollback += @{ Kind = 'file'; Path = $config }
         Write-Utf8NoBom $config (Get-DefaultConfigText)
@@ -529,9 +618,9 @@ try {
         Remove-Item -LiteralPath $backupDir -Force
     }
     if ($standalone) {
-        Say "done. The bridge is $target (standalone mode, no ReShade). Undo with tools\dev-uninstall.ps1."
+        Say "done. The bridge is $target (standalone mode, no ReShade), the CSP Lua app $luaDir. Undo with tools\dev-uninstall.ps1."
     } else {
-        Say "done. ReShade now loads $proxyValue. Undo with tools\dev-uninstall.ps1."
+        Say "done. ReShade now loads $proxyValue; the CSP Lua app is $luaDir. Undo with tools\dev-uninstall.ps1."
     }
 } catch {
     $exitCode = 1

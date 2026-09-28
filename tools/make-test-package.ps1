@@ -14,7 +14,11 @@
                          scripts\dev-install.ps1 (default -Mode Auto)
     uninstall.ps1        tools\package\uninstall.ps1: runs scripts\dev-uninstall.ps1
     collect-logs.ps1     read-only: zips the bridge's logs, config, manifest,
-                         a game folder listing and a system report
+                         a game folder listing, CSP's log with the Lua app's
+                         lines, the dlssg_for_sm86 logs and a system report
+    apps\lua\AcDlssg\    the CSP Lua app that publishes the camera (from the
+                         repository's apps\lua\AcDlssg); dev-install.ps1 puts it
+                         into <game>\apps\lua\AcDlssg
     scripts\             dev-common.ps1, dev-install.ps1, dev-uninstall.ps1,
                          fetch-deps.ps1, collect-sysinfo.ps1
   The package works without the repository or any build tool.
@@ -103,6 +107,12 @@ try {
     foreach ($f in @('dev-common.ps1', 'dev-install.ps1', 'dev-uninstall.ps1', 'fetch-deps.ps1', 'collect-sysinfo.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $f) -Destination (Join-Path $scripts $f)
     }
+    # The CSP Lua app, where scripts\dev-install.ps1 finds it by default (..\apps\lua\AcDlssg).
+    $luaSource = Join-Path $repo 'apps\lua\AcDlssg'
+    if (-not (Test-Path -LiteralPath (Join-Path $luaSource 'manifest.ini') -PathType Leaf)) { throw "the CSP Lua app is missing: $luaSource" }
+    $luaTarget = Join-Path $pkg 'apps\lua\AcDlssg'
+    New-Item -ItemType Directory -Force -Path $luaTarget | Out-Null
+    Copy-Item -Path (Join-Path $luaSource '*') -Destination $luaTarget -Recurse
 
     $dllHash = Get-Sha256OfFile $Dll
     $readme = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'package\README-test.txt'), $script:Utf8NoBom)
@@ -125,7 +135,7 @@ try {
 
     Write-Host "make-test-package: $pkg"
     foreach ($f in $files | Sort-Object FullName) {
-        Write-Host ('  {0,-28} {1,10:N0} bytes' -f $f.FullName.Substring($pkg.Length + 1), $f.Length)
+        Write-Host ('  {0,-34} {1,10:N0} bytes' -f $f.FullName.Substring($pkg.Length + 1), $f.Length)
     }
     Write-Host "  ac-dlssg.dll SHA-256 $dllHash, version $Version, commit $commit"
     Write-Host "make-test-package: $zip ($('{0:N0}' -f (Get-Item -LiteralPath $zip).Length) bytes)"

@@ -15,10 +15,12 @@
      NVIDIA's GitHub release only when not already there, SHA-256 and NVIDIA
      signatures verified. It lists NVIDIA's license files and asks to accept
      them, unless -AcceptNvidiaLicenses is given.
-  3. Runs scripts\dev-install.ps1 with ac-dlssg.dll from this folder. -Mode
-     Auto (the default) installs standalone (the bridge as <game>\dxgi.dll)
-     when the game has no dxgi.dll, and next to ReShade when ReShade is the
-     game's dxgi.dll; it refuses any other dxgi.dll.
+  3. Runs scripts\dev-install.ps1 with ac-dlssg.dll and the CSP Lua app
+     apps\lua\AcDlssg from this folder. -Mode Auto (the default) installs
+     standalone (the bridge as <game>\dxgi.dll) when the game has no dxgi.dll,
+     and next to ReShade when ReShade is the game's dxgi.dll; it refuses any
+     other dxgi.dll. The Lua app goes to <game>\apps\lua\AcDlssg; a folder of
+     that name that the install did not create is refused.
   Undo with uninstall.ps1. When Windows denies writing into the game folder
   (a game under C:\Program Files (x86)), run this from an elevated PowerShell.
 
@@ -89,6 +91,7 @@ try {
     $installArgs = @{
         GameDir       = $game
         Dll           = (Join-Path $PSScriptRoot 'ac-dlssg.dll')
+        LuaApp        = (Join-Path $PSScriptRoot 'apps\lua\AcDlssg')
         StreamlineDir = $StreamlineDir
         Mode          = $Mode
     }
