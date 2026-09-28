@@ -250,6 +250,60 @@ TEST(Config_MaxFrameLatencyRange) {
     CHECK(c.warnings.empty());
 }
 
+// The M3 keys (camera A/B switches, the DLSS-G-unsupported policy, the video
+// memory guard's headroom).
+TEST(Config_M3KeyDefaults) {
+    Config c = ParseConfig(IniFile::Parse(""));
+    CHECK(!c.camera_flip_handedness);
+    CHECK(!c.camera_negate_side);
+    CHECK(!c.proxy_without_fg);
+    CHECK(!c.tag_without_fg);
+    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK(c.warnings.empty());
+}
+
+TEST(Config_M3KeysParsed) {
+    Config c = ParseConfig(IniFile::Parse("[bridge]\ncamera_flip_handedness=1\ncamera_negate_side=1\n"
+                                          "proxy_without_fg=1\ntag_without_fg=1\nfg_vram_headroom_mib=0\n"));
+    CHECK(c.camera_flip_handedness);
+    CHECK(c.camera_negate_side);
+    CHECK(c.proxy_without_fg);
+    CHECK(c.tag_without_fg);
+    CHECK_EQ(c.fg_vram_headroom_mib, 0u);
+    CHECK(c.warnings.empty());
+    c = ParseConfig(IniFile::Parse("[bridge]\ncamera_flip_handedness=0\nproxy_without_fg=0\nfg_vram_headroom_mib=2048\n"));
+    CHECK(!c.camera_flip_handedness);
+    CHECK(!c.proxy_without_fg);
+    CHECK_EQ(c.fg_vram_headroom_mib, 2048u);
+    CHECK(c.warnings.empty());
+}
+
+TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
+    Config c = ParseConfig(IniFile::Parse("[bridge]\ncamera_flip_handedness=2\ncamera_negate_side=on\n"
+                                          "proxy_without_fg=-1\ntag_without_fg=x\nfg_vram_headroom_mib=-5\n"));
+    CHECK(!c.camera_flip_handedness);
+    CHECK(!c.camera_negate_side);
+    CHECK(!c.proxy_without_fg);
+    CHECK(!c.tag_without_fg);
+    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    REQUIRE(c.warnings.size() == 5);
+    const char* keys[] = {"camera_flip_handedness", "camera_negate_side", "proxy_without_fg", "tag_without_fg",
+                          "fg_vram_headroom_mib"};
+    for (const char* k : keys) {
+        bool found = false;
+        for (const auto& w : c.warnings) found = found || w.find(k) != std::string::npos;
+        if (!found) std::printf("  no warning mentions %s\n", k);
+        CHECK(found);
+    }
+    // Above 64 GiB is refused as a typo; an empty value keeps the default quietly.
+    c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=65537\n"));
+    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK_EQ(c.warnings.size(), 1u);
+    c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=\n"));
+    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK(c.warnings.empty());
+}
+
 TEST(Config_LoadMissingFileGivesDefaults) {
     TempDir dir(L"cfg");
     Config c = LoadConfig(dir.Str() + L"\\ac-dlssg.ini");

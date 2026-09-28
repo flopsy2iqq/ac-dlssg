@@ -97,6 +97,21 @@ Config ParseConfig(const IniFile& ini) {
         }
     }
 
+    ParseBool(ini.Get(kSection, "camera_flip_handedness"), "camera_flip_handedness", &c.camera_flip_handedness,
+              &c.warnings);
+    ParseBool(ini.Get(kSection, "camera_negate_side"), "camera_negate_side", &c.camera_negate_side, &c.warnings);
+    ParseBool(ini.Get(kSection, "proxy_without_fg"), "proxy_without_fg", &c.proxy_without_fg, &c.warnings);
+    ParseBool(ini.Get(kSection, "tag_without_fg"), "tag_without_fg", &c.tag_without_fg, &c.warnings);
+    if (const auto raw = ini.Get(kSection, "fg_vram_headroom_mib"); raw && !raw->empty()) {
+        const auto v = ToInt(raw);
+        if (v && *v >= 0 && *v <= 65536) {
+            c.fg_vram_headroom_mib = static_cast<unsigned>(*v);
+        } else {
+            c.warnings.push_back("fg_vram_headroom_mib: invalid value '" + *raw +
+                                 "' (expected 0..65536 MiB); using default");
+        }
+    }
+
     if (const auto raw = ini.Get(kSection, "log_level")) {
         const std::string v = Lower(*raw);
         if (v == "error") {

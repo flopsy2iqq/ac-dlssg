@@ -240,6 +240,10 @@ void Run(BootstrapState* s) {
     LOGI("config: enabled=%d start_with_fg=%d hotkey=%s%s%svk 0x%02X max_frame_latency=%u log_level=%s",
          c.enabled ? 1 : 0, c.start_with_fg ? 1 : 0, c.hotkey.ctrl ? "ctrl+" : "", c.hotkey.shift ? "shift+" : "",
          c.hotkey.alt ? "alt+" : "", c.hotkey.vk, c.max_frame_latency, LevelName(c.log_level));
+    LOGI("config: camera_flip_handedness=%d camera_negate_side=%d proxy_without_fg=%d tag_without_fg=%d "
+         "fg_vram_headroom_mib=%u",
+         c.camera_flip_handedness ? 1 : 0, c.camera_negate_side ? 1 : 0, c.proxy_without_fg ? 1 : 0,
+         c.tag_without_fg ? 1 : 0, c.fg_vram_headroom_mib);
     for (const auto& w : c.warnings) LOGW("config: %s", w.c_str());
 
     LogAdapters();

@@ -22,6 +22,19 @@ struct Config {
     Hotkey hotkey;                 // hotkey=ctrl+f10
     unsigned max_frame_latency = 0;  // 0 = unset; 1..16 overrides CSP's value
     LogLevel log_level = LogLevel::Info;  // log_level=error|warn|info|debug
+    // M3. Camera A/B switches of spec 6.7 (FrameConstantsOptions).
+    bool camera_flip_handedness = false;  // camera_flip_handedness=0|1 (flipHandedness)
+    bool camera_negate_side = false;      // camera_negate_side=0|1 (negateSide)
+    // When Streamline says DLSS-G is unsupported: 0 fails the presenter, so the
+    // chain passes through (spec criterion 5); 1 keeps the M2 behaviour of
+    // proxying without DLSS-G.
+    bool proxy_without_fg = false;  // proxy_without_fg=0|1
+    // 1 sets tags and constants every frame with a capture and a fresh camera
+    // even while DLSS-G is unsupported or off (test app).
+    bool tag_without_fg = false;  // tag_without_fg=0|1
+    // Video memory guard (spec 6.11): free budget must cover the DLSS-G
+    // estimate plus this much. 0..65536.
+    unsigned fg_vram_headroom_mib = 512;  // fg_vram_headroom_mib=<MiB>
     std::vector<std::string> warnings;    // human-readable parse problems
 };
 
