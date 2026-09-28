@@ -50,6 +50,7 @@ $tools = $PSScriptRoot
 $installScript = Join-Path $tools 'dev-install.ps1'
 $uninstallScript = Join-Path $tools 'dev-uninstall.ps1'
 $commonScript = Join-Path $tools 'dev-common.ps1'
+$packageScript = Join-Path $tools 'make-test-package.ps1'
 
 foreach ($f in @($installScript, $uninstallScript, $commonScript)) {
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) {
@@ -1306,6 +1307,101 @@ Invoke-Case 'SA6: access denied in the game folder asks for an elevated PowerShe
     Check ($r.Code -eq 0) 'install exits 0 once the folder is writable'
     $r = Uninstall $game -RemoveData
     Check ($r.Code -eq 0) 'uninstall exits 0'
+}
+
+# ---------------------------------------------------------------------------
+# The friend test package (tools\make-test-package.ps1): built from the fake
+# bridge DLL into -FakeRoot, then used from its own layout, with no repo.
+
+function Get-ZipEntryNames([string]$Zip) {
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
+    try { return @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }) } finally { $archive.Dispose() }
+}
+
+Invoke-Case 'PK: the friend test package' {
+    $out = Join-Path $FakeRoot 'package'
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $text = @(& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $packageScript -Dll $dllV1 `
+                -OutDir $out -Version '9.8.7' 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $eap
+    }
+    $text | ForEach-Object { Write-Host "      | $_" }
+    Check ($code -eq 0) 'make-test-package exits 0'
+    $pkg = Join-Path $out 'ac-dlssg-9.8.7-test'
+    $zip = "$pkg.zip"
+    Check ((Test-Path -LiteralPath $pkg -PathType Container) -and (Test-Path -LiteralPath $zip -PathType Leaf)) 'the package folder and the zip next to it exist'
+    $expected = @('README-test.txt', 'ac-dlssg.dll', 'collect-logs.ps1', 'install.ps1', 'uninstall.ps1',
+        'scripts/collect-sysinfo.ps1', 'scripts/dev-common.ps1', 'scripts/dev-install.ps1', 'scripts/dev-uninstall.ps1',
+        'scripts/fetch-deps.ps1')
+    $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | ForEach-Object { $_.FullName.Substring($pkg.Length + 1).Replace('\', '/') } | Sort-Object)
+    Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
+    $dlls = @($files | Where-Object { $_ -like '*.dll' })
+    Check ($dlls.Count -eq 1 -and $dlls[0] -eq 'ac-dlssg.dll') 'the package holds no DLL other than ac-dlssg.dll'
+    $entries = @(Get-ZipEntryNames $zip | Where-Object { -not $_.EndsWith('/') })
+    $zipDlls = @($entries | Where-Object { $_ -like '*.dll' })
+    Check ($zipDlls.Count -eq 1 -and $zipDlls[0] -eq 'ac-dlssg-9.8.7-test/ac-dlssg.dll') 'the zip holds no DLL other than ac-dlssg.dll'
+    Check (@($entries | Where-Object { $_ -match '(?i)nvngx|dlssg_sm86|sl\.[a-z_]+\.dll|version\.dll' }).Count -eq 0) 'no NVIDIA or dlssg_for_sm86 file in the zip'
+    Check ($entries.Count -eq $expected.Count) 'the zip holds the same files as the folder'
+    Check ((Get-Sha (Join-Path $pkg 'ac-dlssg.dll')) -eq (Get-Sha $dllV1)) 'the package DLL is the given build'
+    $readme = Read-Bytes (Join-Path $pkg 'README-test.txt')
+    $readmeText = $utf8.GetString($readme)
+    Check ((Test-HasBom $readme) -and $readmeText -match '[Ѐ-ӿ]') 'README-test.txt is UTF-8 with a BOM, in Russian'
+    Check ($readmeText -match 'install\.ps1' -and $readmeText -match 'collect-logs\.ps1' -and $readmeText -match 'uninstall\.ps1' -and
+        $readmeText -match '-ExecutionPolicy Bypass' -and $readmeText -match '9\.8\.7' -and
+        $readmeText -match (Get-Sha $dllV1)) 'README-test.txt names the scripts, the Bypass command, the version and the DLL hash'
+
+    # install.ps1 from the package layout, standalone, Streamline from -StreamlineDir (no download).
+    $game = New-FakeGame 'PK' -NoDxgi
+    $r = Invoke-Tool (Join-Path $pkg 'install.ps1') @('-GameDir', $game, '-StreamlineDir', $slReal, '-NoPause')
+    Check ($r.Code -eq 0) 'the package install.ps1 exits 0'
+    Check ($r.Text -match 'mode: standalone') 'it installs in standalone mode (Auto, no dxgi.dll)'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'the package DLL is <game>\dxgi.dll'
+    Check (Test-SlMatches $game $slReal) 'the Streamline files are installed'
+    Check ((Get-Manifest $game).mode -eq 'standalone') 'the manifest records standalone mode'
+
+    # collect-logs.ps1: read-only, one zip next to the script.
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake bridge log`r`n"
+    Write-Text (Join-Path $game 'ac-dlssg\logs\sl.log') "fake Streamline log`r`n"
+    $before = @(Get-ChildItem -LiteralPath $game -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+    $r = Invoke-Tool (Join-Path $pkg 'collect-logs.ps1') @('-GameDir', $game, '-SkipSysinfo', '-NoPause')
+    Check ($r.Code -eq 0) 'collect-logs.ps1 exits 0'
+    $after = @(Get-ChildItem -LiteralPath $game -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+    Check (($before -join "`n") -eq ($after -join "`n")) 'collect-logs.ps1 changes nothing in the game folder'
+    $logZips = @(Get-ChildItem -LiteralPath $pkg -Filter 'ac-dlssg-logs-*.zip' -File)
+    Check ($logZips.Count -eq 1) 'collect-logs.ps1 writes one zip next to itself'
+    if ($logZips.Count -eq 1) {
+        $names = @(Get-ZipEntryNames $logZips[0].FullName)
+        foreach ($n in @('ac-dlssg/logs/bridge.log', 'ac-dlssg/logs/sl.log', 'ac-dlssg/ac-dlssg.ini',
+                'ac-dlssg/install/dev-manifest.json', 'game-files.txt', 'collect-logs.txt')) {
+            Check (@($names | Where-Object { $_ -like "*/$n" -or $_ -eq $n }).Count -eq 1) "the log zip holds $n"
+        }
+        Remove-Item -LiteralPath $logZips[0].FullName
+    }
+    Check (@(Get-ChildItem -LiteralPath $pkg -Directory | Where-Object { $_.Name -like 'ac-dlssg-logs-*' }).Count -eq 0) 'no staging folder left'
+
+    $r = Invoke-Tool (Join-Path $pkg 'uninstall.ps1') @('-GameDir', $game, '-NoPause')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'the package uninstall.ps1 removes dxgi.dll'
+
+    # Without -StreamlineDir the package uses <package>\deps as fetch-deps.ps1
+    # stages it; already staged, nothing is downloaded.
+    $deps = Join-Path $pkg 'deps'
+    New-Item -ItemType Directory -Path $deps -Force | Out-Null
+    $staged = Join-Path $tools '..\deps\streamline-2.14.1'
+    Copy-Item -LiteralPath $staged -Destination (Join-Path $deps 'streamline-2.14.1') -Recurse
+    Copy-Item -LiteralPath "$staged.sha256" -Destination (Join-Path $deps 'streamline-2.14.1.sha256')
+    $r = Invoke-Tool (Join-Path $pkg 'install.ps1') @('-GameDir', $game, '-AcceptNvidiaLicenses', '-NoPause')
+    Check ($r.Code -eq 0) 'install.ps1 without -StreamlineDir exits 0 with <package>\deps staged'
+    Check ($r.Text -match 'present and verified' -and $r.Text -notmatch 'downloading') 'it verifies the staged Streamline and downloads nothing'
+    Check ($r.Text -match 'nvngx_dlss\.license\.txt') 'it names the NVIDIA license files'
+    Check (Test-SlMatches $game (Join-Path $deps 'streamline-2.14.1\bin\x64')) 'the staged Streamline files are installed'
+    $r = Invoke-Tool (Join-Path $pkg 'uninstall.ps1') @('-GameDir', $game, '-RemoveData', '-NoPause')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'uninstall.ps1 -RemoveData removes everything'
 }
 
 # ---------------------------------------------------------------------------
