@@ -79,3 +79,5 @@ add_test(NAME clean_shader_cache COMMAND powershell -NoProfile -ExecutionPolicy 
          -File "${CMAKE_SOURCE_DIR}/tools/clean-shader-cache.ps1")
 set_tests_properties(clean_shader_cache PROPERTIES FIXTURES_CLEANUP d3d_shader_cache)
 set_tests_properties(unit PROPERTIES FIXTURES_REQUIRED d3d_shader_cache)
+
+add_subdirectory(tools/testapp)
