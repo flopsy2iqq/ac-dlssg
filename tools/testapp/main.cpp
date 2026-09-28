@@ -89,6 +89,8 @@ struct Options {
     bool hidden = false;
     bool via_dxgi = false;  // the factory from <exe dir>\dxgi.dll (ReShade) instead of the bridge
     int fps_cap = 0;        // 0: none
+    int gpu_load = 0;       // extra 4096x4096 RGBA16F copies per frame, to make frames GPU-bound
+    int cpu_load_ms = 0;    // CPU busy time per frame, to make frames CPU-bound
     Expect expect = Expect::Any;
     std::wstring fixture = L"default";
 };
@@ -326,6 +328,7 @@ struct App {
     ComPtr<ID3D11Texture2D> buffer;
     ComPtr<ID3D11RenderTargetView> rtv;
     ComPtr<ID3D11RenderTargetView> rtv_srgb;
+    ComPtr<ID3D11Texture2D> load_src, load_dst;  // --gpu-load
     HANDLE waitable = nullptr;
     UINT width = 0;
     UINT height = 0;
@@ -457,6 +460,19 @@ bool CreateDevice(App& a) {
     a.clear_view = SUCCEEDED(a.device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options))) &&
                    options.ClearView;
     if (!a.clear_view) Print("ClearView is not supported; the rectangle is not drawn and not verified");
+
+    if (a.opt.gpu_load > 0) {
+        D3D11_TEXTURE2D_DESC ld{};
+        ld.Width = ld.Height = 4096;
+        ld.MipLevels = ld.ArraySize = 1;
+        ld.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        ld.SampleDesc.Count = 1;
+        ld.Usage = D3D11_USAGE_DEFAULT;
+        ld.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(a.device->CreateTexture2D(&ld, nullptr, &a.load_src)) ||
+            FAILED(a.device->CreateTexture2D(&ld, nullptr, &a.load_dst)))
+            return Fail("could not create the GPU load textures");
+    }
     return true;
 }
 
@@ -741,6 +757,12 @@ RECT RectangleFor(const App& a, int frame) {
 }
 
 void Render(App& a, const RECT& rect) {
+    for (int i = 0; i < a.opt.gpu_load && a.load_src; ++i) a.ctx->CopyResource(a.load_dst.Get(), a.load_src.Get());
+    if (a.opt.cpu_load_ms > 0) {
+        const double until = NowMs() + a.opt.cpu_load_ms;
+        while (NowMs() < until) {
+        }
+    }
     if (a.clear_view) {
         a.ctx1->ClearView(a.rtv.Get(), kBackground, nullptr, 0);
         a.ctx1->ClearView(a.rtv_srgb.Get(), kRectangle, &rect, 1);
@@ -1039,6 +1061,8 @@ void Usage() {
         "  --expect-passthrough  fail unless the bridge passes every swap chain through\n"
         "  --fixture NAME        docs fixture: default = fixture\\docs, else fixture\\NAME\\docs\n"
         "  --fps-cap N           CPU frame limiter like CSP's FPS_CAP (--stall defaults to 200)\n"
+        "  --gpu-load N          N extra 4096x4096 RGBA16F copies per frame (GPU-bound frames)\n"
+        "  --cpu-load-ms N       N ms of CPU busy work per frame (CPU-bound frames)\n"
         "  --hidden              never show the window\n"
         "  --via-dxgi            the factory from dxgi.dll next to the exe (ReShade with [PROXY]\n"
         "                        ProxyLibrary=ac-dlssg.dll) instead of loading the bridge directly");
@@ -1060,6 +1084,10 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
             if (!ParseInt(argv[++i], 1, &o->frames)) return false;
         } else if (arg == L"--fps-cap" && hasValue) {
             if (!ParseInt(argv[++i], 1, &o->fps_cap)) return false;
+        } else if (arg == L"--gpu-load" && hasValue) {
+            if (!ParseInt(argv[++i], 1, &o->gpu_load)) return false;
+        } else if (arg == L"--cpu-load-ms" && hasValue) {
+            if (!ParseInt(argv[++i], 1, &o->cpu_load_ms)) return false;
         } else if (arg == L"--fixture" && hasValue) {
             o->fixture = argv[++i];
             if (o->fixture.empty() || o->fixture.find_first_of(L"\\/.:") != std::wstring::npos) return false;
