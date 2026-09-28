@@ -641,7 +641,9 @@ $skipped = @($results | Where-Object { $_.Result -eq 'SKIP' }).Count
 $failures = @($results | Where-Object { $_.Result -ne 'PASS' -and $_.Result -ne 'SKIP' }).Count
 # The D3D runtime's per-executable shader cache lands in %LOCALAPPDATA%;
 # nothing of the test runs may stay outside the work tree.
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'clean-shader-cache.ps1')
+# Through a pipe: this script's own standard handles are not inheritable.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'clean-shader-cache.ps1') 2>&1 |
+    ForEach-Object { Write-Host "$_" }
 Write-Host ''
 Write-Host ("Bridge ms: average bridge_gpu_ms d3d11 + d3d12 from the bridge's stats lines; the default scenario " +
     "fails above $(Format-Ms $BudgetMs) ms (spec 2, criterion 3).")
