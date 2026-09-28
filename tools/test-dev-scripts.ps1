@@ -6,7 +6,10 @@
   Every case builds its own fake Assetto Corsa folder under -FakeRoot (a dummy
   acs.exe, a fake ReShade dxgi.dll, ReShade.ini fixtures and a hand-made x64 PE
   file that stands in for ac-dlssg.dll), runs the scripts in a child Windows
-  PowerShell and checks the resulting bytes.
+  PowerShell and checks the resulting bytes. The standalone cases (SA*) use
+  fake game folders without a dxgi.dll, or with a foreign one, and one of
+  them denies the current user writing into the fake game folder to check
+  the elevated-PowerShell hint.
 
   The scripts are never pointed at a real game folder: every run passes
   -GameDir, and the runner refuses any -GameDir outside -FakeRoot.
@@ -147,18 +150,21 @@ function Invoke-Tool([string]$Script, [string[]]$Arguments) {
     return [pscustomobject]@{ Code = $code; Text = ($output -join "`n") }
 }
 
-# -Sl '' leaves -StreamlineDir to the script's default.
-function Install([string]$Game, [string]$Dll, [switch]$Force, [string]$Sl = $slReal) {
+# -Sl '' leaves -StreamlineDir to the script's default; -Mode '' leaves -Mode
+# to the script's default (Auto).
+function Install([string]$Game, [string]$Dll, [switch]$Force, [string]$Sl = $slReal, [string]$Mode = '') {
     $a = @('-GameDir', $Game)
     if ($Dll) { $a += @('-Dll', $Dll) }
     if ($Sl) { $a += @('-StreamlineDir', $Sl) }
+    if ($Mode) { $a += @('-Mode', $Mode) }
     if ($Force) { $a += '-Force' }
     return Invoke-Tool $installScript $a
 }
 
-function Uninstall([string]$Game, [switch]$RemoveData) {
+function Uninstall([string]$Game, [switch]$RemoveData, [switch]$Force) {
     $a = @('-GameDir', $Game)
     if ($RemoveData) { $a += '-RemoveData' }
+    if ($Force) { $a += '-Force' }
     return Invoke-Tool $uninstallScript $a
 }
 
@@ -427,13 +433,13 @@ if (-not $fakeReShade -or -not $fakeOther) {
     exit 1
 }
 
-# A fake game folder with a fake ReShade dxgi.dll. The space in the name
-# exercises quoting.
-function New-FakeGame([string]$Case) {
+# A fake game folder with a fake ReShade dxgi.dll, or with no dxgi.dll at all
+# (-NoDxgi, a game without ReShade). The space in the name exercises quoting.
+function New-FakeGame([string]$Case, [switch]$NoDxgi) {
     $game = Join-Path $FakeRoot "games\$Case\assetto corsa"
     New-Item -ItemType Directory -Path $game -Force | Out-Null
     Write-Text (Join-Path $game 'acs.exe') 'not a real executable'
-    Copy-Item -LiteralPath $fakeReShade -Destination (Join-Path $game 'dxgi.dll')
+    if (-not $NoDxgi) { Copy-Item -LiteralPath $fakeReShade -Destination (Join-Path $game 'dxgi.dll') }
     return $game
 }
 
@@ -471,6 +477,8 @@ Invoke-Case 'A: realistic ReShade.ini, EnableProxyLibrary=0, CRLF, upgrade, full
     $r = Install $game $dllV1
     Check ($r.Code -eq 0) 'install exits 0'
     Check ($r.Text -match 'ReShade: .*dxgi\.dll, version 6\.8\.0\.2155') 'install reports the ReShade version it checked'
+    Check ($r.Text -match 'mode: reshade \(auto') 'the default -Mode Auto picks ReShade mode for a ReShade dxgi.dll'
+    Check ((Get-Manifest $game).mode -eq 'reshade') 'manifest records mode reshade'
     $expected = Get-RealisticIni 'EnableProxyLibrary=1' "ProxyLibrary=$ourDll"
     Check (Test-SameBytes (Read-Bytes $ini) $expected) 'only the two [PROXY] lines changed, CRLF kept, other bytes identical'
     Check (-not (Test-HasBom (Read-Bytes $ini))) 'no BOM added'
@@ -854,8 +862,8 @@ Invoke-Case 'I: ReShade checks' {
     $r = Install $game $dllV1
     Check (Test-Refused $r) 'install refuses a dxgi.dll without a version resource'
     Remove-Item -LiteralPath $dxgi
-    $r = Install $game $dllV1
-    Check (Test-Refused $r) 'install refuses when dxgi.dll is missing'
+    $r = Install $game $dllV1 -Mode ReShade
+    Check (Test-Refused $r) 'install -Mode ReShade refuses when dxgi.dll is missing'
     Check (Test-SameBytes (Read-Bytes $ini) $original) 'ReShade.ini unchanged'
     Check (-not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'no DLL copied'
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'no data folder created'
@@ -1125,6 +1133,182 @@ Invoke-Case 'U: default -Dll is build\Release\ac-dlssg.dll' {
 }
 
 # ---------------------------------------------------------------------------
+# Standalone mode: the bridge installed as <game>\dxgi.dll, without ReShade.
+
+function Get-GameDxgi([string]$Game) { return Join-Path $Game 'dxgi.dll' }
+
+Invoke-Case 'SA1: standalone (auto, no dxgi.dll): install, re-run, upgrade, uninstall' {
+    $game = New-FakeGame 'SA1' -NoDxgi
+    $dxgi = Get-GameDxgi $game
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check ($r.Text -match 'mode: standalone \(auto: no dxgi\.dll in the game folder\)') 'Auto picks standalone mode and says why'
+    Check ((Test-Path -LiteralPath $dxgi) -and (Get-Sha $dxgi) -eq (Get-Sha $dllV1)) 'the bridge is copied to <game>\dxgi.dll with the same hash'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'no ac-dlssg.dll in the game folder'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ReShade.ini'))) 'no ReShade.ini written'
+    Check (Test-SlMatches $game $slReal) 'ac-dlssg\sl holds the Streamline files'
+    Check (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\ac-dlssg.ini')) 'ac-dlssg.ini written'
+    Check (Test-NoLeftovers @($game, (Get-SlDir $game))) 'no .new files left'
+    $m = Get-Manifest $game
+    Check ($m.mode -eq 'standalone' -and $m.state -eq 'installed') 'manifest records mode standalone, state installed'
+    Check ($m.dll.path -eq 'dxgi.dll' -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'manifest records dxgi.dll with its hash'
+    Check ($null -eq $m.reshade) 'manifest has no ReShade record'
+    $slAt = $r.Text.IndexOf('copied ac-dlssg\sl\')
+    Check ($slAt -ge 0 -and $slAt -lt $r.Text.IndexOf('copied dxgi.dll')) 'Streamline is copied before dxgi.dll'
+
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and $r.Text -match 'dxgi\.dll is already this version') 're-run exits 0 and keeps dxgi.dll'
+    $r = Install $game $dllV2 -Sl $slV2 -Mode Standalone
+    Check ($r.Code -eq 0) 'upgrade with -Mode Standalone exits 0'
+    Check ((Get-Sha $dxgi) -eq (Get-Sha $dllV2)) 'upgrade replaces dxgi.dll'
+    Check (Test-SlMatches $game $slV2) 'upgrade replaces the Streamline files'
+    Check ((Get-Manifest $game).dll.sha256 -eq (Get-Sha $dllV2)) 'manifest records the new hash'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\install\backup'))) 'no backup left after the upgrade'
+    Check (Test-NoLeftovers @($game, (Get-SlDir $game))) 'no .new files left after the upgrade'
+
+    $fakeAcs = Join-Path $game 'acs.exe'
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\timeout.exe') -Destination $fakeAcs -Force
+    $proc = Start-Process -FilePath $fakeAcs -ArgumentList '/t', '120', '/nobreak' -WindowStyle Hidden -PassThru
+    try {
+        for ($i = 0; $i -lt 30 -and -not (Get-Process -Name acs -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq $proc.Id }); $i++) {
+            Start-Sleep -Milliseconds 100
+        }
+        $r = Install $game $dllV1
+        Check ((Test-Refused $r) -and $r.Text -match 'acs\.exe is running') 'install refuses while acs.exe runs'
+        $r = Uninstall $game
+        Check ((Test-Refused $r) -and $r.Text -match 'acs\.exe is running') 'uninstall refuses while acs.exe runs'
+        Check ((Get-Sha $dxgi) -eq (Get-Sha $dllV2)) 'dxgi.dll untouched while acs.exe runs'
+    } finally {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        [void]$proc.WaitForExit(5000)
+    }
+
+    $log = Join-Path $game 'ac-dlssg\logs\bridge.log'
+    Write-Text $log "fake log`r`n"
+    $r = Uninstall $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check (-not (Test-Path -LiteralPath $dxgi)) 'uninstall deletes dxgi.dll'
+    Check (-not (Test-Path -LiteralPath (Get-SlDir $game))) 'uninstall deletes ac-dlssg\sl'
+    Check (-not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'uninstall removes the manifest'
+    Check ((Test-Path -LiteralPath $log) -and (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\ac-dlssg.ini'))) 'uninstall keeps logs and the config'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ReShade.ini'))) 'no ReShade.ini appeared'
+}
+
+Invoke-Case 'SA2: -Mode against what the game folder holds' {
+    $game = New-FakeGame 'SA2a'
+    $ini = Join-Path $game 'ReShade.ini'
+    Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
+    $r = Install $game $dllV1 -Mode Standalone
+    Check ((Test-Refused $r) -and $r.Text -match 'is ReShade') 'install -Mode Standalone refuses to replace ReShade''s dxgi.dll'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $fakeReShade)) 'ReShade''s dxgi.dll untouched'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'no data folder created'
+    Check (Test-SameBytes (Read-Bytes $ini) (Get-Utf8Bytes $simpleIni)) 'ReShade.ini unchanged'
+
+    $game = New-FakeGame 'SA2b' -NoDxgi
+    $r = Install $game $dllV1 -Mode ReShade
+    Check ((Test-Refused $r) -and $r.Text -match 'ReShade is not installed') 'install -Mode ReShade refuses without ReShade'
+    Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'no dxgi.dll created'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'no data folder created'
+}
+
+Invoke-Case 'SA3: a foreign dxgi.dll is refused' {
+    $game = New-FakeGame 'SA3' -NoDxgi
+    $dxgi = Get-GameDxgi $game
+    Copy-Item -LiteralPath $fakeOther -Destination $dxgi
+    foreach ($mode in @('', 'Standalone')) {
+        $r = Install $game $dllV1 -Mode $mode
+        Check ((Test-Refused $r) -and $r.Text -match 'Not ReShade' -and $r.Text -match 'not installed by') "install$(if ($mode) { " -Mode $mode" }) refuses a foreign dxgi.dll and names it"
+    }
+    $r = Install $game $dllV1 -Force
+    Check (Test-Refused $r) '-Force does not replace a foreign dxgi.dll'
+    Check ((Get-Sha $dxgi) -eq (Get-Sha $fakeOther)) 'the foreign dxgi.dll is untouched'
+    # A bridge copied by hand, without a manifest, is foreign too.
+    Copy-Item -LiteralPath $dllV1 -Destination $dxgi -Force
+    $r = Install $game $dllV1
+    Check (Test-Refused $r) 'install refuses a dxgi.dll that no manifest records'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'no data folder created'
+}
+
+Invoke-Case 'SA4: a standalone dxgi.dll changed outside the script' {
+    $game = New-FakeGame 'SA4' -NoDxgi
+    $dxgi = Get-GameDxgi $game
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    Write-Bytes $dxgi (Read-Bytes $dllV2)
+    $manifestBefore = Read-Bytes (Get-ManifestPath $game)
+    $r = Install $game $dllV1
+    Check ((Test-Refused $r) -and $r.Text -match (Get-Sha $dllV2) -and $r.Text -match (Get-Sha $dllV1)) 'upgrade refuses and names both hashes'
+    Check ((Get-Sha $dxgi) -eq (Get-Sha $dllV2)) 'the changed dxgi.dll is untouched'
+    Check (Test-SameBytes (Read-Bytes (Get-ManifestPath $game)) $manifestBefore) 'the manifest is untouched'
+    $r = Uninstall $game
+    Check ((Test-Refused $r) -and $r.Text -match (Get-Sha $dllV2)) 'uninstall refuses and names the hash'
+    Check ((Get-Sha $dxgi) -eq (Get-Sha $dllV2)) 'dxgi.dll is still there'
+    Check ((Test-Path -LiteralPath (Get-ManifestPath $game)) -and (Test-SlMatches $game $slReal)) 'the manifest and the Streamline files are still there'
+    $r = Uninstall $game -Force
+    Check ($r.Code -eq 0) 'uninstall -Force exits 0'
+    Check ((Get-Sha $dxgi) -eq (Get-Sha $dllV2)) 'uninstall -Force leaves the foreign dxgi.dll in place'
+    Check ($r.Text -match 'left in place') 'uninstall -Force says so'
+    Check (-not (Test-Path -LiteralPath (Get-SlDir $game)) -and -not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'uninstall -Force removes the rest'
+
+    # ReShade installed over the standalone bridge: the mode no longer fits.
+    $game = New-FakeGame 'SA4b' -NoDxgi
+    $dxgi = Get-GameDxgi $game
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'second install exits 0'
+    Copy-Item -LiteralPath $fakeReShade -Destination $dxgi -Force
+    Write-Bytes (Join-Path $game 'ReShade.ini') (Get-Utf8Bytes $simpleIni)
+    $r = Install $game $dllV1
+    Check ((Test-Refused $r) -and $r.Text -match 'dev-uninstall\.ps1') 'install refuses to switch from standalone to ReShade mode'
+    Check ((Get-Sha $dxgi) -eq (Get-Sha $fakeReShade)) 'ReShade''s dxgi.dll untouched'
+    $r = Uninstall $game
+    Check ((Test-Refused $r) -and $r.Text -match 'ReShade') 'uninstall refuses to delete ReShade''s dxgi.dll'
+    $r = Uninstall $game -Force -RemoveData
+    Check ($r.Code -eq 0 -and (Get-Sha $dxgi) -eq (Get-Sha $fakeReShade)) 'uninstall -Force keeps ReShade''s dxgi.dll'
+}
+
+Invoke-Case 'SA5: a ReShade-mode install must be undone before a standalone one' {
+    $game = New-FakeGame 'SA5'
+    $ini = Join-Path $game 'ReShade.ini'
+    Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'ReShade-mode install exits 0'
+    Remove-Item -LiteralPath (Get-GameDxgi $game)
+    $r = Install $game $dllV1
+    Check ((Test-Refused $r) -and $r.Text -match 'reshade mode' -and $r.Text -match 'dev-uninstall\.ps1') 'install refuses to switch from ReShade to standalone mode'
+    Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'no dxgi.dll created'
+    $r = Uninstall $game
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'the ReShade-mode uninstall still works'
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and (Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'then a standalone install works'
+    $r = Uninstall $game -RemoveData
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'and its uninstall'
+}
+
+Invoke-Case 'SA6: access denied in the game folder asks for an elevated PowerShell' {
+    $game = New-FakeGame 'SA6' -NoDxgi
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $rights = [System.Security.AccessControl.FileSystemRights]'CreateFiles, CreateDirectories'
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $rights, 'None', 'None', 'Deny')
+    $acl = Get-Acl -LiteralPath $game
+    $acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $game -AclObject $acl
+    try {
+        $r = Install $game $dllV1
+        Check ($r.Code -ne 0 -and $r.Text -match 'elevated PowerShell') 'install fails and asks for an elevated PowerShell'
+        Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'no dxgi.dll created'
+        Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'no data folder created'
+    } finally {
+        $acl = Get-Acl -LiteralPath $game
+        [void]$acl.RemoveAccessRule($rule)
+        Set-Acl -LiteralPath $game -AclObject $acl
+    }
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0 once the folder is writable'
+    $r = Uninstall $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+}
+
+# ---------------------------------------------------------------------------
 Invoke-Case 'Q: helpers (Steam library discovery, PE check on real builds)' {
     $steam = Join-Path $FakeRoot 'steam\steam'
     $lib0 = Join-Path $FakeRoot 'steam\lib0'
@@ -1144,6 +1328,8 @@ Invoke-Case 'Q: helpers (Steam library discovery, PE check on real builds)' {
     Check ($found -and ([IO.Path]::GetFullPath($found) -eq [IO.Path]::GetFullPath($acDir))) 'libraryfolders.vdf (old format)'
     Remove-Item -LiteralPath (Join-Path $acDir 'acs.exe')
     Check (-not (Find-AssettoCorsaDir -SteamPath $steam)) 'nothing found when no library has acs.exe'
+    $defaultSteam = Join-Path ${env:ProgramFiles(x86)} 'Steam'
+    Check (@(Get-SteamRoots | Where-Object { Test-SamePath $_ $defaultSteam }).Count -ge 1) 'Steam roots include the default C:\Program Files (x86)\Steam'
 
     foreach ($config in @('Release', 'Debug')) {
         $real = Join-Path $tools "..\build\$config\ac-dlssg.dll"
