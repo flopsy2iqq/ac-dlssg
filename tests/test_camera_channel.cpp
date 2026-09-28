@@ -5,11 +5,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <regex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "camera_channel.h"
 #include "camera_layout.h"
+#include "temp_dir.h"
 #include "test_framework.h"
 
 using namespace acdb;
@@ -88,6 +91,150 @@ TEST(CameraLayout_MagicReadsDlsgInMemory) {
     char tag[5] = {};
     std::memcpy(tag, &magic, 4);
     CHECK(std::strcmp(tag, "DLSG") == 0);
+}
+
+// ---------------------------------------------------------------------------
+// The CSP Lua app (apps/lua/AcDlssg): its layout string, constants and write
+// sequence are checked against the C++ side, so the two cannot drift apart.
+
+namespace {
+
+std::string ReadAppFile(const char* file) {
+    return acdb_test::ReadAll(std::filesystem::path(ACDB_SOURCE_DIR) / "apps" / "lua" / "AcDlssg" / file);
+}
+
+// The body of `local LAYOUT = [[ ... ]]`, or empty.
+std::string LayoutString(const std::string& lua) {
+    const std::string open = "local LAYOUT = [[";
+    const size_t begin = lua.find(open);
+    if (begin == std::string::npos) return {};
+    const size_t body = begin + open.size();
+    const size_t end = lua.find("]]", body);
+    if (end == std::string::npos) return {};
+    return lua.substr(body, end - body);
+}
+
+struct Decl {
+    std::string type;
+    std::string name;
+    unsigned count = 1;
+};
+
+// Splits a C struct body into declarations; an unparsable one comes back
+// with an empty type and its text as the name.
+std::vector<Decl> ParseDecls(const std::string& body) {
+    static const std::regex decl(R"(^\s*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*(\d+)\s*\])?\s*$)");
+    std::vector<Decl> out;
+    size_t start = 0;
+    while (start < body.size()) {
+        size_t semi = body.find(';', start);
+        if (semi == std::string::npos) semi = body.size();
+        const std::string text = body.substr(start, semi - start);
+        start = semi + 1;
+        if (text.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        std::smatch m;
+        Decl d;
+        if (std::regex_match(text, m, decl)) {
+            d.type = m[1];
+            d.name = m[2];
+            if (m[3].matched) d.count = static_cast<unsigned>(std::stoul(m[3]));
+        } else {
+            d.name = text;
+        }
+        out.push_back(d);
+    }
+    return out;
+}
+
+// The number assigned by `local <name> = <number>` (decimal or 0x hex), or -1.
+long long LuaConstant(const std::string& lua, const std::string& name) {
+    const std::regex re("local\\s+" + name + "\\s*=\\s*(0[xX][0-9A-Fa-f]+|\\d+)\\b");
+    std::smatch m;
+    if (!std::regex_search(lua, m, re)) return -1;
+    return std::stoll(m[1].str(), nullptr, 0);
+}
+
+}  // namespace
+
+TEST(LuaApp_LayoutStringMatchesTheStructFieldByField) {
+    const std::string lua = ReadAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string layout = LayoutString(lua);
+    REQUIRE(!layout.empty());
+    const std::vector<Decl> decls = ParseDecls(layout);
+    CHECK_EQ(decls.size(), std::size(kFields));
+    for (size_t i = 0; i < decls.size() && i < std::size(kFields); ++i) {
+        const bool same = decls[i].type == kFields[i].type && decls[i].name == kFields[i].name &&
+                          decls[i].count == kFields[i].count;
+        if (!same)
+            std::printf("  field %zu: Lua has '%s %s[%u]', C++ has '%s %s[%u]'\n", i, decls[i].type.c_str(),
+                        decls[i].name.c_str(), decls[i].count, kFields[i].type, kFields[i].name, kFields[i].count);
+        CHECK(same);
+    }
+}
+
+TEST(LuaApp_ConstantsMatchTheCppSide) {
+    const std::string lua = ReadAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK_EQ(LuaConstant(lua, "MAGIC"), static_cast<long long>(kCameraMagic));
+    CHECK_EQ(LuaConstant(lua, "VERSION"), static_cast<long long>(kCameraVersion));
+    CHECK_EQ(LuaConstant(lua, "FLAG_JUMPED"), static_cast<long long>(kCamJumped));
+    CHECK_EQ(LuaConstant(lua, "FLAG_PAUSED"), static_cast<long long>(kCamPaused));
+    CHECK_EQ(LuaConstant(lua, "FLAG_REPLAY"), static_cast<long long>(kCamReplay));
+    CHECK_EQ(LuaConstant(lua, "FLAG_VR"), static_cast<long long>(kCamVR));
+    CHECK_EQ(LuaConstant(lua, "FLAG_TRIPLE"), static_cast<long long>(kCamTriple));
+    CHECK_EQ(LuaConstant(lua, "FLAG_MAIN_MENU"), static_cast<long long>(kCamMainMenu));
+    CHECK_EQ(LuaConstant(lua, "FLAG_WRITE_FAILED"), static_cast<long long>(kCamWriteFailed));
+
+    // ac.writeMemoryMappedFile takes the name without "Local\" (CSP SDK,
+    // common/ac_extras_connectmmf.lua) and persists the mapping.
+    std::smatch m;
+    REQUIRE(std::regex_search(lua, m, std::regex(R"(local\s+SECTION_NAME\s*=\s*'([^']+)')")));
+    const std::string name = m[1];
+    const std::wstring full = L"Local\\" + std::wstring(name.begin(), name.end());
+    CHECK(full == kCameraSectionName);
+    CHECK(lua.find("ac.writeMemoryMappedFile(SECTION_NAME, LAYOUT, true)") != std::string::npos);
+}
+
+// publish() must keep the order the C++ reader relies on and that
+// LuaStyleWrite below reproduces: seq odd, barrier, magic/version/frame,
+// pcall(fill), write-failed flag on error, barrier, seq even.
+TEST(LuaApp_PublishFollowsTheSeqlockWriterOrder) {
+    const std::string lua = ReadAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const size_t begin = lua.find("local function publish()");
+    REQUIRE(begin != std::string::npos);
+    const size_t end = lua.find("\nend", begin);
+    REQUIRE(end != std::string::npos);
+    const std::string body = lua.substr(begin, end - begin);
+    const char* steps[] = {
+        "local s = bit.band(bit.bor(mmf.seq, 1), 0x7FFFFFFF)",
+        "mmf.seq = s",
+        "memoryBarrier()",
+        "mmf.magic = MAGIC",
+        "mmf.version = VERSION",
+        "mmf.frame = frameCounter",
+        "pcall(fill)",
+        "mmf.flags = bit.bor(mmf.flags, FLAG_WRITE_FAILED)",
+        "memoryBarrier()",
+        "mmf.seq = s + 1",
+    };
+    size_t at = 0;
+    for (const char* step : steps) {
+        const size_t found = body.find(step, at);
+        if (found == std::string::npos) std::printf("  publish(): '%s' missing or out of order\n", step);
+        CHECK(found != std::string::npos);
+        if (found != std::string::npos) at = found + std::strlen(step);
+    }
+}
+
+TEST(LuaApp_ManifestLoadsTheAppWithAC) {
+    const std::string ini = ReadAppFile("manifest.ini");
+    REQUIRE(!ini.empty());
+    const size_t core = ini.find("[CORE]");
+    REQUIRE(core != std::string::npos);
+    CHECK(std::regex_search(ini.substr(core), std::regex(R"(\n\s*LAZY\s*=\s*NONE\b)")));
+    CHECK(ini.find("[WINDOW_") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

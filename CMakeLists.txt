@@ -113,6 +113,8 @@ add_executable(acdb_tests
 target_link_libraries(acdb_tests PRIVATE acdb_core d3d11 d3d12 dxgi version)
 # The DLL-level test loads the built bridge DLL.
 target_compile_definitions(acdb_tests PRIVATE ACDB_DLL_PATH="$<TARGET_FILE:ac-dlssg>")
+# The camera tests read the CSP Lua app (apps/lua/AcDlssg) from the source tree.
+target_compile_definitions(acdb_tests PRIVATE ACDB_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_dependencies(acdb_tests ac-dlssg)
 # An unsigned, loadable DLL for StreamlineRuntime's signature check: its
 # DllMain leaves a mark, so a test can prove it was never loaded.
