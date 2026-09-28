@@ -15,9 +15,12 @@
 //
 // AC's camera basis. CSP builds side vectors as cross(look, up), and the
 // camera's side points to the screen's right: AC's world is right-handed
-// (y up), so right = fwd x up and (right, up, fwd) has determinant -1, while
-// Streamline's sample assumes a left-handed world (up = fwd x right,
-// determinant +1). The view is built from the orthonormalized side as is.
+// (y up), so right = fwd x up and (right, up, fwd) has determinant -1. NVIDIA
+// passes the same determinant to Streamline in its own DLSS-G samples
+// (Streamline_Sample and RTXPT set cameraRight = normalize(cross(dir, up))).
+// Only sl_matrix_helpers.h's recalculateCameraMatrices, marked "DO NOT USE
+// THIS IN ANYTHING PROPER", rebuilds up = fwd x right (determinant +1). The
+// view is built from the orthonormalized side as is.
 // The evidence, and the one script that points the other way, are recorded
 // in frame_constants.cpp; the in-game check of spec 6.7 settles it.
 #include <sl_consts.h>
@@ -58,8 +61,10 @@ struct FrameConstantsOptions {
     bool flipHandedness = false;
     // Negates cameraRight, the side vector Streamline receives, and nothing
     // else: the matrices stay as they are. This flips the determinant of
-    // (cameraRight, cameraUp, cameraFwd) to +1, the convention of
-    // Streamline's sample (up = fwd x right), in case DLSS-G wants it.
+    // (cameraRight, cameraUp, cameraFwd) to +1 (up = fwd x right, as in
+    // sl_matrix_helpers.h), in case DLSS-G wants it. NVIDIA's samples send
+    // determinant -1, and scene-change detection only checks that the three
+    // vectors are orthonormal, which holds either way.
     bool negateSide = false;
 };
 

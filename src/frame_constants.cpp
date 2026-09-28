@@ -20,9 +20,17 @@
 //    unmirrored top-down view only if cross(look, up) is the screen's right.
 //    CSP's chaser cameras name cross(dir, up) "carRight"
 //    (lua/chaser-camera/arcade-mode/camera.lua:37, kirbycam:117).
-//  - Against it: ghost.lua:166 sets up = cross(look, wheelFR - wheelFL),
-//    which points up only if cross(look, up) points to the car's left. It
-//    may be that AC's car matrices use the other sign than its camera.
+//  - Also for it: ac.getCameraDirection() is documented as "pointing
+//    backwards" (ac_apps/lib.lua), so AC's camera matrix looks along its
+//    local -z. That is the right-handed (OpenGL-style) camera convention, in
+//    which the local +x axis is the screen's right.
+//  - Against it, weakly: ghost.lua:140-167 is about car matrices, not the
+//    camera. The up it computes at :166 points up exactly when the front-left
+//    wheel sits at local x > 0 in AC's car frame (car.side is the car's
+//    left), whatever cross(look, up) is. It then places those local wheel
+//    positions along cross(look, up), so its own matrix is unmirrored only
+//    if cross(look, up) is the car's left; in a right-handed world that
+//    ghost matrix is a reflection.
 // Default: side = cross(fwd, up) is the screen's right, so AC's world is
 // right-handed and the view basis (right, up, fwd) has determinant -1. The
 // matrices only need view x to be the screen's right; if the in-game check
