@@ -1,5 +1,8 @@
-// The DXGI exports ReShade resolves from its ProxyLibrary (spec 6.1). Every
-// export forwards to System32\dxgi.dll. The CreateDXGIFactory* exports also
+// The DXGI exports ReShade resolves from its ProxyLibrary (spec 6.1), which
+// are also every dxgi.dll export that d3d11.dll, D3D12Core.dll, Streamline
+// and the game bind by name when the bridge itself is the game's dxgi.dll
+// (standalone; test_dxgi_export_coverage.cpp). Every export forwards to
+// System32\dxgi.dll. The CreateDXGIFactory* exports also
 // run the bootstrap and install the factory hook. The internal names carry a
 // Bridge_ prefix so that they never clash with the SDK declarations;
 // exports.def maps them to the DXGI names.
@@ -54,7 +57,8 @@ void HookNewFactory(HRESULT hr, void** factory) noexcept {
 
 template <typename CreateFn>
 HRESULT CreateFactoryCommon(const char* name, CreateFn&& create, void** factory) noexcept {
-    // Our own DXGI calls, and Streamline's, re-enter through ReShade: pure pass-through.
+    // Our own DXGI calls, and Streamline's, re-enter through ReShade, or
+    // directly when we are the process's dxgi.dll: pure pass-through.
     if (IsInternalCall()) return create();
     RunBootstrap();
     const HRESULT hr = create();

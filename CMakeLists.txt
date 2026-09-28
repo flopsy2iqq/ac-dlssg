@@ -155,6 +155,8 @@ add_executable(acdb_tests
     tests/test_camera_channel.cpp
     tests/test_frame_constants.cpp
     tests/test_capture_slots.cpp
+    tests/test_bridge_mode.cpp
+    tests/test_dxgi_export_coverage.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )

@@ -366,7 +366,8 @@ std::string RenderAdapterRefusal(const RenderAdapter& adapter) {
     char vendor[16];
     std::snprintf(vendor, sizeof(vendor), "0x%04X", adapter.vendor_id);
     return "CSP renders on " + adapter.description + " (vendor " + vendor +
-           "), not an NVIDIA GPU: set acs.exe to High performance in Windows Settings > System > Display > Graphics";
+           "), not an NVIDIA GPU: set acs.exe to High performance in Windows Settings > System > Display > Graphics, "
+           "and check SELECT_ADAPTER in CSP's dxgi_tweaks.ini";
 }
 
 std::string PassThroughReason(const ProxyDecisionInputs& in, const std::string& bootstrapReason,

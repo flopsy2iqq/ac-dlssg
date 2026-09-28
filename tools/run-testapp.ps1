@@ -56,6 +56,18 @@
   its runtime on the new swap chain; a slow network therefore delays the swap
   chain's creation by seconds, but not the frames.
 
+  The standalone scenarios run the bridge without ReShade, installed as the
+  game's dxgi.dll. They run in <BuildDir>\testapp-standalone\<Config>, which
+  holds testapp.exe, the bridge copied as dxgi.dll (and no ac-dlssg.dll), the
+  fixtures, the Streamline DLLs in ac-dlssg\sl and ac-dlssg\ac-dlssg.ini with
+  the defaults dev-install.ps1 writes (log_level=debug). With --standalone the
+  test app never loads the bridge by path: d3d11.dll's dxgi.dll import binds
+  it at process start, the app's factory comes from LoadLibraryW(L"dxgi.dll")
+  by name, and the app checks that d3d11.dll's and Streamline's DXGI imports
+  are bound to the bridge. They pass the same log checks as the default
+  scenario, and the bridge log must say "mode: standalone" and read that
+  ac-dlssg.ini.
+
   -ReShadeDll names ReShade's dxgi.dll. By default it is the dxgi.dll in the
   Assetto Corsa folder found through Steam's libraryfolders.vdf; it is only
   read and copied. A DLL whose version resource ProductName is not "ReShade",
@@ -109,7 +121,11 @@ $scenarios = @(
     # statistics second and ReShade's first second of overlay messages.
     @{ Name = 'reshade';        Args = @('--via-dxgi', '--frames', '3000', '--expect-proxy'); ReShade = $true },
     @{ Name = 'reshade-resize'; Args = @('--via-dxgi', '--resize', '--test-present', '--expect-proxy'); ReShade = $true;
-       Resizes = 2 }
+       Resizes = 2 },
+    # The bridge as the game's dxgi.dll, without ReShade (see the description).
+    @{ Name = 'standalone';          Args = @('--standalone', '--frames', '3000', '--expect-proxy'); Standalone = $true },
+    @{ Name = 'standalone-combined'; Args = @('--standalone', '--vsync', '--resize', '--recreate', '--test-present',
+                                              '--expect-proxy'); Standalone = $true }
 )
 if ($Scenario.Count) {
     $unknown = @($Scenario | Where-Object { $n = $_; -not ($scenarios | Where-Object { $_.Name -eq $n }) })
@@ -157,6 +173,49 @@ function Initialize-ReShadeRunDir([string]$RunDir, [string]$TestAppDir, [string]
     Copy-Item -Path (Join-Path $TestAppDir 'ac-dlssg\sl\*.dll') -Destination $slDir -Force
     Copy-Item -LiteralPath $ReShadePath -Destination (Join-Path $RunDir 'dxgi.dll') -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $RunDir 'reshade-cache') | Out-Null
+}
+
+# The run folder of the standalone scenarios: the bridge is dxgi.dll there.
+# Existing files are replaced; an ac-dlssg.dll left from elsewhere is removed,
+# because the bridge must only be reachable as dxgi.dll.
+function Initialize-StandaloneRunDir([string]$RunDir, [string]$TestAppDir) {
+    New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $TestAppDir 'testapp.exe') -Destination (Join-Path $RunDir 'testapp.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $TestAppDir 'ac-dlssg.dll') -Destination (Join-Path $RunDir 'dxgi.dll') -Force
+    Remove-Item -LiteralPath (Join-Path $RunDir 'ac-dlssg.dll') -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path (Join-Path $PSScriptRoot 'testapp\fixtures\*') -Destination $RunDir -Recurse -Force
+    $slDir = Join-Path $RunDir 'ac-dlssg\sl'
+    New-Item -ItemType Directory -Force -Path $slDir | Out-Null
+    Copy-Item -Path (Join-Path $TestAppDir 'ac-dlssg\sl\*.dll') -Destination $slDir -Force
+    # The defaults of dev-install.ps1's ac-dlssg.ini.
+    $ini = @('; ac-dlssg settings for the standalone test scenarios.', '[bridge]', 'enabled=1', 'start_with_fg=1',
+        'hotkey=ctrl+f10', 'log_level=debug', '')
+    [System.IO.File]::WriteAllText((Join-Path $RunDir 'ac-dlssg\ac-dlssg.ini'), ($ini -join "`r`n"), $utf8NoBom)
+}
+
+# Bridge log checks of a standalone scenario on top of the test app's own.
+function Test-StandaloneLog([string]$LogPath, [string]$RunDir) {
+    $problems = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
+        $problems.Add('no bridge log')
+        return $problems
+    }
+    $lines = @([System.IO.File]::ReadAllLines($LogPath))
+    $bridge = [regex]::Escape((Join-Path $RunDir 'dxgi.dll'))
+    if (-not @($lines | Where-Object { $_ -match "bridge module: $bridge$" }).Count) {
+        $problems.Add('no "bridge module: ' + (Join-Path $RunDir 'dxgi.dll') + '" line')
+    }
+    if (@($lines | Where-Object { $_ -match '\] INFO mode: standalone: ' }).Count -ne 1) {
+        $problems.Add('no single "mode: standalone" line')
+    }
+    $ini = [regex]::Escape((Join-Path $RunDir 'ac-dlssg\ac-dlssg.ini'))
+    if (-not @($lines | Where-Object { $_ -match "config: $ini$" }).Count) {
+        $problems.Add('the bridge did not read ac-dlssg\ac-dlssg.ini')
+    }
+    if (-not @($lines | Where-Object { $_ -match 'config: enabled=1 .* log_level=debug$' }).Count) {
+        $problems.Add('the config line does not show enabled=1 and log_level=debug')
+    }
+    return $problems
 }
 
 # Written before every run: ReShade saves its settings back on exit.
@@ -300,6 +359,8 @@ foreach ($cfg in $Config) {
     $testAppDir = Join-Path $BuildDir "tools\testapp\$cfg"
     $reshadeDir = Join-Path $BuildDir "testapp-reshade\$cfg"
     $reshadeReady = $false
+    $standaloneDir = Join-Path $BuildDir "testapp-standalone\$cfg"
+    $standaloneReady = $false
     $logDir = Join-Path $BuildDir "testapp-logs\$cfg"
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -312,7 +373,7 @@ foreach ($cfg in $Config) {
         $keptReShadeLog = Join-Path $logDir "$($s.Name).reshade.log"
         Remove-Item -LiteralPath $outFile, $keptLog, $keptReShadeLog -Force -ErrorAction SilentlyContinue
 
-        $exeDir = if ($s.ReShade) { $reshadeDir } else { $testAppDir }
+        $exeDir = if ($s.ReShade) { $reshadeDir } elseif ($s.Standalone) { $standaloneDir } else { $testAppDir }
         $exe = Join-Path $exeDir 'testapp.exe'
         $bridgeLog = Join-Path $exeDir 'ac-dlssg\logs\bridge.log'
         $reshadeLog = Join-Path $exeDir 'ReShade.log'
@@ -335,8 +396,12 @@ foreach ($cfg in $Config) {
             Write-ReShadeIni $reshadeDir
             Remove-Item -LiteralPath $reshadeLog -Force -ErrorAction SilentlyContinue
         }
+        if ($s.Standalone -and -not $standaloneReady) {
+            Initialize-StandaloneRunDir $standaloneDir $testAppDir
+            $standaloneReady = $true
+        }
 
-        Write-Host "[$cfg] $($s.Name): testapp $argText$(if ($s.ReShade) { " (in $exeDir)" })"
+        Write-Host "[$cfg] $($s.Name): testapp $argText$(if ($s.ReShade -or $s.Standalone) { " (in $exeDir)" })"
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $exe
         $psi.Arguments = $argText
@@ -409,6 +474,18 @@ foreach ($cfg in $Config) {
             }
         }
 
+        if ($s.Standalone) {
+            $problems = @(Test-StandaloneLog $keptLog $exeDir)
+            @($lines | Where-Object { $_ -match '^testapp: standalone: ' }) | ForEach-Object { Write-Host "  $_" }
+            if ($problems.Count) {
+                $problems | ForEach-Object { Write-Host "  PROBLEM: $_" }
+                if ($result -eq 'PASS') { $result = 'FAIL' }
+                $detail += "; " + ($problems -join '; ')
+            } elseif ($result -eq 'PASS') {
+                $detail += '; bridge loaded as dxgi.dll (mode: standalone)'
+            }
+        }
+
         if ($s.Budget) {
             # Success criterion 3: both frame copies together below the budget.
             Write-Host "  bridge statistics ($($stats.Lines.Count) lines):"
@@ -440,10 +517,10 @@ foreach ($cfg in $Config) {
 }
 
 Write-Host ''
-Write-Host ('{0,-8} {1,-14} {2,-7} {3,7} {4,9}  {5}' -f 'Config', 'Scenario', 'Result', 'Time', 'Bridge ms', 'Detail')
-Write-Host ('{0,-8} {1,-14} {2,-7} {3,7} {4,9}  {5}' -f '------', '--------', '------', '----', '---------', '------')
+Write-Host ('{0,-8} {1,-19} {2,-7} {3,7} {4,9}  {5}' -f 'Config', 'Scenario', 'Result', 'Time', 'Bridge ms', 'Detail')
+Write-Host ('{0,-8} {1,-19} {2,-7} {3,7} {4,9}  {5}' -f '------', '--------', '------', '----', '---------', '------')
 foreach ($r in $results) {
-    Write-Host ('{0,-8} {1,-14} {2,-7} {3,6}s {4,9}  {5}' -f $r.Config, $r.Scenario, $r.Result, $r.Seconds, $r.BridgeMs,
+    Write-Host ('{0,-8} {1,-19} {2,-7} {3,6}s {4,9}  {5}' -f $r.Config, $r.Scenario, $r.Result, $r.Seconds, $r.BridgeMs,
         $r.Detail)
 }
 $skipped = @($results | Where-Object { $_.Result -eq 'SKIP' }).Count

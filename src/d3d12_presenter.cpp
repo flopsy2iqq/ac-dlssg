@@ -119,6 +119,24 @@ double QpcMs(int64_t ticks) {
 
 constexpr unsigned kMaxOcclusionLogs = 100;  // per presenter; the stats line keeps counting
 
+// Local video memory of the render adapter for this process, in MiB. False
+// (with *err set when err is given) when the adapter cannot tell.
+bool QueryVramMiB(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std::string* err) {
+    if (!adapter) {
+        if (err) *err = "the adapter has no IDXGIAdapter3";
+        return false;
+    }
+    DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+    const HRESULT hr = adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info);
+    if (FAILED(hr)) {
+        if (err) *err = HrText("IDXGIAdapter3::QueryVideoMemoryInfo", hr);
+        return false;
+    }
+    *usage = info.CurrentUsage / (1024 * 1024);
+    *budget = info.Budget / (1024 * 1024);
+    return true;
+}
+
 }  // namespace
 
 struct D3D12Presenter::Impl {
@@ -192,6 +210,7 @@ struct D3D12Presenter::Impl {
     unsigned occlusion_logs = 0;
 
     // Per-second statistics.
+    ComPtr<IDXGIAdapter3> adapter3;  // the render adapter, for vram_mib
     ULONGLONG stats_start = 0;
     unsigned stats_presents = 0;   // CSP frames (base rate)
     unsigned stats_delivered = 0;  // D3D12 Presents that succeeded
@@ -283,6 +302,7 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     }
     DXGI_ADAPTER_DESC ad{};
     adapter->GetDesc(&ad);
+    adapter.As(&adapter3);  // Windows 10 always has it; without it vram_mib is n/a
 
     // 2. D3D12 device on that adapter.
     const PFN_D3D12_CREATE_DEVICE create = LoadD3D12CreateDevice(err);
@@ -467,6 +487,15 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
          name, static_cast<unsigned long>(ad.AdapterLuid.HighPart), static_cast<unsigned long>(ad.AdapterLuid.LowPart),
          width, height, kBuffers, chain_flags, tearing ? "yes" : "no", latency_waitable ? "yes" : "no",
          static_cast<void*>(hwnd), sl ? "Streamline proxy chain" : "plain chain (no Streamline)");
+    uint64_t vramUsage = 0;
+    uint64_t vramBudget = 0;
+    std::string vramErr;
+    if (QueryVramMiB(adapter3.Get(), &vramUsage, &vramBudget, &vramErr)) {
+        LOGI("presenter: VRAM (local) budget %llu MiB, usage %llu MiB", static_cast<unsigned long long>(vramBudget),
+             static_cast<unsigned long long>(vramUsage));
+    } else {
+        LOGI("presenter: VRAM unknown: %s", vramErr.c_str());
+    }
     // Spec 7 step 1 for the first frame: it starts at the end of creation.
     if (sl) StartFrame();
     shutdown_sl = false;  // from now on the owner decides (ShutdownStreamlineOnRelease)
@@ -849,14 +878,22 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     FormatAvg(sum11, n11, a11, sizeof(a11));
     FormatAvg(sum12, n12, a12, sizeof(a12));
     const double seconds = static_cast<double>(elapsed) / 1000.0;
+    char vram[48] = "n/a";
+    uint64_t vramUsage = 0;
+    uint64_t vramBudget = 0;
+    if (QueryVramMiB(adapter3.Get(), &vramUsage, &vramBudget, nullptr))
+        std::snprintf(vram, sizeof(vram), "%llu/%llu", static_cast<unsigned long long>(vramUsage),
+                      static_cast<unsigned long long>(vramBudget));
     // base: CSP frames; presented: frames the D3D12 chain accepted (occluded
-    // ones included). M1 has no frame generation, hence fg=off.
+    // ones included). M1 has no frame generation, hence fg=off. vram_mib:
+    // local video memory usage/budget of the render adapter, last so that
+    // parsers of the fields before it keep working.
     LOGI("stats: base_fps=%.1f presented_fps=%.1f skipped=%u failed=%u occluded=%u uncopied=%u max_frame_ms=%.1f "
          "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=off stalls=%u streamline=%s reflex=%s "
-         "pcl_problems=%u",
+         "pcl_problems=%u vram_mib=%s",
          stats_presents / seconds, stats_delivered / seconds, stats_skipped, stats_failed, stats_occluded,
          stats_uncopied, max_frame_ms, max_present_ms, a11, a12, stalls, sl ? "on" : "off", reflex_on ? "on" : "off",
-         pcl.AbandonedFrames() + pcl.OutOfOrderCalls());
+         pcl.AbandonedFrames() + pcl.OutOfOrderCalls(), vram);
     stats_start = now;
     stats_presents = stats_delivered = stats_skipped = stats_failed = stats_occluded = stats_uncopied = 0;
     max_frame_ms = max_present_ms = 0;

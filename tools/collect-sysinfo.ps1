@@ -9,7 +9,8 @@
   script. Send ac-dlssg-sysinfo.txt to whoever asked for it.
 
   It records: computer model, BIOS, Windows version, CPU, every GPU (driver,
-  hybrid-graphics role, hardware-accelerated GPU scheduling, dedicated
+  hybrid-graphics role, hardware-accelerated GPU scheduling per GPU from
+  dxdiag and the registry value, dedicated
   memory), displays (panel, mode, which GPU drives them), power source,
   nvidia-smi output, and Assetto Corsa's CSP, ReShade and video settings.
   No administrator rights are needed.
@@ -59,11 +60,13 @@ Get-CimInstance Win32_VideoController | ForEach-Object {
 }
 
 Section 'Hardware-accelerated GPU scheduling (registry)'
+Add 'The registry value HwSchMode can be absent while HAGS is on (seen on hybrid laptops). The state of each GPU'
+Add 'is its "Hardware Scheduling" line in the section "DirectX diagnostic (display devices)" below.'
 try {
     $hw = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name HwSchMode -ErrorAction Stop).HwSchMode
     Add "HwSchMode = $hw (2 = on, 1 = off)"
 } catch {
-    Add 'HwSchMode not set (off, or not offered on this system)'
+    Add 'HwSchMode not set (not a verdict: see "Hardware Scheduling" per GPU below)'
 }
 
 Section 'nvidia-smi'

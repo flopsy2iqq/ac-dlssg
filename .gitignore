@@ -439,3 +439,6 @@ deps/
 
 # Output of tools/collect-sysinfo.ps1
 tools/ac-dlssg-sysinfo/
+
+# Output of tools/collect-logs.ps1
+tools/ac-dlssg-logs-*

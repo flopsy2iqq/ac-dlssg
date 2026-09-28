@@ -8,7 +8,12 @@
 // chain instead: ReShade's dxgi.dll next to the exe (loaded at process start
 // as d3d11.dll's dxgi.dll import, as in the game) with ac-dlssg.dll as its
 // [PROXY] ProxyLibrary, and the factory comes from ReShade's
-// CreateDXGIFactory1. It renders a moving rectangle with
+// CreateDXGIFactory1. With --standalone the bridge itself is dxgi.dll next to
+// the exe, as a standalone install puts it next to acs.exe: the loader binds
+// d3d11.dll's dxgi.dll import to it at process start, the app takes its
+// factory from LoadLibraryW(L"dxgi.dll") by name, and D3D12 and Streamline
+// bind to it the same way; the app checks those bindings in the import
+// tables. It renders a moving rectangle with
 // ClearView through a NULL-description view and an sRGB view of buffer 0, and
 // paces itself on the frame-latency waitable object like CSP's
 // ADVANCED_PACING.
@@ -39,7 +44,7 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"acsW";
 constexpr wchar_t kBridgeDll[] = L"ac-dlssg.dll";
-constexpr wchar_t kDxgiDll[] = L"dxgi.dll";  // --via-dxgi: ReShade, next to the exe
+constexpr wchar_t kDxgiDll[] = L"dxgi.dll";  // --via-dxgi: ReShade; --standalone: the bridge; next to the exe
 // ReShade's IID_UnwrappedObject (its source/com_utils.hpp; the bridge declares
 // the same one): QueryInterface on a ReShade wrapper returns the wrapped object.
 constexpr GUID kReShadeUnwrappedObject = {0x7F2C9A11, 0x3B4E, 0x4D6A, {0x81, 0x2F, 0x5E, 0x9C, 0xD3, 0x7A, 0x1B, 0x42}};
@@ -89,6 +94,7 @@ struct Options {
     bool stall = false;
     bool hidden = false;
     bool via_dxgi = false;  // the factory from <exe dir>\dxgi.dll (ReShade) instead of the bridge
+    bool standalone = false;  // the bridge is <exe dir>\dxgi.dll, bound by name like the game's dxgi.dll
     int fps_cap = 0;        // 0: none
     int gpu_load = 0;       // extra 4096x4096 RGBA16F copies per frame, to make frames GPU-bound
     int cpu_load_ms = 0;    // CPU busy time per frame, to make frames CPU-bound
@@ -312,7 +318,8 @@ struct App {
     std::wstring exe_dir;
     std::wstring log_path;
     HWND hwnd = nullptr;
-    HMODULE factory_module = nullptr;  // ac-dlssg.dll, or ReShade's dxgi.dll with --via-dxgi
+    HMODULE factory_module = nullptr;  // ac-dlssg.dll, ReShade's dxgi.dll with --via-dxgi, the bridge's with
+                                       // --standalone
 
     ComPtr<IDXGIFactory2> factory;
     ComPtr<ID3D11Device> device;
@@ -391,14 +398,99 @@ std::wstring ModulePath(HMODULE module) {
     return n > 0 && n < MAX_PATH ? std::wstring(path, n) : std::wstring();
 }
 
+HMODULE ImplementingModule(IUnknown* object);
+std::string ModuleFileNameOf(HMODULE module);
+
+// ---- import bindings (--standalone)
+
+struct Binding {
+    bool found = false;        // the importer has this import
+    bool delay = false;        // a delay-load import
+    HMODULE target = nullptr;  // the module its import address points into
+};
+
+HMODULE ModuleOfAddress(const void* address) {
+    HMODULE module = nullptr;
+    if (!address ||
+        !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(address), &module))
+        return nullptr;
+    return module;
+}
+
+// Where the loaded module importer's import dll!name points: the import
+// address table of a static import, or of a delay-load import (which points
+// into the importer's own thunk until its first call).
+Binding ImportBinding(HMODULE importer, const char* dll, const char* name) {
+    Binding b;
+    if (!importer) return b;
+    const auto* base = reinterpret_cast<const BYTE*>(importer);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    const auto find = [&](DWORD namesRva, DWORD iatRva) {
+        const auto* names = reinterpret_cast<const IMAGE_THUNK_DATA64*>(base + namesRva);
+        const auto* iat = reinterpret_cast<const IMAGE_THUNK_DATA64*>(base + iatRva);
+        for (size_t i = 0; names[i].u1.AddressOfData; ++i) {
+            if (IMAGE_SNAP_BY_ORDINAL64(names[i].u1.Ordinal)) continue;
+            const auto* byName = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(base + names[i].u1.AddressOfData);
+            if (std::strcmp(reinterpret_cast<const char*>(byName->Name), name) != 0) continue;
+            b.found = true;
+            b.target = ModuleOfAddress(reinterpret_cast<const void*>(iat[i].u1.Function));
+            return true;
+        }
+        return false;
+    };
+    const IMAGE_DATA_DIRECTORY& imp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (imp.VirtualAddress) {
+        for (const auto* d = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + imp.VirtualAddress); d->Name;
+             ++d) {
+            if (_stricmp(reinterpret_cast<const char*>(base + d->Name), dll) == 0 &&
+                find(d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk, d->FirstThunk))
+                return b;
+        }
+    }
+    const IMAGE_DATA_DIRECTORY& delay = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    if (delay.VirtualAddress) {
+        for (const auto* d = reinterpret_cast<const IMAGE_DELAYLOAD_DESCRIPTOR*>(base + delay.VirtualAddress);
+             d->DllNameRVA; ++d) {
+            if (d->Attributes.RvaBased && _stricmp(reinterpret_cast<const char*>(base + d->DllNameRVA), dll) == 0 &&
+                find(d->ImportNameTableRVA, d->ImportAddressTableRVA)) {
+                b.delay = true;
+                return b;
+            }
+        }
+    }
+    return b;
+}
+
+// The dxgi.dll import `name` of the loaded module importerName must be bound
+// to the bridge; a delay-load import only once it has been called.
+bool CheckDxgiBinding(HMODULE bridge, const wchar_t* importerName, const char* name) {
+    const HMODULE importer = GetModuleHandleW(importerName);
+    if (!importer) return Fail("standalone: %s is not loaded", Narrow(importerName).c_str());
+    const Binding b = ImportBinding(importer, "dxgi.dll", name);
+    const std::string where = Narrow(ModulePath(importer));
+    if (!b.found) return Fail("standalone: %s has no dxgi.dll!%s import", where.c_str(), name);
+    if (b.delay && b.target == importer) {
+        Print("standalone: %s's delay-load dxgi.dll!%s is not bound yet", where.c_str(), name);
+        return true;
+    }
+    Print("standalone: %s's %sdxgi.dll!%s is bound to %s", where.c_str(), b.delay ? "delay-load " : "", name,
+          b.target ? Narrow(ModulePath(b.target)).c_str() : "(no module)");
+    if (b.target != bridge)
+        return Fail("standalone: %s's dxgi.dll!%s is not bound to the bridge", where.c_str(), name);
+    return true;
+}
+
 bool CreateDevice(App& a) {
-    // Without --via-dxgi the test app plays ReShade: it loads the bridge by
-    // path. With it, ReShade's dxgi.dll next to the exe is already in the
-    // process: testapp.exe imports d3d11.dll, which imports dxgi.dll, and the
-    // loader found that in the exe directory, as it does for acs.exe.
-    const std::wstring dllPath = a.exe_dir + L"\\" + (a.opt.via_dxgi ? kDxgiDll : kBridgeDll);
+    // Without --via-dxgi or --standalone the test app plays ReShade: it loads
+    // the bridge by path. With either, the dxgi.dll next to the exe (ReShade,
+    // or the bridge itself) is already in the process: testapp.exe imports
+    // d3d11.dll, which imports dxgi.dll, and the loader found that in the exe
+    // directory, as it does for acs.exe.
+    const std::wstring dllPath = a.exe_dir + L"\\" + (a.opt.via_dxgi || a.opt.standalone ? kDxgiDll : kBridgeDll);
     const std::wstring bridgePath = a.exe_dir + L"\\" + kBridgeDll;
-    if (a.opt.via_dxgi) {
+    if (a.opt.via_dxgi || a.opt.standalone) {
         if (!GetModuleHandleW(dllPath.c_str()))
             return Fail("%s is not loaded: d3d11.dll's dxgi.dll import did not resolve to the exe directory",
                         Narrow(dllPath).c_str());
@@ -406,7 +498,19 @@ bool CreateDevice(App& a) {
             return Fail("%s is loaded before the first DXGI call", Narrow(bridgePath).c_str());
         Print("%s was loaded at process start (d3d11.dll's dxgi.dll import)", Narrow(dllPath).c_str());
     }
-    a.factory_module = LoadLibraryW(dllPath.c_str());
+    if (a.opt.standalone) {
+        const HMODULE bridge = GetModuleHandleW(dllPath.c_str());
+        if (!CheckDxgiBinding(bridge, L"d3d11.dll", "CreateDXGIFactory2")) return false;
+        // By name, as nvngx_dlssg.dll and Streamline do: the loader returns the
+        // dxgi.dll that is already in the process, the bridge.
+        a.factory_module = LoadLibraryW(kDxgiDll);
+        if (a.factory_module != bridge)
+            return Fail("LoadLibraryW(L\"dxgi.dll\") returned %s, not the bridge %s",
+                        Narrow(ModulePath(a.factory_module)).c_str(), Narrow(dllPath).c_str());
+        Print("LoadLibraryW(L\"dxgi.dll\") by name returned the bridge %s", Narrow(dllPath).c_str());
+    } else {
+        a.factory_module = LoadLibraryW(dllPath.c_str());
+    }
     if (!a.factory_module)
         return Fail("LoadLibraryW(%s) failed: error %lu", Narrow(dllPath).c_str(), GetLastError());
     using PFN_CreateDXGIFactory1 = HRESULT(WINAPI*)(REFIID, void**);
@@ -427,6 +531,19 @@ bool CreateDevice(App& a) {
                         Narrow(dllPath).c_str(), Narrow(bridgePath).c_str());
         Print("CreateDXGIFactory1 through %s, which loaded its ProxyLibrary %s",
               Narrow(ModulePath(a.factory_module)).c_str(), Narrow(ModulePath(bridge)).c_str());
+    }
+    if (a.opt.standalone) {
+        // The bridge forwards to System32's dxgi.dll, loaded by full path next to it.
+        wchar_t sys[MAX_PATH] = {};
+        const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+        const HMODULE real = GetModuleHandleW((std::wstring(sys, n) + L"\\dxgi.dll").c_str());
+        if (!real || real == a.factory_module)
+            return Fail("standalone: System32's dxgi.dll is not loaded next to the bridge after CreateDXGIFactory1");
+        if (ImplementingModule(factory1.Get()) != real)
+            return Fail("standalone: the factory is implemented by %s, not by System32's dxgi.dll",
+                        ModuleFileNameOf(ImplementingModule(factory1.Get())).c_str());
+        Print("standalone: CreateDXGIFactory1 through the bridge returned a factory of %s",
+              Narrow(ModulePath(real)).c_str());
     }
     if (FAILED(factory1.As(&a.factory))) return Fail("the factory does not implement IDXGIFactory2");
 
@@ -677,6 +794,23 @@ bool CheckReShadeWrapper(App& a) {
     return true;
 }
 
+// --standalone: the app holds the bridge's proxy (implemented in dxgi.dll next
+// to the exe) or DXGI's own chain. Once Streamline runs, its DXGI imports are
+// bound to the bridge too.
+bool CheckStandaloneChain(App& a) {
+    const HMODULE impl = ImplementingModule(a.chain.Get());
+    if ((impl == a.factory_module) != a.is_proxy)
+        return Fail("swap chain %d: the log says %s, but the app's chain is implemented by %s", a.chains_created,
+                    a.is_proxy ? "proxy" : "pass-through", ModuleFileNameOf(impl).c_str());
+    if (a.is_proxy && a.chains_created == 1) {
+        if (!CheckDxgiBinding(a.factory_module, L"sl.common.dll", "CreateDXGIFactory")) return false;
+        if (GetModuleHandleW(L"D3D12Core.dll") &&
+            !CheckDxgiBinding(a.factory_module, L"D3D12Core.dll", "CreateDXGIFactory2"))
+            return false;
+    }
+    return true;
+}
+
 bool CreateChain(App& a) {
     RECT rc{};
     GetClientRect(a.hwnd, &rc);
@@ -703,6 +837,7 @@ bool CreateChain(App& a) {
                     static_cast<unsigned long>(hr), HrName(hr));
     if (!ClassifyChain(a)) return false;
     if (a.opt.via_dxgi && !CheckReShadeWrapper(a)) return false;
+    if (a.opt.standalone && !CheckStandaloneChain(a)) return false;
     if (!CheckDesc1(a, "after creation")) return false;
     if (FAILED(a.chain.As(&a.chain2)) || FAILED(a.chain.As(&a.chain3)))
         return Fail("the swap chain does not implement IDXGISwapChain2 and IDXGISwapChain3");
@@ -998,6 +1133,20 @@ bool RunFrames(App& a) {
 
 // ---- final log checks
 
+// A stats line (d3d12_presenter.cpp) ends with " streamline=on reflex=on
+// pcl_problems=0 vram_mib=<usage>/<budget>", both in MiB, the budget not zero.
+bool StatsTailOk(const std::string& line) {
+    constexpr char kTail[] = " streamline=on reflex=on pcl_problems=0 vram_mib=";
+    const size_t at = line.rfind(kTail);
+    if (at == std::string::npos) return false;
+    const std::string vram = line.substr(at + sizeof(kTail) - 1);
+    const size_t slash = vram.find('/');
+    if (slash == 0 || slash == std::string::npos || slash + 1 == vram.size()) return false;
+    for (size_t i = 0; i < vram.size(); ++i)
+        if (i != slash && (vram[i] < '0' || vram[i] > '9')) return false;
+    return std::strtoull(vram.c_str() + slash + 1, nullptr, 10) > 0;
+}
+
 bool CheckLogAfterRun(App& a) {
     const BridgeLog log = ReadBridgeLog(a.log_path);
     if (!log.found) return Fail("bridge log not found: %s", Narrow(a.log_path).c_str());
@@ -1020,6 +1169,16 @@ bool CheckLogAfterRun(App& a) {
     }
     if (static_cast<int>(log.decisions.size()) != a.chains_created)
         ok = Fail("the bridge log has %zu decisions for %d swap chains", log.decisions.size(), a.chains_created);
+
+    // The banner's mode (bootstrap.cpp): standalone only as dxgi.dll.
+    const char* const mode = a.opt.standalone ? "] INFO mode: standalone: " : "] INFO mode: proxy: ";
+    if (log.Count(mode) != 1) ok = Fail("the bridge log does not show \"%s\" once", mode + 7);
+    if (a.opt.standalone) {
+        if (log.Count(" is this bridge (standalone), not ReShade") != 1)
+            ok = Fail("the bridge log does not say that the exe folder's dxgi.dll is the bridge");
+        if (log.Has("] INFO ReShade: "))
+            ok = Fail("the bridge log calls a dxgi.dll ReShade in standalone mode");
+    }
 
     const int released = log.Count("ProxySwapChain released");
     const int presentersReleased = log.Count("presenter released");
@@ -1055,12 +1214,13 @@ bool CheckLogAfterRun(App& a) {
         }
         if (dlssg != a.proxies_created)
             ok = Fail("the bridge log has %d DLSS-G support lines for %d presenters", dlssg, a.proxies_created);
-        constexpr char kStatsEnd[] = " streamline=on reflex=on pcl_problems=0";
-        constexpr size_t kStatsEndLen = sizeof(kStatsEnd) - 1;
         for (const auto& l : log.lines)
-            if (l.find(" stats: base_fps=") != std::string::npos &&
-                (l.size() < kStatsEndLen || l.compare(l.size() - kStatsEndLen, kStatsEndLen, kStatsEnd) != 0))
-                ok = Fail("statistics without streamline=on reflex=on pcl_problems=0: %s", l.c_str());
+            if (l.find(" stats: base_fps=") != std::string::npos && !StatsTailOk(l))
+                ok = Fail("statistics without streamline=on reflex=on pcl_problems=0 vram_mib=<usage>/<budget> at "
+                          "the end: %s",
+                          l.c_str());
+        if (!log.Has(" presenter: VRAM (local) budget "))
+            ok = Fail("the bridge log does not show the presenter's VRAM budget and usage");
         if (a.opt.stall) {
             if (!log.Has("debug stall")) ok = Fail("the bridge log does not show the debug stall");
             if (!log.Has("StallWatchdog: D3D12 progress stuck"))
@@ -1093,7 +1253,7 @@ void Usage() {
     std::puts(
         "usage: testapp [--frames N] [--vsync] [--resize] [--test-present] [--recreate] [--stall]\n"
         "               [--expect-proxy | --expect-passthrough] [--fixture NAME] [--fps-cap N] [--hidden]\n"
-        "               [--via-dxgi]\n"
+        "               [--via-dxgi | --standalone]\n"
         "  --frames N            frames to present (default 600)\n"
         "  --vsync               Present(1, 0) instead of Present(0, ALLOW_TEARING)\n"
         "  --resize              ResizeBuffers to 1600x900 at frame 200 and back to 1280x720 at frame 400\n"
@@ -1110,7 +1270,9 @@ void Usage() {
         "  --cpu-load-ms N       N ms of CPU busy work per frame (CPU-bound frames)\n"
         "  --hidden              never show the window\n"
         "  --via-dxgi            the factory from dxgi.dll next to the exe (ReShade with [PROXY]\n"
-        "                        ProxyLibrary=ac-dlssg.dll) instead of loading the bridge directly");
+        "                        ProxyLibrary=ac-dlssg.dll) instead of loading the bridge directly\n"
+        "  --standalone          the bridge is dxgi.dll next to the exe: bound at process start through\n"
+        "                        d3d11.dll's import, the factory from LoadLibraryW(L\"dxgi.dll\") by name");
 }
 
 bool ParseInt(const wchar_t* s, int minimum, int* out) {
@@ -1149,7 +1311,11 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
         } else if (arg == L"--hidden") {
             o->hidden = true;
         } else if (arg == L"--via-dxgi") {
+            if (o->standalone) return false;
             o->via_dxgi = true;
+        } else if (arg == L"--standalone") {
+            if (o->via_dxgi) return false;
+            o->standalone = true;
         } else if (arg == L"--expect-proxy") {
             if (o->expect == Expect::Passthrough) return false;
             o->expect = Expect::Proxy;

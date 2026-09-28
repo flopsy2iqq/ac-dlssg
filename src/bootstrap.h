@@ -16,8 +16,24 @@
 
 namespace acdb {
 
+// How the bridge is loaded. Standalone: it is the process's dxgi.dll (in the
+// game folder, without ReShade), bound by the loader for acs.exe, d3d11.dll,
+// D3D12 and Streamline alike. Proxy: any other file name, i.e. ReShade's
+// [PROXY] ProxyLibrary, or a test loading it by path.
+enum class BridgeMode { Proxy, Standalone };
+
+// Standalone when the file name part of modulePath is "dxgi.dll"
+// (case-insensitive); Proxy otherwise, including for an empty path.
+BridgeMode BridgeModeFromPath(const std::wstring& modulePath);
+const char* BridgeModeName(BridgeMode mode);  // "standalone" or "proxy"
+
+// The banner line about the game folder's dxgi.dll. isThisBridge: that file
+// is this module (standalone), which is never called ReShade.
+std::string GameFolderDxgiLine(bool loaded, bool isThisBridge, const std::string& path, const std::string& version);
+
 struct BootstrapState {
     bool possible = false;
+    BridgeMode mode = BridgeMode::Proxy;  // from BridgeModule()'s file name
     std::string reason;         // why not possible; empty when possible
     Config config;
     std::wstring game_dir;      // directory of the host exe
@@ -38,8 +54,10 @@ HMODULE BridgeModule();
 // Runs once (std::call_once): loads <data_dir>\ac-dlssg.ini, moves the
 // previous run's <data_dir>\logs\bridge.log to bridge.prev.log, opens
 // bridge.log at the configured level, logs a banner (bridge version
-// ACDB_VERSION, host exe path, Windows build, the versions of version.dll and
-// of the game folder's dxgi.dll (ReShade) and dwrite.dll (CSP), all DXGI
+// ACDB_VERSION, host exe path, the bridge module and its mode ("mode:
+// standalone: ..." or "mode: proxy: ..."), Windows build, the versions of
+// version.dll and of the game folder's dxgi.dll (ReShade, or in standalone
+// mode this bridge, GameFolderDxgiLine) and dwrite.dll (CSP), all DXGI
 // adapters with vendor/device IDs, LUID, ArchName and driver version, and per
 // adapter a "adapter <i> D3DKMT:" line (hybrid role, HAGS supported/enabled,
 // number of outputs; logging only) plus a WARN per NvidiaDriverWarnings for

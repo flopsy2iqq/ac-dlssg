@@ -29,7 +29,7 @@ struct ProxyDecisionInputs {
     bool is_d3d11_device = false;       // pDevice QIs to ID3D11Device
     bool is_main_window = false;        // IsMainGameWindow(hWnd)
     bool bootstrap_possible = false;    // BootstrapRunOnce().possible
-    bool compat_ok = false;             // EvaluateCompat(...).ok
+    bool compat_ok = false;             // EvaluateChainCompat(...).ok
     bool streamline_shut_down = false;  // StreamlineRuntime::Get().IsShutDown()
     bool nvidia_adapter = false;        // RenderAdapterRefusal(adapter of pDevice) is empty
 };
@@ -74,7 +74,8 @@ struct RenderAdapter {
 // Pure: empty when the adapter is NVIDIA (vendor 0x10DE); otherwise the
 // pass-through reason:
 //   "CSP renders on <description> (vendor 0xVVVV), not an NVIDIA GPU: set
-//    acs.exe to High performance in Windows Settings > System > Display > Graphics"
+//    acs.exe to High performance in Windows Settings > System > Display > Graphics,
+//    and check SELECT_ADAPTER in CSP's dxgi_tweaks.ini"
 // or, for an unknown adapter, "the adapter of CSP's device is unknown (<error>)".
 std::string RenderAdapterRefusal(const RenderAdapter& adapter);
 
