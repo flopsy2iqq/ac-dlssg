@@ -148,3 +148,40 @@ TEST(GpuInfo_DriverVersionText) {
     CHECK(DriverVersionText(kNv, Umd(32, 0, 16, 105)) == "32.0.16.105 (NVIDIA 601.05)");
     CHECK(DriverVersionText(0x1002, Umd(31, 0, 24033, 1003)) == "31.0.24033.1003");
 }
+
+TEST(GpuInfo_NvidiaDriverVersion) {
+    CHECK_EQ(NvidiaDriverVersion(Umd(32, 0, 16, 1664)), 61664u);  // 616.64, the reference PC
+    CHECK_EQ(NvidiaDriverVersion(Umd(32, 0, 16, 1088)), 61088u);  // 610.88, the Nitro 5 laptop
+    CHECK_EQ(NvidiaDriverVersion(Umd(32, 0, 15, 8129)), 58129u);
+    CHECK_EQ(NvidiaDriverVersion(Umd(31, 0, 15, 5222)), 55222u);
+    CHECK_EQ(NvidiaDriverVersion(Umd(32, 0, 16, 105)), 60105u);
+}
+
+// Two separate thresholds: 581.29 (the Optimus degradation fix) and R580
+// (dlssg_for_sm86's native cubins).
+TEST(GpuInfo_NvidiaDriverWarnings) {
+    const char* const kOptimus = "NVIDIA driver %s is older than 581.29, the release with the Optimus degradation fix";
+    const char* const kR580 =
+        "NVIDIA driver %s is older than R580; dlssg_for_sm86 needs R580 or newer for its native cubins";
+    const auto text = [](const char* fmt, const char* version) {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), fmt, version);
+        return std::string(buf);
+    };
+    CHECK(NvidiaDriverWarnings(61664).empty());
+    CHECK(NvidiaDriverWarnings(61088).empty());
+    CHECK(NvidiaDriverWarnings(58129).empty());
+    auto w = NvidiaDriverWarnings(58128);
+    REQUIRE(w.size() == 1);
+    CHECK_EQ(w[0], text(kOptimus, "581.28"));
+    w = NvidiaDriverWarnings(58000);
+    REQUIRE(w.size() == 1);
+    CHECK_EQ(w[0], text(kOptimus, "580.00"));
+    w = NvidiaDriverWarnings(57999);
+    REQUIRE(w.size() == 2);
+    CHECK_EQ(w[0], text(kOptimus, "579.99"));
+    CHECK_EQ(w[1], text(kR580, "579.99"));
+    w = NvidiaDriverWarnings(56094);
+    REQUIRE(w.size() == 2);
+    CHECK_EQ(w[1], text(kR580, "560.94"));
+}

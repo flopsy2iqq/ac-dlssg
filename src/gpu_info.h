@@ -3,6 +3,7 @@
 // dlssg_for_sm86 spoof rewrites).
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace acdb {
 
@@ -23,5 +24,15 @@ bool IsAmpereSm86(uint32_t vendorId, uint32_t deviceId);
 // "a.b.c.d"; for NVIDIA also the marketing version, which is the last five
 // digits: "32.0.16.1664 (NVIDIA 616.64)".
 std::string DriverVersionText(uint32_t vendorId, int64_t umdVersion);
+
+// NVIDIA's marketing version times 100 from the same user-mode driver
+// version: 32.0.16.1664 gives 61664 (616.64).
+unsigned NvidiaDriverVersion(int64_t umdVersion);
+
+// Pure: one warning per threshold the NVIDIA driver version (as from
+// NvidiaDriverVersion) is below, empty when none:
+//  - below 581.29: "NVIDIA driver <v> is older than 581.29, the release with the Optimus degradation fix"
+//  - below R580:   "NVIDIA driver <v> is older than R580; dlssg_for_sm86 needs R580 or newer for its native cubins"
+std::vector<std::string> NvidiaDriverWarnings(unsigned version);
 
 }  // namespace acdb

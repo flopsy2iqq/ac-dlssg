@@ -93,6 +93,23 @@ const char* HybridRoleName(HybridRole role) {
     return "unknown";
 }
 
+std::string AdapterKmtText(const AdapterKmtInfo& info, unsigned outputs) {
+    std::string s = info.hybrid == HybridRole::Unknown ? "hybrid role unknown (" + info.hybrid_reason + ")"
+                                                       : std::string(HybridRoleName(info.hybrid));
+    switch (info.hags.state) {
+        case HagsState::On:
+            s += info.hags.supported ? ", HAGS supported and enabled" : ", HAGS enabled (HwSchSupported not set)";
+            break;
+        case HagsState::Off:
+            s += info.hags.supported ? ", HAGS supported, not enabled" : ", HAGS not supported";
+            break;
+        case HagsState::Unknown:
+            s += ", HAGS unknown (" + info.hags.reason + ")";
+            break;
+    }
+    return s + ", " + std::to_string(outputs) + " outputs";
+}
+
 AdapterKmtInfo QueryAdapterKmt(const LUID& luid) {
     AdapterKmtInfo info;
     const KmtApi& kmt = Kmt();

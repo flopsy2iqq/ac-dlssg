@@ -21,6 +21,7 @@
 #include "bootstrap.h"
 #include "compat.h"
 #include "factory_hook.h"
+#include "gpu_info.h"
 #include "gpu_test_devices.h"
 #include "internal_call.h"
 #include "log.h"
@@ -544,6 +545,28 @@ TEST(Bootstrap_StateAndBanner) {
     CHECK(log.find("Streamline: ") != std::string::npos);
     // The driver profile is read before Streamline and before any device.
     CHECK(log.find("driver profile: ") < log.find("Streamline: "));
+    // Hybrid diagnostics for every DXGI adapter: D3DKMT adapter type, HAGS
+    // and the number of outputs; driver warnings for NVIDIA adapters.
+    ComPtr<IDXGIFactory1> factory;
+    REQUIRE(SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))));
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i, adapter.Reset()) {
+        DXGI_ADAPTER_DESC1 d{};
+        REQUIRE(SUCCEEDED(adapter->GetDesc1(&d)));
+        UINT outputs = 0;
+        for (ComPtr<IDXGIOutput> o; outputs < 64 && SUCCEEDED(adapter->EnumOutputs(outputs, &o)); o.Reset()) ++outputs;
+        const std::string line =
+            "adapter " + std::to_string(i) + " D3DKMT: " + AdapterKmtText(QueryAdapterKmt(d.AdapterLuid), outputs) + "\n";
+        if (log.find(line) == std::string::npos) std::printf("  missing: %s", line.c_str());
+        CHECK(log.find(line) != std::string::npos);
+        LARGE_INTEGER umd{};
+        if (d.VendorId == 0x10DE && SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
+            for (const std::string& w : NvidiaDriverWarnings(NvidiaDriverVersion(umd.QuadPart)))
+                CHECK(log.find(" WARN adapter " + std::to_string(i) + ": " + w + "\n") != std::string::npos);
+            if (NvidiaDriverWarnings(NvidiaDriverVersion(umd.QuadPart)).empty())
+                CHECK(log.find(" WARN adapter " + std::to_string(i) + ": NVIDIA driver ") == std::string::npos);
+        }
+    }
     if (log.find("adapter 0: ") == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
 }
 

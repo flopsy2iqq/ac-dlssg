@@ -49,6 +49,26 @@ TEST(AdapterCaps_HybridRoleFromAdapterTypeBits) {
     CHECK_EQ(std::string(HagsStateName(HagsState::Unknown)), "unknown");
 }
 
+TEST(AdapterCaps_BannerText) {
+    AdapterKmtInfo info;
+    info.hybrid = HybridRole::Discrete;
+    info.hags = HagsFromWddm27Caps(0x3);
+    CHECK_EQ(AdapterKmtText(info, 0), "hybrid discrete, HAGS supported and enabled, 0 outputs");
+    info.hybrid = HybridRole::Integrated;
+    info.hags = HagsFromWddm27Caps(0x1);
+    CHECK_EQ(AdapterKmtText(info, 1), "hybrid integrated, HAGS supported, not enabled, 1 outputs");
+    info.hybrid = HybridRole::Neither;
+    info.hags = HagsFromWddm27Caps(0x0);
+    CHECK_EQ(AdapterKmtText(info, 3), "not hybrid, HAGS not supported, 3 outputs");
+    info.hags = HagsFromWddm27Caps(0x2);
+    CHECK_EQ(AdapterKmtText(info, 1), "not hybrid, HAGS enabled (HwSchSupported not set), 1 outputs");
+    info.hybrid = HybridRole::Unknown;
+    info.hybrid_reason = "why type";
+    info.hags = AdapterHags();
+    info.hags.reason = "why caps";
+    CHECK_EQ(AdapterKmtText(info, 2), "hybrid role unknown (why type), HAGS unknown (why caps), 2 outputs");
+}
+
 TEST(AdapterCaps_LuidText) {
     LUID luid{};
     luid.LowPart = 0x140D9;

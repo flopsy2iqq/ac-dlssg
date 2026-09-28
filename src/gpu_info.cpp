@@ -36,6 +36,10 @@ constexpr uint32_t kFirstTuringId = 0x1E02;
 
 constexpr uint32_t kNvidia = 0x10DE;
 
+// Driver thresholds, as NvidiaDriverVersion values.
+constexpr unsigned kOptimusFixDriver = 58129;  // 581.29
+constexpr unsigned kR580Driver = 58000;        // R580, the first branch dlssg_for_sm86 supports
+
 }  // namespace
 
 GpuArch ArchFromIds(uint32_t vendorId, uint32_t deviceId) {
@@ -72,10 +76,30 @@ std::string DriverVersionText(uint32_t vendorId, int64_t umdVersion) {
     char buf[64];
     int n = std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u", a, b, c, d);
     if (vendorId == kNvidia && n > 0) {
-        const unsigned nv = (c % 10) * 10000 + d;
+        const unsigned nv = NvidiaDriverVersion(umdVersion);
         std::snprintf(buf + n, sizeof(buf) - static_cast<size_t>(n), " (NVIDIA %u.%02u)", nv / 100, nv % 100);
     }
     return buf;
+}
+
+unsigned NvidiaDriverVersion(int64_t umdVersion) {
+    const auto v = static_cast<uint64_t>(umdVersion);
+    const unsigned c = static_cast<unsigned>((v >> 16) & 0xFFFF);
+    const unsigned d = static_cast<unsigned>(v & 0xFFFF);
+    return (c % 10) * 10000 + d;
+}
+
+std::vector<std::string> NvidiaDriverWarnings(unsigned version) {
+    char v[24];
+    std::snprintf(v, sizeof(v), "%u.%02u", version / 100, version % 100);
+    std::vector<std::string> warnings;
+    if (version < kOptimusFixDriver)
+        warnings.push_back(std::string("NVIDIA driver ") + v +
+                           " is older than 581.29, the release with the Optimus degradation fix");
+    if (version < kR580Driver)
+        warnings.push_back(std::string("NVIDIA driver ") + v +
+                           " is older than R580; dlssg_for_sm86 needs R580 or newer for its native cubins");
+    return warnings;
 }
 
 }  // namespace acdb

@@ -44,6 +44,11 @@ const char* HagsStateName(HagsState state);  // "on", "off", "unknown"
 // "hybrid discrete", "hybrid integrated", "not hybrid", "unknown"
 const char* HybridRoleName(HybridRole role);
 
+// Pure: the banner's per-adapter text, for example
+// "hybrid discrete, HAGS supported and enabled, 0 outputs". Unknown parts
+// read "hybrid role unknown (<reason>)" and "HAGS unknown (<reason>)".
+std::string AdapterKmtText(const AdapterKmtInfo& info, unsigned outputs);
+
 // D3DKMTOpenAdapterFromLuid, then D3DKMTQueryAdapterInfo with
 // KMTQAITYPE_WDDM_2_7_CAPS (HAGS) and KMTQAITYPE_ADAPTERTYPE (hybrid role),
 // then D3DKMTCloseAdapter. Never throws. A part that cannot be queried stays

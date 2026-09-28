@@ -40,8 +40,10 @@ HMODULE BridgeModule();
 // bridge.log at the configured level, logs a banner (bridge version
 // ACDB_VERSION, host exe path, Windows build, the versions of version.dll and
 // of the game folder's dxgi.dll (ReShade) and dwrite.dll (CSP), all DXGI
-// adapters with vendor/device IDs, LUID, ArchName and driver version), reads
-// CompatInputs and logs them. M2 adds, in this order: spoof detection
+// adapters with vendor/device IDs, LUID, ArchName and driver version, and per
+// adapter a "adapter <i> D3DKMT:" line (hybrid role, HAGS supported/enabled,
+// number of outputs; logging only) plus a WARN per NvidiaDriverWarnings for
+// NVIDIA adapters), reads CompatInputs and logs them. M2 adds, in this order: spoof detection
 // (version.dll's path is game_dir), ReadDriverProfile(host exe) with every
 // warning logged at WARN before any D3D device exists, and, only when the
 // config enables the bridge, StreamlineRuntime::Get().Init(<data_dir>\sl,

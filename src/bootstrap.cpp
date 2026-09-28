@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "adapter_caps.h"
 #include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
@@ -148,9 +149,8 @@ void LogAdapters() {
             continue;
         }
         LARGE_INTEGER umd{};
-        const std::string driver = SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))
-                                       ? DriverVersionText(d.VendorId, umd.QuadPart)
-                                       : std::string("unknown");
+        const bool haveUmd = SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd));
+        const std::string driver = haveUmd ? DriverVersionText(d.VendorId, umd.QuadPart) : std::string("unknown");
         LOGI("adapter %u: %s, vendor 0x%04X device 0x%04X subsys 0x%08X rev %u, LUID %08lX:%08lX, %s%s%s, "
              "%llu MB dedicated, driver %s",
              i, ToUtf8(d.Description).c_str(), d.VendorId, d.DeviceId, d.SubSysId, d.Revision,
@@ -159,6 +159,15 @@ void LogAdapters() {
              IsAmpereSm86(d.VendorId, d.DeviceId) ? " (SM86)" : "",
              (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? ", software" : "",
              static_cast<unsigned long long>(d.DedicatedVideoMemory / (1024 * 1024)), driver.c_str());
+        // Hybrid (Optimus) diagnostics, for the log only: decisions use the
+        // LUID of CSP's device, never an adapter's position or its outputs.
+        UINT outputs = 0;
+        for (ComPtr<IDXGIOutput> o; outputs < 64 && SUCCEEDED(adapter->EnumOutputs(outputs, &o)); o.Reset()) ++outputs;
+        LOGI("adapter %u D3DKMT: %s", i, AdapterKmtText(QueryAdapterKmt(d.AdapterLuid), outputs).c_str());
+        if (d.VendorId == 0x10DE && haveUmd) {
+            for (const std::string& w : NvidiaDriverWarnings(NvidiaDriverVersion(umd.QuadPart)))
+                LOGW("adapter %u: %s", i, w.c_str());
+        }
     }
     if (i == 0) LOGW("adapters: none found");
 }
