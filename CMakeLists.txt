@@ -107,6 +107,7 @@ add_library(acdb_core STATIC
     src/pcl_sequencer.cpp
     src/streamline_runtime.cpp
     src/driver_profile.cpp
+    src/capture_slots.cpp
     ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
@@ -144,6 +145,7 @@ add_executable(acdb_tests
     tests/test_streamline_prefs.cpp
     tests/test_streamline_runtime.cpp
     tests/test_driver_profile.cpp
+    tests/test_capture_slots.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
