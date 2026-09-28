@@ -66,16 +66,6 @@ bool CaptureCoordinator::SameDevice(ID3D11DeviceContext* ctx) {
     return checked_ok_;
 }
 
-ID3D11DeviceContext4* CaptureCoordinator::Ctx4For(ID3D11DeviceContext* ctx) {
-    if (ctx != ctx4_of_) {
-        ComPtr<ID3D11DeviceContext4> c4;
-        if (FAILED(ctx->QueryInterface(IID_PPV_ARGS(&c4)))) return nullptr;
-        ctx4_ = c4;
-        ctx4_of_ = ctx;
-    }
-    return ctx4_.Get();
-}
-
 void CaptureCoordinator::LogThrottled(const std::string& what) {
     if (throttle_.ShouldLog(what, GetTickCount64())) LOGW("capture: %s (logged at most every 10 s)", what.c_str());
 }
@@ -138,7 +128,6 @@ void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
     const uint32_t slot = static_cast<uint32_t>(frame_index_ % CaptureSlots::kSlots);
     frame_.slot = slot;
     frame_.captured = false;
-    frame_.fenceValue = 0;
     const bool reset = frame_.params.ngxReset || in.reset;
     frame_.params = CaptureParams();
     frame_.params.jitterX = in.jitterX;
@@ -231,16 +220,14 @@ void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
         LogThrottled(err);
         return;
     }
-    ID3D11DeviceContext4* c4 = Ctx4For(in.ctx);
-    if (!c4) {
-        frame_.reason = "no capture: the context has no ID3D11DeviceContext4";
-        LogThrottled(frame_.reason);
-        return;
-    }
-    const uint64_t v = fences->Next();
-    c4->Signal(fences->Shared11(), v);
+    // No fence signal here (review finding F1): a value from the shared
+    // fence's counter would lie above the one CSP's next Present waits for,
+    // so it would release that wait before the D3D12 queue is done with the
+    // shared back buffer, and the queue's later, lower signal would move the
+    // fence backwards. The Present's own signal follows this copy on the same
+    // immediate context, and the D3D12 queue waits for it before anything
+    // reads the slot.
     frame_.captured = true;
-    frame_.fenceValue = v;
     frame_.mvecWidth = md.Width;
     frame_.mvecHeight = md.Height;
     frame_.mvecFormat = slots->MvecFormat(slot);

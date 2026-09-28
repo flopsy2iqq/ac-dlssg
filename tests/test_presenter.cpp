@@ -252,7 +252,7 @@ TEST(Presenter_CreatePresentAndResize) {
 }
 
 // M3: the presenter owns the capture coordinator; an evaluate pairs with the
-// next Present, whose D3D12 queue waits for the capture's fence value, and
+// next Present, whose own fence value also covers the capture's copy, and
 // the counters see captures and double evaluates. The plain path has no
 // Streamline, so nothing is tagged.
 TEST(Presenter_CaptureSinkPairsEachCaptureWithThePresent) {
@@ -676,4 +676,67 @@ TEST(Presenter_FrameReachesTheD3D12BackBuffer) {
     }
     d.ctx11->ClearState();
     d.ctx11->Flush();
+}
+
+// Review finding F1, end to end: with a capture in every frame, the frames
+// stay in order while the D3D12 queue lags. The queue is held on frame 30
+// (ACDLSSG_DEBUG_STALL_MS, below the watchdog's 500 ms) while frame 31 is
+// captured and presented. D3D11 may copy frame 31 into the shared back
+// buffer only after the D3D12 queue copied frame 30 out of it, so frame 30's
+// D3D12 back buffer shows frame 30, and both frames reach the chain. (On the
+// reference RTX 3080 this held before the fix too, apparently because the
+// driver orders the two APIs' accesses to the shared texture; the fence
+// behaviour itself is tested in Coordinator_ACaptureDoesNotReleaseTheWait-
+// ForTheD3D12Queue.)
+TEST(Presenter_ACaptureKeepsCspWaitingForTheD3D12Copy) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    acdb_test::TempDir dir(L"presenter_capture_wait");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    uint32_t texel[2] = {};
+    uint32_t expect[2] = {};
+    {
+        GameWindow window(320, 180);
+        REQUIRE(window.Get() != nullptr);
+        std::unique_ptr<D3D12Presenter> p;
+        {
+            EnvOverride env(L"ACDLSSG_DEBUG_STALL_MS", L"250");  // read at creation only
+            p = CreatePresenter(d, window.Get(), 320, 180);
+        }
+        REQUIRE(p != nullptr);
+        NgxEvaluateSink* sink = p->CaptureSink();
+        REQUIRE(sink != nullptr);
+        Source src = CreateSource(d.device11.Get(), 320, 180);
+        CaptureSources cs = CreateCaptureSources(d.device11.Get(), 160, 90);
+        REQUIRE(src.rtv && cs.depth && cs.mvec);
+        UINT idx[2] = {};
+        for (int f = 1; f <= 31; ++f) {
+            // Exact n/255 values, so float-to-UNORM rounding cannot move a byte.
+            const float color[4] = {f / 255.0f, (255 - f) / 255.0f, 128 / 255.0f, 1.0f};
+            d.ctx11->ClearRenderTargetView(src.rtv.Get(), color);
+            sink->OnEvaluate(EvaluateInputs(d.ctx11.Get(), cs));
+            if (f >= 30) {
+                idx[f - 30] = p->Chain()->GetCurrentBackBufferIndex();
+                expect[f - 30] = 0xFF800000u | (static_cast<uint32_t>(255 - f) << 8) | static_cast<uint32_t>(f);
+            }
+            CHECK(PresentOk(p->PresentFrame(d.ctx11.Get(), src.tex.Get(), 0, 0)));
+        }
+        Sleep(700);  // the debug stall is over and the queue ran
+        for (int f = 0; f < 2; ++f) {
+            ComPtr<ID3D12Resource> buffer;
+            REQUIRE(SUCCEEDED(p->Chain()->GetBuffer(idx[f], IID_PPV_ARGS(&buffer))));
+            texel[f] = ReadTexel12(d.device12.Get(), buffer.Get(), 160, 90);
+            std::printf("  frame %d buffer %u texel 0x%08X expect 0x%08X\n", 30 + f, idx[f], texel[f], expect[f]);
+        }
+        CHECK(!p->Stopped());
+    }
+    LogClose();
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+    CHECK_EQ(texel[0], expect[0]);
+    CHECK_EQ(texel[1], expect[1]);
+    const std::string log = acdb_test::ReadAll(logPath);
+    CHECK(log.find("debug stall: the D3D12 queue now waits 250 ms") != std::string::npos);
+    CHECK(log.find("D3D12 stall:") == std::string::npos);  // the watchdog never fired
 }

@@ -17,8 +17,12 @@
 //    fence and the value that last tagged the slot: Copy, Recreate (the frame
 //    is then forced off), or Skip (no capture until the GPU is done);
 //    CaptureSlots refusing the sources (format, MSAA, ...) is no capture;
-//  - CaptureSlots::Copy, then ID3D11DeviceContext4::Signal(shared fence, V)
-//    on the given context with V from the presenter's single counter;
+//  - CaptureSlots::Copy on the given context. No fence is signalled: the
+//    Present's own shared-fence signal follows the copy on the same immediate
+//    context, and the D3D12 queue waits for it before it reads the slot. A
+//    capture signal would release CSP's wait for the D3D12 queue at the next
+//    Present (review finding F1; this deviates from spec 6.4 "Fences" and
+//    6.5, which have the capture signal the shared fence);
 //  - the last evaluate of the frame wins for the resources and parameters;
 //    Reset is OR-ed over the frame's evaluates;
 //  - subrect 0 falls back to the feature's create Width/Height, else the
@@ -59,9 +63,8 @@ const char* CameraReadResultText(CameraChannel::ReadResult r);
 
 struct FrameCapture {
     uint32_t evaluates = 0;   // qualifying evaluates since the previous Present
-    bool captured = false;    // copied into slot and the shared fence signalled
+    bool captured = false;    // copied into slot (ordered before the Present's signal)
     uint32_t slot = 0;        // this frame's slot (frame index mod 3)
-    uint64_t fenceValue = 0;  // shared-fence value signalled after the copy
     // renderW/H: the tag extent and the MV scale's reference size (the
     // subrect after its fallback).
     CaptureParams params;
@@ -104,7 +107,6 @@ public:
 
 private:
     bool SameDevice(ID3D11DeviceContext* ctx);
-    ID3D11DeviceContext4* Ctx4For(ID3D11DeviceContext* ctx);
     void Capture(const NgxEvaluateInputs& in);
     void LogThrottled(const std::string& what);
 
@@ -113,8 +115,6 @@ private:
     Microsoft::WRL::ComPtr<IUnknown> native_identity_;
     ID3D11DeviceContext* checked_ctx_ = nullptr;
     bool checked_ok_ = false;
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext4> ctx4_;
-    ID3D11DeviceContext* ctx4_of_ = nullptr;
     CameraLatch latch_;
     uint64_t frame_index_ = 1;  // the bridge frame in progress
     FrameCapture frame_;

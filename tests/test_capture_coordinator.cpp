@@ -1,6 +1,6 @@
 // CaptureCoordinator (spec 6.4 "Capture slots", 6.5, 6.6, 7 step 2) on real
 // D3D11/D3D12 devices, without Streamline: the per-frame first-evaluate latch
-// and markers, the copy into slot N mod 3 and the shared-fence signal, the
+// and markers, the copy into slot N mod 3 (without a shared-fence signal), the
 // refusals (null resources, deferred context, another device, unsupported
 // formats), the recreate rule, CreateFeature, the subrect and MV-scale
 // fallbacks, and the camera latch at a Present without an evaluate.
@@ -105,16 +105,6 @@ struct Rig {
         in.createObserved = true;
         return in;
     }
-
-    // Waits until the shared fence reaches value (the D3D11 signal executed).
-    bool SharedReached(uint64_t value) {
-        d.ctx11->Flush();
-        const HANDLE e = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        fences->Shared12()->SetEventOnCompletion(value, e);
-        const bool ok = WaitForSingleObject(e, 5000) == WAIT_OBJECT_0;
-        CloseHandle(e);
-        return ok;
-    }
 };
 
 bool Has(const std::string& s, const char* piece) {
@@ -168,20 +158,17 @@ TEST(Coordinator_FirstEvaluateLatchesTheCameraAndEmitsMarkersOnce) {
     CHECK_EQ(r.markers, 4);
 }
 
-TEST(Coordinator_CopiesIntoSlotNmod3AndSignalsTheSharedFence) {
+TEST(Coordinator_CopiesIntoSlotNmod3AndLeavesTheSharedFenceAlone) {
     Rig r;
     if (!r.Create()) return;
     CspSources s = MakeSources(r.d.device11.Get(), 64, 36);
     REQUIRE(s.depth && s.mvec);
     uint32_t slots[6] = {};
-    uint64_t last = 0;
     for (int i = 0; i < 6; ++i) {
         r.coord->OnEvaluate(r.Inputs(s));
         const FrameCapture f = r.coord->EndFrame();
         REQUIRE(f.captured);
         slots[i] = f.slot;
-        CHECK(f.fenceValue > last);
-        last = f.fenceValue;
         CHECK(r.slots->HasTextures(f.slot));
         CHECK(r.slots->Depth12(f.slot) != nullptr);
         // Tag extents come from the subrect; the MV scale and flags pass through.
@@ -195,7 +182,73 @@ TEST(Coordinator_CopiesIntoSlotNmod3AndSignalsTheSharedFence) {
     CHECK_EQ(slots[3], slots[0]);
     CHECK_EQ(slots[4], slots[1]);
     CHECK_EQ(slots[5], slots[2]);
-    CHECK(r.SharedReached(last));
+    // The capture leaves the shared fence to the Present (review finding F1).
+    r.d.ctx11->Flush();
+    Sleep(50);
+    CHECK_EQ(r.fences->Shared12()->GetCompletedValue(), 0ull);
+}
+
+// Review finding F1. The shared fence hands the shared back buffer from one
+// API to the other: at Present, D3D11 waits for the value W the D3D12 queue
+// signals when it is done with the previous frame (spec 7 steps 4 and 7). A
+// capture during the next frame must not satisfy that wait by itself. Here
+// the D3D12 queue is held before it signals W, CSP's next frame is captured,
+// and D3D11's wait for W must still hold until the queue runs.
+TEST(Coordinator_ACaptureDoesNotReleaseTheWaitForTheD3D12Queue) {
+    Rig r;
+    if (!r.Create()) return;
+    CspSources s = MakeSources(r.d.device11.Get(), 64, 36);
+    REQUIRE(s.depth && s.mvec);
+    ComPtr<ID3D11DeviceContext4> ctx4;
+    REQUIRE(SUCCEEDED(r.d.ctx11.As(&ctx4)));
+    ComPtr<ID3D11Device5> device5;
+    REQUIRE(SUCCEEDED(r.d.device11.As(&device5)));
+    ComPtr<ID3D11Fence> marker;  // how far the D3D11 queue got
+    REQUIRE(SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&marker))));
+    D3D12_COMMAND_QUEUE_DESC qd{};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ComPtr<ID3D12CommandQueue> queue;
+    REQUIRE(SUCCEEDED(r.d.device12->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))));
+    ComPtr<ID3D12Fence> hold;
+    ComPtr<ID3D12Fence> idle;
+    REQUIRE(SUCCEEDED(r.d.device12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&hold))));
+    REQUIRE(SUCCEEDED(r.d.device12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&idle))));
+    // Releases the queue and waits for it whatever the checks say, so that the
+    // devices can be torn down.
+    struct Release {
+        ID3D12CommandQueue* queue;
+        ID3D12Fence* hold;
+        ID3D12Fence* idle;
+        ~Release() {
+            hold->Signal(1);
+            queue->Signal(idle, 1);
+            for (int i = 0; i < 500 && idle->GetCompletedValue() < 1; ++i) Sleep(1);
+        }
+    } release{queue.Get(), hold.Get(), idle.Get()};
+
+    // End of frame N on the D3D12 queue: held, then W.
+    const uint64_t w = r.fences->Next();
+    REQUIRE(SUCCEEDED(queue->Wait(hold.Get(), 1)));
+    REQUIRE(SUCCEEDED(queue->Signal(r.fences->Shared12(), w)));
+    // Frame N+1 on D3D11: CSP's evaluate is captured, then its Present waits for W.
+    r.coord->OnEvaluate(r.Inputs(s));
+    REQUIRE(SUCCEEDED(ctx4->Wait(r.fences->Shared11(), w)));
+    REQUIRE(SUCCEEDED(ctx4->Signal(marker.Get(), 1)));
+    r.d.ctx11->Flush();
+    Sleep(200);
+    const uint64_t whileHeld = marker->GetCompletedValue();
+    const uint64_t sharedWhileHeld = r.fences->Shared12()->GetCompletedValue();
+    std::printf("  while the D3D12 queue is held: D3D11 marker %llu, shared fence %llu (W %llu)\n",
+                static_cast<unsigned long long>(whileHeld), static_cast<unsigned long long>(sharedWhileHeld),
+                static_cast<unsigned long long>(w));
+    CHECK(r.coord->EndFrame().captured);
+    CHECK_EQ(whileHeld, 0ull);  // D3D11 still waits for the D3D12 queue
+    CHECK(sharedWhileHeld < w);
+
+    REQUIRE(SUCCEEDED(hold->Signal(1)));
+    for (int i = 0; i < 5000 && marker->GetCompletedValue() < 1; ++i) Sleep(1);
+    CHECK_EQ(marker->GetCompletedValue(), 1ull);
+    CHECK(r.fences->Shared12()->GetCompletedValue() >= w);
 }
 
 TEST(Coordinator_NullResourcesGiveNoCaptureAndKeepTheSlot) {

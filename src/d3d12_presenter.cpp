@@ -1188,10 +1188,10 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     // D3D12 side.
     ++frames;
     if (debug_stall_ms && frames == kDebugStallFrame) StartDebugStall();
-    HRESULT hr = S_OK;
-    // Nothing on the queue reads the capture slot before its copy is done.
-    if (cap.captured) hr = queue->Wait(fences->Shared12(), cap.fenceValue);
-    if (SUCCEEDED(hr)) hr = queue->Wait(fences->Shared12(), v);
+    // v also covers this frame's capture: its copy into the slot ran earlier
+    // on the same immediate context, so nothing on the queue reads the slot
+    // before that copy is done (review finding F1).
+    HRESULT hr = queue->Wait(fences->Shared12(), v);
     if (FAILED(hr)) LOGW("presenter: queue Wait failed: 0x%08lX", static_cast<unsigned long>(hr));
     const UINT idx = self.chain_->GetCurrentBackBufferIndex();
     if (idx >= kBuffers) {

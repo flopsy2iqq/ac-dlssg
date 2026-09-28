@@ -87,8 +87,10 @@ struct PresenterCreateInfo {
 //    logged then and whenever the number of hooked modules changes.
 //  - PresentFrame: NgxHook::ProcessPendingRescan first; the hotkey (Ctrl+F10
 //    by default, only while the game window is in the foreground) toggles
-//    DLSS-G; the coordinator's frame ends (EndFrame); the D3D12 queue waits
-//    for the capture's fence value before the frame's commands; the gate
+//    DLSS-G; the coordinator's frame ends (EndFrame); the D3D12 queue's wait
+//    for the Present's value V also covers the capture, whose copy precedes
+//    V's signal on the immediate context (the capture signals nothing,
+//    review finding F1); the gate
 //    (DecideFg) with BuildFrameConstants (frame N-1's snapshot as prev, the
 //    subrect as the render size when the camera's aspect differs by more
 //    than 0.5%, reset when originShift changed or frame N-1 had no DLSS-G
