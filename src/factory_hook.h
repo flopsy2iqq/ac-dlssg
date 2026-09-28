@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <dxgi1_6.h>
 
+#include <cstdint>
 #include <string>
 
 #include "adapter_caps.h"
@@ -30,6 +31,7 @@ struct ProxyDecisionInputs {
     bool bootstrap_possible = false;    // BootstrapRunOnce().possible
     bool compat_ok = false;             // EvaluateCompat(...).ok
     bool streamline_shut_down = false;  // StreamlineRuntime::Get().IsShutDown()
+    bool nvidia_adapter = false;        // RenderAdapterRefusal(adapter of pDevice) is empty
 };
 // True only when !internal_call and every other condition holds.
 bool ShouldProxy(const ProxyDecisionInputs& in);
@@ -56,6 +58,32 @@ CompatResult EvaluateChainCompat(CompatInputs inputs, const HagsDecision& hags, 
 // query count as failed (so the registry decides). Either logs a WARN; any
 // other value is ignored with a WARN.
 constexpr wchar_t kDebugHagsEnv[] = L"ACDLSSG_DEBUG_HAGS";
+
+// The adapter of CSP's D3D11 device (IDXGIDevice::GetAdapter). Its LUID is
+// the identity every per-adapter decision uses; never EnumAdapters(0) or the
+// outputs of a GPU, which on a hybrid laptop belong to the integrated GPU.
+struct RenderAdapter {
+    bool known = false;  // IDXGIDevice::GetAdapter and GetDesc succeeded
+    LUID luid{};
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+    std::string description;  // UTF-8
+    std::string error;        // why not known
+};
+
+// Pure: empty when the adapter is NVIDIA (vendor 0x10DE); otherwise the
+// pass-through reason:
+//   "CSP renders on <description> (vendor 0xVVVV), not an NVIDIA GPU: set
+//    acs.exe to High performance in Windows Settings > System > Display > Graphics"
+// or, for an unknown adapter, "the adapter of CSP's device is unknown (<error>)".
+std::string RenderAdapterRefusal(const RenderAdapter& adapter);
+
+// Pure: why a swap chain passes through, empty when ShouldProxy(in). In
+// order: internal call, not a D3D11 device, not the main window, bootstrap
+// not possible (bootstrapReason), Streamline already shut down, not an NVIDIA
+// adapter (adapterReason), compatibility (compatReason).
+std::string PassThroughReason(const ProxyDecisionInputs& in, const std::string& bootstrapReason,
+                              const std::string& adapterReason, const std::string& compatReason);
 
 // Window class name is exactly "acsW" (case-sensitive).
 bool IsMainGameWindow(HWND hwnd);

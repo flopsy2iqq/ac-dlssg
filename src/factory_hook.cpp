@@ -26,6 +26,8 @@ using Microsoft::WRL::ComPtr;
 namespace acdb {
 namespace {
 
+constexpr uint32_t kNvidiaVendorId = 0x10DE;
+
 using PFN_CreateSwapChain = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*,
                                                         IDXGISwapChain**);
 using PFN_CreateSwapChainForHwnd = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory2*, IUnknown*, HWND,
@@ -84,17 +86,6 @@ std::string ToUtf8(const wchar_t* w) {
     s.resize(static_cast<size_t>(n) - 1);
     return s;
 }
-
-// The adapter of CSP's D3D11 device. Its LUID is the identity every
-// per-adapter decision uses.
-struct RenderAdapter {
-    bool known = false;  // IDXGIDevice::GetAdapter and GetDesc succeeded
-    LUID luid{};
-    uint32_t vendor_id = 0;
-    uint32_t device_id = 0;
-    std::string description;  // UTF-8
-    std::string error;        // why not known
-};
 
 RenderAdapter AdapterOf(ID3D11Device* device) {
     RenderAdapter a;
@@ -165,18 +156,6 @@ HagsDecision RenderAdapterHags(const RenderAdapter& adapter, bool registryOn) {
     return hags;
 }
 
-std::string DecisionReason(const ProxyDecisionInputs& in, const std::string& bootstrapReason,
-                           const std::string& compatReason) {
-    if (in.internal_call) return "internal call";
-    if (!in.is_d3d11_device) return "the device is not a D3D11 device";
-    if (!in.is_main_window) return "not the main game window (class acsW)";
-    if (!in.bootstrap_possible) return bootstrapReason.empty() ? std::string("bridge not possible") : bootstrapReason;
-    // Spec 8: after slShutdown the bridge stays off for the rest of the process.
-    if (in.streamline_shut_down) return "Streamline already shut down";
-    if (!in.compat_ok) return compatReason;
-    return {};
-}
-
 // Decides, and on "proxy" creates the ProxySwapChain. False means the caller
 // passes through. Exceptions propagate to the hook, which also passes through.
 bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& requested,
@@ -196,10 +175,14 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
     ResolveSize(hwnd, &desc);
 
     CompatResult compat;
+    std::string adapterReason;
     if (in.is_main_window) {
-        // HAGS of CSP's own adapter; the registry value read at bootstrap is
-        // only the fallback when D3DKMT cannot answer.
+        // CSP's own adapter must be NVIDIA; its HAGS state decides rule 10,
+        // with the registry value read at bootstrap only as the fallback when
+        // D3DKMT cannot answer.
         const RenderAdapter adapter = AdapterOf(device11.Get());
+        adapterReason = RenderAdapterRefusal(adapter);
+        in.nvidia_adapter = adapterReason.empty();
         const HagsDecision hags = RenderAdapterHags(adapter, bs.compat.hags_on);
         // Files come from the bootstrap; add-ons may have loaded since.
         CompatInputs ci = bs.compat;
@@ -211,7 +194,7 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
     in.streamline_shut_down = StreamlineRuntime::Get().IsShutDown();
 
     const bool proxy = ShouldProxy(in);
-    const std::string reason = proxy ? std::string() : DecisionReason(in, bs.reason, compat.reason);
+    const std::string reason = proxy ? std::string() : PassThroughReason(in, bs.reason, adapterReason, compat.reason);
     const LogLevel level = in.is_main_window ? LogLevel::Info : LogLevel::Debug;
     LogWrite(level,
              "CreateSwapChainForHwnd: hwnd %p%s, %ux%u format %d, %u buffers, swap effect %d, flags 0x%X, %s: %s%s",
@@ -351,7 +334,7 @@ bool FactoryHookInstalled() { return g_installed.load(); }
 
 bool ShouldProxy(const ProxyDecisionInputs& in) {
     return !in.internal_call && in.is_d3d11_device && in.is_main_window && in.bootstrap_possible && in.compat_ok &&
-           !in.streamline_shut_down;
+           !in.streamline_shut_down && in.nvidia_adapter;
 }
 
 HagsDecision DecideHags(const LUID& luid, const AdapterHags& kmt, bool registryOn) {
@@ -375,6 +358,28 @@ CompatResult EvaluateChainCompat(CompatInputs inputs, const HagsDecision& hags, 
     inputs.hags_on = true;
     if (EvaluateCompat(inputs, width, height).ok) r.reason += " (" + hags.source + ")";
     return r;
+}
+
+std::string RenderAdapterRefusal(const RenderAdapter& adapter) {
+    if (!adapter.known) return "the adapter of CSP's device is unknown (" + adapter.error + ")";
+    if (adapter.vendor_id == kNvidiaVendorId) return {};
+    char vendor[16];
+    std::snprintf(vendor, sizeof(vendor), "0x%04X", adapter.vendor_id);
+    return "CSP renders on " + adapter.description + " (vendor " + vendor +
+           "), not an NVIDIA GPU: set acs.exe to High performance in Windows Settings > System > Display > Graphics";
+}
+
+std::string PassThroughReason(const ProxyDecisionInputs& in, const std::string& bootstrapReason,
+                              const std::string& adapterReason, const std::string& compatReason) {
+    if (in.internal_call) return "internal call";
+    if (!in.is_d3d11_device) return "the device is not a D3D11 device";
+    if (!in.is_main_window) return "not the main game window (class acsW)";
+    if (!in.bootstrap_possible) return bootstrapReason.empty() ? std::string("bridge not possible") : bootstrapReason;
+    // Spec 8: after slShutdown the bridge stays off for the rest of the process.
+    if (in.streamline_shut_down) return "Streamline already shut down";
+    if (!in.nvidia_adapter) return adapterReason.empty() ? std::string("not an NVIDIA adapter") : adapterReason;
+    if (!in.compat_ok) return compatReason;
+    return {};
 }
 
 bool IsMainGameWindow(HWND hwnd) {

@@ -214,7 +214,7 @@ LUID MakeLuid(DWORD low, LONG high) {
 
 TEST(FactoryHook_ShouldProxyTruthTable) {
     int trueCount = 0;
-    for (unsigned bits = 0; bits < 64; ++bits) {
+    for (unsigned bits = 0; bits < 128; ++bits) {
         ProxyDecisionInputs in;
         in.internal_call = (bits & 1) != 0;
         in.is_d3d11_device = (bits & 2) != 0;
@@ -222,14 +222,66 @@ TEST(FactoryHook_ShouldProxyTruthTable) {
         in.bootstrap_possible = (bits & 8) != 0;
         in.compat_ok = (bits & 16) != 0;
         in.streamline_shut_down = (bits & 32) != 0;
+        in.nvidia_adapter = (bits & 64) != 0;
         const bool expected = !in.internal_call && in.is_d3d11_device && in.is_main_window &&
-                              in.bootstrap_possible && in.compat_ok && !in.streamline_shut_down;
+                              in.bootstrap_possible && in.compat_ok && !in.streamline_shut_down && in.nvidia_adapter;
         if (ShouldProxy(in) != expected) std::printf("  mismatch for bits 0x%02X\n", bits);
         CHECK_EQ(ShouldProxy(in), expected);
         if (ShouldProxy(in)) ++trueCount;
     }
     CHECK_EQ(trueCount, 1);
     CHECK(!ShouldProxy(ProxyDecisionInputs()));  // defaults never proxy
+}
+
+// The Optimus laptop: CSP's device on the Intel iGPU (acs.exe not set to
+// High performance) passes through with the adapter named.
+TEST(FactoryHook_RenderAdapterMustBeNvidia) {
+    RenderAdapter a;
+    a.known = true;
+    a.vendor_id = 0x10DE;
+    a.device_id = 0x25A0;
+    a.description = "NVIDIA GeForce RTX 3050 Ti Laptop GPU";
+    CHECK_EQ(RenderAdapterRefusal(a), "");
+
+    a.vendor_id = 0x8086;
+    a.device_id = 0x9A68;
+    a.description = "Intel(R) UHD Graphics";
+    CHECK_EQ(RenderAdapterRefusal(a),
+             "CSP renders on Intel(R) UHD Graphics (vendor 0x8086), not an NVIDIA GPU: set acs.exe to High "
+             "performance in Windows Settings > System > Display > Graphics");
+
+    a.vendor_id = 0x1414;
+    a.description = "Microsoft Basic Render Driver";
+    CHECK_EQ(RenderAdapterRefusal(a),
+             "CSP renders on Microsoft Basic Render Driver (vendor 0x1414), not an NVIDIA GPU: set acs.exe to High "
+             "performance in Windows Settings > System > Display > Graphics");
+
+    RenderAdapter unknown;
+    unknown.error = "IDXGIDevice::GetAdapter/GetDesc failed: 0x887A0005";
+    CHECK_EQ(RenderAdapterRefusal(unknown),
+             "the adapter of CSP's device is unknown (IDXGIDevice::GetAdapter/GetDesc failed: 0x887A0005)");
+}
+
+// Reasons in order: a disabled or impossible bridge first, then the adapter,
+// then the compatibility rules.
+TEST(FactoryHook_PassThroughReasonOrder) {
+    ProxyDecisionInputs in;
+    in.is_d3d11_device = true;
+    in.is_main_window = true;
+    in.bootstrap_possible = true;
+    in.compat_ok = true;
+    in.nvidia_adapter = true;
+    CHECK_EQ(PassThroughReason(in, "boot", "adapter", "compat"), "");
+    in.compat_ok = false;
+    CHECK_EQ(PassThroughReason(in, "boot", "adapter", "compat"), "compat");
+    in.nvidia_adapter = false;
+    CHECK_EQ(PassThroughReason(in, "boot", "adapter", "compat"), "adapter");
+    in.streamline_shut_down = true;
+    CHECK_EQ(PassThroughReason(in, "boot", "adapter", "compat"), "Streamline already shut down");
+    in.bootstrap_possible = false;
+    CHECK_EQ(PassThroughReason(in, "boot", "adapter", "compat"), "boot");
+    in.is_main_window = false;
+    CHECK_EQ(PassThroughReason(in, "boot", "adapter", "compat"), "not the main game window (class acsW)");
 }
 
 TEST(FactoryHook_MainGameWindowClassName) {
@@ -360,6 +412,30 @@ TEST(FactoryHook_MainWindowTakesHagsFromTheDevicesAdapter) {
     }
     CHECK(log.find("ACDLSSG_DEBUG_HAGS") == std::string::npos);
     if (log.find(" INFO render adapter: ") == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
+}
+
+// The render adapter is the adapter of the device CSP passes, never adapter
+// 0: a device on WARP (adapter 1 on a machine with a GPU) is reported as WARP.
+TEST(FactoryHook_RenderAdapterIsTheDevicesOwn) {
+    REQUIRE(EnsureHookInstalled());
+    ComPtr<IDXGIFactory4> factory4;
+    REQUIRE(SUCCEEDED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory4))));
+    ComPtr<IDXGIAdapter1> warp;
+    REQUIRE(SUCCEEDED(factory4->EnumWarpAdapter(IID_PPV_ARGS(&warp))));
+    DXGI_ADAPTER_DESC1 wd{};
+    REQUIRE(SUCCEEDED(warp->GetDesc1(&wd)));
+    acdb_test::GpuTestDevices dev;
+    const D3D_FEATURE_LEVEL fl11 = D3D_FEATURE_LEVEL_11_0;
+    REQUIRE(SUCCEEDED(D3D11CreateDevice(warp.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, &fl11, 1, D3D11_SDK_VERSION,
+                                        &dev.device11, nullptr, &dev.ctx11)));
+    ComPtr<IDXGIFactory2> factory = FactoryOf(dev.device11.Get());
+    REQUIRE(factory);
+
+    const std::string log = MainWindowChainLog(factory.Get(), dev, L"hook_warp");
+    char ids[64];
+    std::snprintf(ids, sizeof(ids), ", vendor 0x%04X device 0x%04X, LUID ", wd.VendorId, wd.DeviceId);
+    CHECK(log.find(ids + LuidText(wd.AdapterLuid) + "; HAGS ") != std::string::npos);
+    if (log.find(ids) == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
 }
 
 // ACDLSSG_DEBUG_HAGS, the test hook: "fail" makes the D3DKMT query count as
