@@ -56,13 +56,16 @@ private:
     std::atomic<const CameraLayout*> view_{nullptr};
 };
 
-// Freshness rule of spec 6.6. At every captured evaluate the caller latches the
-// snapshot it read; the snapshot is fresh only if its frame is greater than
-// the frame latched at the previous captured evaluate, which means the Lua app
-// wrote during this frame. The first latch after construction or Reset has
-// nothing to compare with and is not fresh. Every call records the snapshot's
-// frame, so a writer that restarted with a lower counter is fresh again one
-// frame later.
+// Freshness rule of spec 6.6. The caller latches the snapshot it read once per
+// captured bridge frame, at the first qualifying evaluate (spec 7 step 2), and
+// reuses that result for later evaluates of the same frame; the snapshot is
+// fresh only if its frame is greater than the frame latched for the previous
+// captured frame, which means the Lua app wrote during this frame. Latch has
+// no notion of bridge frames: a second call in the same frame compares with
+// the first call and is not fresh. The first latch after construction or
+// Reset has nothing to compare with and is not fresh. Every call records the
+// snapshot's frame, so a writer that restarted with a lower counter is fresh
+// again one frame later.
 class CameraLatch {
 public:
     bool Latch(const CameraLayout& snapshot);
