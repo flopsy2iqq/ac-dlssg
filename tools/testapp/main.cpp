@@ -52,6 +52,7 @@ constexpr int kRecreateFrame = 300;
 constexpr int kTestPresentEvery = 10;
 constexpr int kVerifyDelay = 3;  // frames after an event before the buffer is read back
 constexpr UINT kLatency = 2;
+constexpr int kQueueDepthFirstFrame = 60;  // VSync queue depth is sampled from this frame on
 constexpr DWORD kFrameLimitMs = 2000;
 constexpr DWORD kStallFrameLimitMs = 5000;
 constexpr double kSlowFrameMs = 25.0;  // reported, not failed
@@ -341,6 +342,8 @@ struct App {
 
     // --stall: 1x1 staging texture for the blocking read-back.
     ComPtr<ID3D11Texture2D> probe;
+    double queue_depth_sum = 0;
+    int queue_depth_samples = 0;
     double probe_max_ms = 0;
     int probe_max_frame = -1;
 };
@@ -845,6 +848,18 @@ bool CheckLatencyCount(App& a, int frame) {
     return true;
 }
 
+// Presents not yet displayed when a frame starts, as the game would see it
+// through its own chain: GetLastPresentCount minus the last displayed
+// PresentCount. Samples where DXGI has no statistics are skipped.
+void SampleQueueDepth(App& a) {
+    UINT last = 0;
+    DXGI_FRAME_STATISTICS st{};
+    if (FAILED(a.chain->GetLastPresentCount(&last)) || FAILED(a.chain->GetFrameStatistics(&st))) return;
+    if (st.PresentCount == 0 || last < st.PresentCount) return;
+    a.queue_depth_sum += static_cast<double>(last - st.PresentCount);
+    ++a.queue_depth_samples;
+}
+
 bool RunFrames(App& a) {
     const DWORD limit = a.opt.stall ? kStallFrameLimitMs : kFrameLimitMs;
     const UINT sync = a.opt.vsync ? 1 : 0;
@@ -876,6 +891,7 @@ bool RunFrames(App& a) {
         if (w != WAIT_OBJECT_0)
             return Fail("frame %d: the frame-latency wait returned %lu after %lu ms", f, w, limit);
         const double tWaited = NowMs();
+        if (a.opt.vsync && f >= kQueueDepthFirstFrame) SampleQueueDepth(a);
 
         const RECT rect = RectangleFor(a, f);
         Render(a, rect);
@@ -930,6 +946,13 @@ bool RunFrames(App& a) {
     // VSync must still pace the game (spec 11, M1). An occluded window is not paced.
     if (a.opt.vsync && refresh > 0 && a.occluded == 0 && fps > refresh * 1.3 + 5.0)
         return Fail("VSync did not pace presentation: %.1f fps on a %u Hz display", fps, refresh);
+    // Diagnostic only: DXGI frame statistics of a hidden, DWM-composed window
+    // are too noisy for a pass/fail limit (the same run measured 5.1 and 6.9).
+    // The queue-depth rule itself is pinned by the unit test
+    // Presenter_TakesTheGamesFirstLatencyWait.
+    if (a.opt.vsync && a.queue_depth_samples > 0)
+        Print("VSync queue depth at frame start: %.2f Presents not yet displayed (%d samples, latency %u)",
+              a.queue_depth_sum / a.queue_depth_samples, a.queue_depth_samples, kLatency);
     return true;
 }
 
@@ -978,12 +1001,15 @@ bool CheckLogAfterRun(App& a) {
                 ok = Fail("the bridge log does not show the watchdog releasing the D3D11 queue");
             if (!log.Has("D3D12 stall:")) ok = Fail("the bridge log does not show the stall being handled");
             if (!log.Has("D3D12 stall over")) ok = Fail("the bridge log does not show the end of the stall");
-            // Held by the stall, then released by the watchdog (500 ms) well
-            // before the 1500 ms debug stall would have ended on its own.
+            // Either release path is correct (spec 6.4): the watchdog, or the
+            // render thread's 500 ms wait in Present, which since the latency
+            // fix usually catches the stall first. Either way no read-back may
+            // stay blocked until the 1500 ms debug stall ends on its own.
             if (a.probe_max_ms < kStallProbeHeldMs)
-                ok = Fail("no blocking read-back was held by the stall (longest %.0f ms, expected at least %.0f ms)",
-                          a.probe_max_ms, kStallProbeHeldMs);
-            else if (a.probe_max_ms >= kStallProbeWatchdogMs)
+                Print("note: the longest blocking read-back was %.0f ms: the stall was released before the D3D11 "
+                      "queue backed up",
+                      a.probe_max_ms);
+            if (a.probe_max_ms >= kStallProbeWatchdogMs)
                 ok = Fail("the blocking read-back at frame %d waited %.0f ms: the watchdog did not release the "
                           "D3D11 queue within %.0f ms",
                           a.probe_max_frame, a.probe_max_ms, kStallProbeWatchdogMs);

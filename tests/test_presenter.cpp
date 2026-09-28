@@ -266,6 +266,25 @@ TEST(Presenter_LatencyWaitableFollowsTheGame) {
     d.ctx11->Flush();
 }
 
+// The game waits on its frame-latency object once before its first frame
+// (DXGI requires it), and that wait is served by the bridge's own semaphore.
+// The presenter must take the D3D12 chain's initial count itself; otherwise
+// every later post-Present wait lets one frame more through than the game's
+// own chain would, which is one refresh of extra latency with VSync.
+TEST(Presenter_TakesTheGamesFirstLatencyWait) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    GameWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    auto p = CreatePresenter(d, window.Get(), 640, 360);
+    REQUIRE(p != nullptr);
+    REQUIRE(p->HasLatencyWaitable());
+    const HANDLE h = p->Chain()->GetFrameLatencyWaitableObject();
+    REQUIRE(h != nullptr);
+    CHECK_EQ(WaitForSingleObject(h, 0), static_cast<DWORD>(WAIT_TIMEOUT));
+    CloseHandle(h);
+}
+
 TEST(Presenter_CreateRefusesUnsupportedInput) {
     acdb_test::GpuTestDevices d;
     if (!GetDevices(&d)) return;

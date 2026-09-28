@@ -340,6 +340,12 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
             *err = "D3D12 chain: GetFrameLatencyWaitableObject returned NULL";
             return false;
         }
+        // DXGI creates the object with a count of L, which pays for the game's
+        // wait before its first frame. The game's waits are served by the
+        // bridge's own semaphore, so take that count here; otherwise every later
+        // post-Present wait lets one frame more through than the game's own
+        // chain would (one refresh of extra latency with VSync).
+        WaitForSingleObject(latency_waitable, 0);
     }
 
     // 6. DXGI must not touch the game window or react to Alt+Enter.
