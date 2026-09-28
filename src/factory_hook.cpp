@@ -4,12 +4,15 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cwchar>
 #include <iterator>
 #include <mutex>
 #include <string>
 #include <type_traits>
 
+#include "adapter_caps.h"
 #include "bootstrap.h"
 #include "compat.h"
 #include "internal_call.h"
@@ -72,6 +75,96 @@ void ResolveSize(HWND hwnd, DXGI_SWAP_CHAIN_DESC1* desc) {
     if (desc->Height == 0) desc->Height = static_cast<UINT>(rc.bottom - rc.top);
 }
 
+std::string ToUtf8(const wchar_t* w) {
+    if (!w || !*w) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return {};
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    s.resize(static_cast<size_t>(n) - 1);
+    return s;
+}
+
+// The adapter of CSP's D3D11 device. Its LUID is the identity every
+// per-adapter decision uses.
+struct RenderAdapter {
+    bool known = false;  // IDXGIDevice::GetAdapter and GetDesc succeeded
+    LUID luid{};
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+    std::string description;  // UTF-8
+    std::string error;        // why not known
+};
+
+RenderAdapter AdapterOf(ID3D11Device* device) {
+    RenderAdapter a;
+    if (!device) {
+        a.error = "the device is not a D3D11 device";
+        return a;
+    }
+    ComPtr<IDXGIDevice> dxgiDevice;
+    ComPtr<IDXGIAdapter> adapter;
+    HRESULT hr = device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgiDevice.GetAddressOf()));
+    if (SUCCEEDED(hr)) hr = dxgiDevice->GetAdapter(&adapter);
+    DXGI_ADAPTER_DESC d{};
+    if (SUCCEEDED(hr)) hr = adapter->GetDesc(&d);
+    if (FAILED(hr)) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "IDXGIDevice::GetAdapter/GetDesc failed: 0x%08lX", static_cast<unsigned long>(hr));
+        a.error = buf;
+        return a;
+    }
+    a.known = true;
+    a.luid = d.AdapterLuid;
+    a.vendor_id = d.VendorId;
+    a.device_id = d.DeviceId;
+    a.description = ToUtf8(d.Description);
+    return a;
+}
+
+// ACDLSSG_DEBUG_HAGS (see the header).
+void ApplyDebugHags(const LUID& luid, AdapterHags* kmt) {
+    wchar_t value[32] = {};
+    const DWORD n = GetEnvironmentVariableW(kDebugHagsEnv, value, static_cast<DWORD>(std::size(value)));
+    if (n == 0) return;
+    const std::string text = n < std::size(value) ? ToUtf8(value) : std::string("(too long)");
+    if (text == "off") {
+        *kmt = AdapterHags();
+        kmt->state = HagsState::Off;
+        LOGW("ACDLSSG_DEBUG_HAGS=off: HAGS of LUID %s is taken as off instead of D3DKMT's answer (test hook)",
+             LuidText(luid).c_str());
+    } else if (text == "fail") {
+        *kmt = AdapterHags();
+        kmt->reason = "ACDLSSG_DEBUG_HAGS=fail";
+        LOGW("ACDLSSG_DEBUG_HAGS=fail: the D3DKMT query for LUID %s counts as failed (test hook)",
+             LuidText(luid).c_str());
+    } else {
+        LOGW("ACDLSSG_DEBUG_HAGS=%s is not \"off\" or \"fail\"; ignored", text.c_str());
+    }
+}
+
+// HAGS of the render adapter, logged with the adapter for every main-window
+// swap chain.
+HagsDecision RenderAdapterHags(const RenderAdapter& adapter, bool registryOn) {
+    AdapterHags kmt;
+    if (adapter.known) {
+        kmt = QueryAdapterKmt(adapter.luid).hags;
+        ApplyDebugHags(adapter.luid, &kmt);
+    } else {
+        kmt.reason = "the adapter of CSP's device is unknown (" + adapter.error + ")";
+    }
+    const HagsDecision hags = DecideHags(adapter.luid, kmt, registryOn);
+    if (adapter.known) {
+        LOGI("render adapter: %s, vendor 0x%04X device 0x%04X, LUID %s; HAGS %s (%s)", adapter.description.c_str(),
+             adapter.vendor_id, adapter.device_id, LuidText(adapter.luid).c_str(), hags.on ? "on" : "off",
+             hags.source.c_str());
+    } else {
+        LOGI("render adapter: unknown (%s); HAGS %s (%s)", adapter.error.c_str(), hags.on ? "on" : "off",
+             hags.source.c_str());
+    }
+    return hags;
+}
+
 std::string DecisionReason(const ProxyDecisionInputs& in, const std::string& bootstrapReason,
                            const std::string& compatReason) {
     if (in.internal_call) return "internal call";
@@ -104,11 +197,15 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
 
     CompatResult compat;
     if (in.is_main_window) {
-        // Files and HAGS come from the bootstrap; add-ons may have loaded since.
+        // HAGS of CSP's own adapter; the registry value read at bootstrap is
+        // only the fallback when D3DKMT cannot answer.
+        const RenderAdapter adapter = AdapterOf(device11.Get());
+        const HagsDecision hags = RenderAdapterHags(adapter, bs.compat.hags_on);
+        // Files come from the bootstrap; add-ons may have loaded since.
         CompatInputs ci = bs.compat;
         ci.dlss5_bridge_loaded = GetModuleHandleW(L"dlss5-bridge.addon64") != nullptr;
         ci.renodx_dlss5_loaded = GetModuleHandleW(L"renodx-dlss5.addon64") != nullptr;
-        compat = EvaluateCompat(ci, desc.Width, desc.Height);
+        compat = EvaluateChainCompat(ci, hags, desc.Width, desc.Height);
         in.compat_ok = compat.ok;
     }
     in.streamline_shut_down = StreamlineRuntime::Get().IsShutDown();
@@ -255,6 +352,29 @@ bool FactoryHookInstalled() { return g_installed.load(); }
 bool ShouldProxy(const ProxyDecisionInputs& in) {
     return !in.internal_call && in.is_d3d11_device && in.is_main_window && in.bootstrap_possible && in.compat_ok &&
            !in.streamline_shut_down;
+}
+
+HagsDecision DecideHags(const LUID& luid, const AdapterHags& kmt, bool registryOn) {
+    HagsDecision d;
+    const std::string kmtSource = "D3DKMT for LUID " + LuidText(luid);
+    if (kmt.state != HagsState::Unknown) {
+        d.on = kmt.state == HagsState::On;
+        d.source = kmtSource;
+        return d;
+    }
+    d.on = registryOn;
+    d.source = "registry fallback (" + kmtSource + ": " + (kmt.reason.empty() ? "no answer" : kmt.reason) + ")";
+    return d;
+}
+
+CompatResult EvaluateChainCompat(CompatInputs inputs, const HagsDecision& hags, unsigned width, unsigned height) {
+    inputs.hags_on = hags.on;
+    CompatResult r = EvaluateCompat(inputs, width, height);
+    if (r.ok || hags.on) return r;
+    // Rule 10 is the last rule: the refusal is HAGS exactly when HAGS on passes.
+    inputs.hags_on = true;
+    if (EvaluateCompat(inputs, width, height).ok) r.reason += " (" + hags.source + ")";
+    return r;
 }
 
 bool IsMainGameWindow(HWND hwnd) {

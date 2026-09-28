@@ -172,8 +172,10 @@ void LogCompatInputs(const CompatInputs& c) {
     LOGI("compat: video.ini AASAMPLES=%s WIDTH=%s HEIGHT=%s [CAMERA] MODE=%s", Opt(c.aasamples).c_str(),
          Opt(c.video_width).c_str(), Opt(c.video_height).c_str(),
          c.camera_mode ? c.camera_mode->c_str() : "unset");
-    LOGI("compat: HAGS %s, dlss5-bridge.addon64 %s, renodx-dlss5.addon64 %s", c.hags_on ? "on" : "off",
-         c.dlss5_bridge_loaded ? "loaded" : "not loaded", c.renodx_dlss5_loaded ? "loaded" : "not loaded");
+    LOGI("compat: HAGS registry fallback (HwSchMode) %s, used only when D3DKMT cannot answer for the render "
+         "adapter; dlss5-bridge.addon64 %s, renodx-dlss5.addon64 %s",
+         c.hags_on ? "on" : "off", c.dlss5_bridge_loaded ? "loaded" : "not loaded",
+         c.renodx_dlss5_loaded ? "loaded" : "not loaded");
 }
 
 void Run(BootstrapState* s) {

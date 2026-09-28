@@ -21,7 +21,10 @@ struct CompatInputs {
     std::optional<long long> video_height;           // [VIDEO] HEIGHT
     std::optional<std::string> camera_mode;          // [CAMERA] MODE
     // System state.
-    bool hags_on = false;               // HwSchMode == 2
+    // ReadCompatInputs: the registry value (HwSchMode == 2). Per swap chain
+    // FactoryHook replaces it with the render adapter's D3DKMT state and uses
+    // the registry value only when D3DKMT cannot answer (EvaluateChainCompat).
+    bool hags_on = false;
     bool dlss5_bridge_loaded = false;   // GetModuleHandleW(L"dlss5-bridge.addon64")
     bool renodx_dlss5_loaded = false;   // GetModuleHandleW(L"renodx-dlss5.addon64")
 };
@@ -51,10 +54,12 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
 // argument is zero.
 bool AspectMismatch(double videoW, double videoH, double swapW, double swapH);
 
-// Reads the four files, the HAGS registry value and the module flags.
+// Reads the four files, the HAGS registry value (the fallback) and the module flags.
 CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& docsAcDir);
 
-// HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers HwSchMode == 2.
+// HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers HwSchMode == 2. The
+// value can be absent while HAGS is on for the GPU (hybrid laptops), so it is
+// only the fallback for the per-adapter state (adapter_caps.h).
 bool ReadHagsEnabled();
 
 // "<Documents>\Assetto Corsa". The environment variable ACDLSSG_DOCS_DIR, when

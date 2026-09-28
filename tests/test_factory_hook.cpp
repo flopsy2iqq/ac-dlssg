@@ -17,7 +17,9 @@
 #include <regex>
 #include <string>
 
+#include "adapter_caps.h"
 #include "bootstrap.h"
+#include "compat.h"
 #include "factory_hook.h"
 #include "gpu_test_devices.h"
 #include "internal_call.h"
@@ -170,6 +172,42 @@ bool EnsureHookInstalled() {
     return FactoryHookInstalled();
 }
 
+// The adapter of a D3D11 device, the way CSP's device is asked.
+bool AdapterDescOf(ID3D11Device* device, DXGI_ADAPTER_DESC* out) {
+    ComPtr<IDXGIDevice> dxgiDevice;
+    ComPtr<IDXGIAdapter> adapter;
+    return SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(dxgiDevice.GetAddressOf()))) &&
+           SUCCEEDED(dxgiDevice->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(out));
+}
+
+// One swap chain on a new "acsW" window through the hooked factory, with the
+// log open at Debug; returns the log. The chain is released before it returns.
+std::string MainWindowChainLog(IDXGIFactory2* factory, const acdb_test::GpuTestDevices& dev, const wchar_t* tag) {
+    acdb_test::TempDir dir(tag);
+    const std::wstring logPath = dir.Str() + L"\\hook.log";
+    if (!LogOpen(logPath, LogLevel::Debug)) return {};
+    {
+        TestWindow window(L"acsW", 400, 300);
+        const DXGI_SWAP_CHAIN_DESC1 desc = SmallDesc(0, 0);
+        ComPtr<IDXGISwapChain1> chain;
+        const HRESULT hr = factory->CreateSwapChainForHwnd(dev.device11.Get(), window.Get(), &desc, nullptr, nullptr,
+                                                           chain.GetAddressOf());
+        if (FAILED(hr)) std::printf("  CreateSwapChainForHwnd: 0x%08lX\n", static_cast<unsigned long>(hr));
+        CHECK(SUCCEEDED(hr) && IsRealChain(chain.Get()));
+    }
+    dev.ctx11->ClearState();
+    dev.ctx11->Flush();
+    LogClose();
+    return acdb_test::ReadAll(logPath);
+}
+
+LUID MakeLuid(DWORD low, LONG high) {
+    LUID l{};
+    l.LowPart = low;
+    l.HighPart = high;
+    return l;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- decision
@@ -231,6 +269,158 @@ TEST(FactoryHook_IsMainGameWindow) {
     CHECK(!IsMainGameWindow(destroyed));
 }
 
+// ---------------------------------------------------------------- HAGS per adapter
+
+TEST(FactoryHook_DecideHagsPrefersD3dkmtOverTheRegistry) {
+    const LUID luid = MakeLuid(0x140D9, 0);
+    AdapterHags kmt;
+    kmt.state = HagsState::On;
+    kmt.supported = true;
+    HagsDecision d = DecideHags(luid, kmt, false);
+    CHECK(d.on);
+    CHECK_EQ(d.source, "D3DKMT for LUID 00000000:000140D9");
+
+    // The laptop case the other way round: the registry says on, the adapter off.
+    kmt.state = HagsState::Off;
+    d = DecideHags(luid, kmt, true);
+    CHECK(!d.on);
+    CHECK_EQ(d.source, "D3DKMT for LUID 00000000:000140D9");
+}
+
+TEST(FactoryHook_DecideHagsFallsBackToTheRegistryOnlyWithoutAnAnswer) {
+    const LUID luid = MakeLuid(0x2A, 1);
+    AdapterHags kmt;  // Unknown
+    kmt.reason = "D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS) failed: NTSTATUS 0xC00000BB";
+    HagsDecision d = DecideHags(luid, kmt, true);
+    CHECK(d.on);
+    CHECK_EQ(d.source, "registry fallback (D3DKMT for LUID 00000001:0000002A: "
+                       "D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS) failed: NTSTATUS 0xC00000BB)");
+    d = DecideHags(luid, kmt, false);
+    CHECK(!d.on);
+    CHECK(d.source.rfind("registry fallback (", 0) == 0);
+}
+
+TEST(FactoryHook_ChainCompatTakesHagsFromTheDecision) {
+    const char* const kHags = "hardware-accelerated GPU scheduling is off";
+    CompatInputs in;
+    in.fsr_active = 1;
+    in.fsr_old_implementation = 3;
+    in.hags_on = false;  // the bootstrap's registry value: must not decide
+    HagsDecision on;
+    on.on = true;
+    on.source = "D3DKMT for LUID 00000000:000140D9";
+    CompatResult r = EvaluateChainCompat(in, on, 1920, 1080);
+    CHECK(r.ok);
+    CHECK(r.reason.empty());
+
+    // Rule 10 keeps its text and names the source that decided.
+    in.hags_on = true;
+    HagsDecision off;
+    off.on = false;
+    off.source = "D3DKMT for LUID 00000000:000140D9";
+    r = EvaluateChainCompat(in, off, 1920, 1080);
+    CHECK(!r.ok);
+    CHECK_EQ(r.reason, std::string(kHags) + " (D3DKMT for LUID 00000000:000140D9)");
+    off.source = "registry fallback (D3DKMT for LUID 00000000:000140D9: failed)";
+    r = EvaluateChainCompat(in, off, 1920, 1080);
+    CHECK_EQ(r.reason, std::string(kHags) + " (registry fallback (D3DKMT for LUID 00000000:000140D9: failed))");
+
+    // Earlier rules still come first, with their own text.
+    in.fsr_active = 0;
+    r = EvaluateChainCompat(in, off, 1920, 1080);
+    CHECK_EQ(r.reason, "CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)");
+}
+
+// Through the hook: the main window's chain is decided with HAGS from the
+// LUID of the device's own adapter.
+TEST(FactoryHook_MainWindowTakesHagsFromTheDevicesAdapter) {
+    REQUIRE(EnsureHookInstalled());
+    acdb_test::GpuTestDevices dev;
+    if (!acdb_test::CreateGpuTestDevices(&dev)) {
+        std::printf("  no GPU device; skipped\n");
+        return;
+    }
+    ComPtr<IDXGIFactory2> factory = FactoryOf(dev.device11.Get());
+    REQUIRE(factory);
+    DXGI_ADAPTER_DESC ad{};
+    REQUIRE(AdapterDescOf(dev.device11.Get(), &ad));
+    const std::string luid = LuidText(ad.AdapterLuid);
+    const AdapterKmtInfo kmt = QueryAdapterKmt(ad.AdapterLuid);
+
+    const std::string log = MainWindowChainLog(factory.Get(), dev, L"hook_hags");
+    char ids[64];
+    std::snprintf(ids, sizeof(ids), ", vendor 0x%04X device 0x%04X, LUID ", ad.VendorId, ad.DeviceId);
+    CHECK(log.find(" INFO render adapter: ") != std::string::npos);
+    CHECK(log.find(ids + luid + "; HAGS ") != std::string::npos);
+    if (kmt.hags.state != HagsState::Unknown) {
+        CHECK(log.find(std::string("; HAGS ") + HagsStateName(kmt.hags.state) + " (D3DKMT for LUID " + luid + ")\n") !=
+              std::string::npos);
+    } else {
+        CHECK(log.find("(registry fallback (D3DKMT for LUID " + luid + ": ") != std::string::npos);
+    }
+    CHECK(log.find("ACDLSSG_DEBUG_HAGS") == std::string::npos);
+    if (log.find(" INFO render adapter: ") == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
+}
+
+// ACDLSSG_DEBUG_HAGS, the test hook: "fail" makes the D3DKMT query count as
+// failed, so the registry value read at bootstrap decides.
+TEST(FactoryHook_DebugHagsFailFallsBackToTheRegistry) {
+    REQUIRE(EnsureHookInstalled());
+    acdb_test::GpuTestDevices dev;
+    if (!acdb_test::CreateGpuTestDevices(&dev)) {
+        std::printf("  no GPU device; skipped\n");
+        return;
+    }
+    ComPtr<IDXGIFactory2> factory = FactoryOf(dev.device11.Get());
+    REQUIRE(factory);
+    DXGI_ADAPTER_DESC ad{};
+    REQUIRE(AdapterDescOf(dev.device11.Get(), &ad));
+    const std::string luid = LuidText(ad.AdapterLuid);
+    const bool registry = EnsureBootstrap().compat.hags_on;
+
+    std::string log;
+    {
+        EnvOverride env(L"ACDLSSG_DEBUG_HAGS", L"fail");
+        log = MainWindowChainLog(factory.Get(), dev, L"hook_hags_fail");
+    }
+    CHECK(log.find(" WARN ACDLSSG_DEBUG_HAGS=fail: ") != std::string::npos);
+    CHECK(log.find(std::string("; HAGS ") + (registry ? "on" : "off") + " (registry fallback (D3DKMT for LUID " + luid +
+                   ": ACDLSSG_DEBUG_HAGS=fail))\n") != std::string::npos);
+    if (log.find("registry fallback") == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
+}
+
+// "off" replaces the D3DKMT answer with off; any other value is ignored.
+TEST(FactoryHook_DebugHagsOffReplacesTheD3dkmtAnswer) {
+    REQUIRE(EnsureHookInstalled());
+    acdb_test::GpuTestDevices dev;
+    if (!acdb_test::CreateGpuTestDevices(&dev)) {
+        std::printf("  no GPU device; skipped\n");
+        return;
+    }
+    ComPtr<IDXGIFactory2> factory = FactoryOf(dev.device11.Get());
+    REQUIRE(factory);
+    DXGI_ADAPTER_DESC ad{};
+    REQUIRE(AdapterDescOf(dev.device11.Get(), &ad));
+    const std::string luid = LuidText(ad.AdapterLuid);
+    const AdapterKmtInfo kmt = QueryAdapterKmt(ad.AdapterLuid);
+
+    std::string log;
+    {
+        EnvOverride env(L"ACDLSSG_DEBUG_HAGS", L"off");
+        log = MainWindowChainLog(factory.Get(), dev, L"hook_hags_off");
+    }
+    CHECK(log.find(" WARN ACDLSSG_DEBUG_HAGS=off: ") != std::string::npos);
+    CHECK(log.find("; HAGS off (D3DKMT for LUID " + luid + ")\n") != std::string::npos);
+    {
+        EnvOverride env(L"ACDLSSG_DEBUG_HAGS", L"on");
+        log = MainWindowChainLog(factory.Get(), dev, L"hook_hags_other");
+    }
+    CHECK(log.find(" WARN ACDLSSG_DEBUG_HAGS=on is not \"off\" or \"fail\"; ignored") != std::string::npos);
+    if (kmt.hags.state != HagsState::Unknown)
+        CHECK(log.find(std::string("; HAGS ") + HagsStateName(kmt.hags.state) + " (D3DKMT for LUID " + luid + ")\n") !=
+              std::string::npos);
+}
+
 // ---------------------------------------------------------------- bootstrap
 
 TEST(Bootstrap_StateAndBanner) {
@@ -270,7 +460,8 @@ TEST(Bootstrap_StateAndBanner) {
     CHECK(log.find("adapter 0: ") != std::string::npos);
     CHECK(log.find("LUID ") != std::string::npos);
     CHECK(log.find("compat: graphics_adjustments.ini [FSR] ACTIVE=unset") != std::string::npos);
-    CHECK(log.find("compat: HAGS ") != std::string::npos);
+    // The registry value is only the fallback for the per-adapter state.
+    CHECK(log.find("compat: HAGS registry fallback (HwSchMode) ") != std::string::npos);
     CHECK(log.find("bridge: ") != std::string::npos);
     CHECK(log.find("spoof: ") != std::string::npos);
     CHECK(log.find("driver profile: ") != std::string::npos);

@@ -23,7 +23,8 @@ struct BootstrapState {
     std::wstring game_dir;      // directory of the host exe
     std::wstring data_dir;      // <game_dir>\ac-dlssg
     std::wstring docs_ac_dir;   // DocumentsAcDir()
-    CompatInputs compat;        // files + HAGS read at bootstrap; module flags re-read per swap chain
+    CompatInputs compat;        // files + registry HAGS read at bootstrap; module flags re-read and
+                                // HAGS taken from the render adapter per swap chain (FactoryHook)
     bool streamline_ok = false;       // StreamlineRuntime::Init succeeded
     std::string streamline_error;     // why not, for the log and the decision line
     bool spoof_loaded = false;        // version.dll loaded from game_dir (dlssg_for_sm86)

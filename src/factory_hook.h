@@ -3,6 +3,11 @@
 #include <windows.h>
 #include <dxgi1_6.h>
 
+#include <string>
+
+#include "adapter_caps.h"
+#include "compat.h"
+
 namespace acdb {
 
 // Slots in the IDXGIFactory2 vtable.
@@ -28,6 +33,29 @@ struct ProxyDecisionInputs {
 };
 // True only when !internal_call and every other condition holds.
 bool ShouldProxy(const ProxyDecisionInputs& in);
+
+// HAGS for the compatibility decision of one main-window swap chain (rule
+// 10): the state of the adapter of CSP's D3D11 device, identified by its LUID.
+struct HagsDecision {
+    bool on = false;
+    // "D3DKMT for LUID <HHHHHHHH:LLLLLLLL>", or, when D3DKMT has no answer,
+    // "registry fallback (D3DKMT for LUID <luid>: <why not>)".
+    std::string source;
+};
+// Pure: kmt's state when it is On or Off; otherwise registryOn (HwSchMode ==
+// 2, read at bootstrap).
+HagsDecision DecideHags(const LUID& luid, const AdapterHags& kmt, bool registryOn);
+
+// Pure: EvaluateCompat on the bootstrap's inputs with hags_on = hags.on. When
+// rule 10 refuses, its reason keeps the rule's text and names the source:
+// "hardware-accelerated GPU scheduling is off (<hags.source>)".
+CompatResult EvaluateChainCompat(CompatInputs inputs, const HagsDecision& hags, unsigned width, unsigned height);
+
+// Test hook, read for every main-window swap chain: ACDLSSG_DEBUG_HAGS=off
+// replaces D3DKMT's HAGS answer with off, ACDLSSG_DEBUG_HAGS=fail makes the
+// query count as failed (so the registry decides). Either logs a WARN; any
+// other value is ignored with a WARN.
+constexpr wchar_t kDebugHagsEnv[] = L"ACDLSSG_DEBUG_HAGS";
 
 // Window class name is exactly "acsW" (case-sensitive).
 bool IsMainGameWindow(HWND hwnd);
