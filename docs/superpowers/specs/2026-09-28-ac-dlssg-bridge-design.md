@@ -445,7 +445,7 @@ DLSS-G itself is exercised only in-game, by the user.
   - creates GitHub artifact attestations for the zip and for `ac-dlssg-bridge.dll` with `actions/attest-build-provenance` (permissions `id-token: write, contents: write, attestations: write`);
   - writes both SHA-256 values into the release notes.
 
-  Anyone can then check a downloaded file with `gh attestation verify <file> --repo flopsy2iqq/ac-dlssg-bridge`.
+  Anyone can then check a downloaded file with `gh attestation verify <file> --repo flopsy2iqq/ac-dlssg`.
 - **Release zip:**
   - `ac-dlssg-bridge.dll`;
   - `apps/lua/AcDlssgBridge/`;
