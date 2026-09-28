@@ -29,17 +29,22 @@
 #include <string>
 
 #include "camera_layout.h"
+#include "ngx_params.h"
 
 namespace acdb {
 
-// NVSDK_NGX_DLSS_Feature_Flags bits of DLSS.Feature.Create.Flags (DLSS SDK
-// nvsdk_ngx_defs.h). CSP passes 2 (MVLowRes only).
+// NVSDK_NGX_DLSS_Feature_Flags bits of DLSS.Feature.Create.Flags. CSP passes
+// 2 (MVLowRes only). The values are defined once, with the rest of our NGX
+// declaration, in ngx_params.h; these are the names the math uses.
 namespace dlss_create_flags {
-constexpr uint32_t kIsHDR = 1u << 0;
-constexpr uint32_t kMVLowRes = 1u << 1;
-constexpr uint32_t kMVJittered = 1u << 2;
-constexpr uint32_t kDepthInverted = 1u << 3;
+constexpr uint32_t kIsHDR = kNgxDlssFlagIsHDR;
+constexpr uint32_t kMVLowRes = kNgxDlssFlagMVLowRes;
+constexpr uint32_t kMVJittered = kNgxDlssFlagMVJittered;
+constexpr uint32_t kDepthInverted = kNgxDlssFlagDepthInverted;
 }  // namespace dlss_create_flags
+static_assert(dlss_create_flags::kIsHDR == 1u && dlss_create_flags::kMVLowRes == 2u &&
+                  dlss_create_flags::kMVJittered == 4u && dlss_create_flags::kDepthInverted == 8u,
+              "NVSDK_NGX_DLSS_Feature_Flags bits (nvsdk_ngx_defs.h)");
 
 // What the NGX evaluate hook captured for the frame.
 struct CaptureParams {
