@@ -490,6 +490,34 @@ TEST(Coordinator_ResetIsOredAcrossTheFramesEvaluates) {
     CHECK(!r.coord->EndFrame().params.ngxReset);
 }
 
+// Review finding F4 (and phase-1 item S5): when CSP stops calling DLSS, the
+// source-view cache must not keep CSP's depth texture alive for the rest of
+// the session. After 60 frames without a counted evaluate it is released,
+// and the next evaluate captures as before.
+TEST(Coordinator_ReleasesCspsDepthTextureWhenDlssStops) {
+    Rig r;
+    if (!r.Create()) return;
+    CspSources s = MakeSources(r.d.device11.Get(), 64, 36);
+    REQUIRE(s.depth && s.mvec);
+    const auto refs = [](IUnknown* p) {
+        p->AddRef();
+        return p->Release();
+    };
+    const ULONG alone = refs(s.depth.Get());
+    r.coord->OnEvaluate(r.Inputs(s));
+    REQUIRE(r.coord->EndFrame().captured);
+    CHECK_EQ(r.slots->CachedSourceViews(), 1u);
+    CHECK(refs(s.depth.Get()) > alone);
+    for (int i = 0; i < 59; ++i) CHECK(!r.coord->EndFrame().captured);
+    CHECK_EQ(r.slots->CachedSourceViews(), 1u);  // a short gap keeps the view
+    CHECK(!r.coord->EndFrame().captured);          // the 60th frame without an evaluate
+    CHECK_EQ(r.slots->CachedSourceViews(), 0u);
+    CHECK_EQ(refs(s.depth.Get()), alone);
+    r.coord->OnEvaluate(r.Inputs(s));
+    CHECK(r.coord->EndFrame().captured);
+    CHECK_EQ(r.slots->CachedSourceViews(), 1u);
+}
+
 TEST(Coordinator_PresentWithoutEvaluateLatchesTheCamera) {
     Rig r;
     if (!r.Create()) return;

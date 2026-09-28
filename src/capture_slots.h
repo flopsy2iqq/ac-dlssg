@@ -101,6 +101,11 @@ public:
     // The motion-vector texture's typed format (UNKNOWN while empty).
     DXGI_FORMAT MvecFormat(uint32_t slot) const;
 
+    // Releases the source-view cache, and with it the references it holds
+    // to CSP's depth textures (review finding F4). The slots stay; the next
+    // Copy builds the view again. Same thread rules as Copy.
+    void DropSourceViews();
+
     // Added for the owner and the tests.
     bool HasTextures(uint32_t slot) const;        // an empty slot can be created without waiting on the GPU
     ID3D11Texture2D* Depth11(uint32_t slot) const;  // the D3D11 side of Depth12

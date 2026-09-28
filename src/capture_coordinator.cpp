@@ -13,6 +13,8 @@ namespace acdb {
 
 namespace {
 
+constexpr uint32_t kIdleFramesBeforeDrop = 60;  // frames without an evaluate before DropSourceViews
+
 // A ReShade proxy answers IID_ReShadeUnwrappedObject with the object it wraps.
 ComPtr<IUnknown> NativeIdentity(ID3D11Device* device) {
     if (!device) return nullptr;
@@ -251,7 +253,16 @@ void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
 
 FrameCapture CaptureCoordinator::EndFrame() {
     std::lock_guard<std::mutex> lock(mu_);
+    if (frame_.evaluates > 0) idle_frames_ = 0;
     if (frame_.evaluates == 0) {
+        // CSP stopped calling DLSS (another AA mode, a menu, a resize while
+        // DLSS is off): do not keep its depth texture alive (review F4).
+        if (idle_frames_ < kIdleFramesBeforeDrop && ++idle_frames_ == kIdleFramesBeforeDrop && deps_.slots &&
+            deps_.slots->CachedSourceViews() > 0) {
+            deps_.slots->DropSourceViews();
+            LOGI("capture: no DLSS evaluate for %u frames; the cached view of CSP's depth texture was released",
+                 kIdleFramesBeforeDrop);
+        }
         // Keeps freshness exact: the next frame's latch compares with a frame
         // counter read during this frame, not with an older captured frame.
         CameraLayout snap{};

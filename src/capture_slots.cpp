@@ -583,6 +583,8 @@ DXGI_FORMAT CaptureSlots::MvecFormat(uint32_t slot) const {
     return Valid(slot) ? slots_[slot].mvec_format : DXGI_FORMAT_UNKNOWN;
 }
 size_t CaptureSlots::CachedSourceViews() const { return views_.size(); }
+
+void CaptureSlots::DropSourceViews() { views_.clear(); }
 uint32_t CaptureSlots::DsvUnbinds() const { return dsv_unbinds_; }
 
 }  // namespace acdb

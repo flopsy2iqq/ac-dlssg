@@ -23,8 +23,10 @@
 //    capture signal would release CSP's wait for the D3D12 queue at the next
 //    Present (review finding F1; this deviates from spec 6.4 "Fences" and
 //    6.5, which have the capture signal the shared fence);
-//  - the last evaluate of the frame wins for the resources and parameters;
-//    Reset is OR-ed over the frame's evaluates;
+//  - the last evaluate of the frame that reaches the slot wins for the
+//    resources and parameters; one refused before that keeps the frame's
+//    earlier capture (review finding F5); Reset is OR-ed over the frame's
+//    evaluates;
 //  - subrect 0 falls back to the feature's create Width/Height, else the
 //    depth texture's size; an MV scale of 0 is flagged (DLSS-G off).
 // OnCreateFeature records the create parameters per feature, forces every
@@ -34,7 +36,9 @@
 // Present thread: EndFrame hands the frame's capture to the Present that ends
 // it and starts the next frame. A frame without a qualifying evaluate latches
 // the camera there, so that freshness always means "written during this
-// frame". NoteTagged records the progress value after which the D3D12 side is
+// frame". After 60 frames in a row without one, the capture slots release
+// their references to CSP's depth texture (DropSourceViews, review finding
+// F4). NoteTagged records the progress value after which the D3D12 side is
 // done with a slot; ResetCamera resets the latch (resize, target change).
 //
 // All methods are serialised by one mutex; nothing waits on the GPU.
@@ -124,6 +128,7 @@ private:
     std::unordered_map<uint64_t, NgxCreateInfo> creates_;
     ReasonThrottle throttle_;
     bool logged_first_evaluate_ = false;
+    uint32_t idle_frames_ = 0;  // frames in a row without a counted evaluate
     bool logged_first_fresh_ = false;
 };
 
