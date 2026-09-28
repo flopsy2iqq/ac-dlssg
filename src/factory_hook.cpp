@@ -212,8 +212,14 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         InternalCallScope internal;
         // bootstrap_possible implies streamline_ok, so production always takes the Streamline path.
         StreamlineRuntime* streamline = bs.streamline_ok ? &StreamlineRuntime::Get() : nullptr;
+        // M3: CSP's DLSS evaluates reach the presenter through NgxHook; the
+        // camera is the process-wide channel the bootstrap created.
+        PresenterEnvironment env;
+        env.install_ngx_hook = true;
+        env.spoof_loaded = bs.spoof_loaded;
+        env.allow_stretching = bs.compat.allow_stretching.value_or(0) == 1;
         hr = ProxySwapChain::Create(self, device11.Get(), hwnd, desc, fullscreenDesc, bs.config, streamline,
-                                    created.GetAddressOf(), &error);
+                                    created.GetAddressOf(), &error, env);
     }
     if (FAILED(hr) || !created) {
         LOGE("proxy swap chain creation failed (0x%08lX): %s; passing through", static_cast<unsigned long>(hr),

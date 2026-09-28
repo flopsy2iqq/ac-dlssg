@@ -64,7 +64,8 @@ HMODULE BridgeModule();
 // NVIDIA adapters), reads CompatInputs and logs them. M2 adds, in this order: spoof detection
 // (version.dll's path is game_dir), ReadDriverProfile(host exe) with every
 // warning logged at WARN before any D3D device exists, and, only when the
-// config enables the bridge, StreamlineRuntime::Get().Init(<data_dir>\sl,
+// config enables the bridge, CameraChannel::Get().Create (M3; a failure is
+// logged and leaves DLSS-G without a camera) and StreamlineRuntime::Get().Init(<data_dir>\sl,
 // <data_dir>\logs) (a disabled bridge never loads Streamline: streamline_error
 // is then "not loaded: the bridge is disabled"); possible = enabled &&
 // streamline_ok, reason "disabled in ac-dlssg.ini" or "Streamline: <error>"

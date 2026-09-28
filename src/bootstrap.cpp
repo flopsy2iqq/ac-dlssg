@@ -10,6 +10,7 @@
 #include <string>
 
 #include "adapter_caps.h"
+#include "camera_channel.h"
 #include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
@@ -202,7 +203,7 @@ void Run(BootstrapState* s) {
     const bool keptPrevious = MoveFileExW(logPath.c_str(), prevLogPath.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
     LogOpen(logPath, s->config.log_level);
 
-    LOGI("ac-dlssg %s (M2: Streamline proxy chain, Reflex and PCL markers; DLSS-G off)", ACDB_VERSION);
+    LOGI("ac-dlssg %s (M3: Streamline proxy chain, Reflex, PCL markers, NGX capture, CSP camera and DLSS-G)", ACDB_VERSION);
     LOGI("host: %s (pid %lu)", ToUtf8(exe).c_str(), GetCurrentProcessId());
     const HMODULE bridge = g_module.load();
     const std::wstring bridgePath = bridge ? ModuleFileName(bridge) : std::wstring();
@@ -268,6 +269,13 @@ void Run(BootstrapState* s) {
     // Streamline is loaded only for an enabled bridge: disabled means the
     // game runs as without the mod.
     if (c.enabled) {
+        // Spec 6.6: the camera section exists before CSP's Lua app opens it.
+        std::string camErr;
+        if (CameraChannel::Get().Create(&camErr)) {
+            LOGI("camera: section %s created", ToUtf8(CameraChannel::Get().SectionName()).c_str());
+        } else {
+            LOGW("camera: %s; DLSS-G gets no camera", camErr.c_str());
+        }
         const std::wstring slDir = s->data_dir + L"\\sl";
         s->streamline_ok = StreamlineRuntime::Get().Init(slDir, s->data_dir + L"\\logs", &s->streamline_error);
         if (s->streamline_ok) {
