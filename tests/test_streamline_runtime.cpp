@@ -763,9 +763,10 @@ TEST(Child_SlProxy_FinalReleaseShutsStreamlineDown) {
         d.ctx11->Flush();
     }
 
-    // While the chain lives, a main-window chain would be proxied.
+    // While the chain lives, a main-window chain would be proxied (the
+    // devices are on an NVIDIA adapter, see NvidiaDevices above).
     ProxyDecisionInputs in;
-    in.is_d3d11_device = in.is_main_window = in.bootstrap_possible = in.compat_ok = true;
+    in.is_d3d11_device = in.is_main_window = in.bootstrap_possible = in.compat_ok = in.nvidia_adapter = true;
     in.streamline_shut_down = rt.IsShutDown();
     CHECK(ShouldProxy(in));
 

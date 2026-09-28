@@ -29,7 +29,7 @@ struct ProxyDecisionInputs {
     bool is_d3d11_device = false;       // pDevice QIs to ID3D11Device
     bool is_main_window = false;        // IsMainGameWindow(hWnd)
     bool bootstrap_possible = false;    // BootstrapRunOnce().possible
-    bool compat_ok = false;             // EvaluateCompat(...).ok
+    bool compat_ok = false;             // EvaluateChainCompat(...).ok
     bool streamline_shut_down = false;  // StreamlineRuntime::Get().IsShutDown()
     bool nvidia_adapter = false;        // RenderAdapterRefusal(adapter of pDevice) is empty
 };
