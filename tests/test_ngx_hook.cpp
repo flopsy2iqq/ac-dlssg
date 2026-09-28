@@ -374,6 +374,34 @@ TEST(NgxHook_LoadCompletesWhileStateLocked) {
     CHECK_EQ(RunChildTest("Child_NgxHook_LoadCompletesWhileStateLocked", 60000), 0);
 }
 
+// A module that loads after Install's first scan but before the notification is
+// registered produces no event; the first ProcessPendingRescan must still hook
+// it (ngx review F5).
+namespace {
+HMODULE g_gapLoaded = nullptr;
+void LoadFakeInInstallGap() { g_gapLoaded = LoadLibraryW(FAKE_NVNGX_PATH); }
+}  // namespace
+
+TEST(NgxHook_ModuleLoadedDuringInstallIsHooked) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    g_gapLoaded = nullptr;
+    NgxHook::Get().SetInstallGapHookForTest(&LoadFakeInInstallGap);
+    const bool installed = NgxHook::Get().Install(&sink, &err);
+    NgxHook::Get().SetInstallGapHookForTest(nullptr);
+    REQUIRE(installed);
+    REQUIRE(g_gapLoaded != nullptr);
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);  // the first scan ran before the load
+
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK(NgxHook::Get().HookedModules() >= 1);
+    NgxHook::Get().Uninstall();
+    FreeLibrary(g_gapLoaded);
+    g_gapLoaded = nullptr;
+}
+
 // More loader events than the queue holds: the unload that falls off the end is
 // still noticed, because an overflow makes the next ProcessPendingRescan
 // re-verify every layer (ngx review F1).

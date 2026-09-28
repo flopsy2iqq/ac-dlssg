@@ -142,6 +142,7 @@ struct HookState {
     PfnLdrRegister ldrRegister = nullptr;
     PfnLdrUnregister ldrUnregister = nullptr;
     void* ldrCookie = nullptr;
+    void (*installGapHook)() = nullptr;  // test-only, see SetInstallGapHookForTest
 };
 
 HookState& S() {
@@ -482,6 +483,7 @@ bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
         ScanLocked();
         RecountLocked();
     }
+    if (s.installGapHook) s.installGapHook();
     // Register only after the first scan. The callback reads only the queue.
     g_callbackState.store(&s, std::memory_order_release);
     if (s.ldrRegister && !s.ldrCookie) {
@@ -490,6 +492,11 @@ bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
             LOGW("ngx: LdrRegisterDllNotification failed; only already-loaded modules are hooked");
         }
     }
+    // A module that loaded between the scan above and the registration produced
+    // no event: the first ProcessPendingRescan rescans to cover that gap (ngx
+    // review F5).
+    s.pendingRescan.store(true, std::memory_order_release);
+    s.workPending.store(true, std::memory_order_release);
     s.installed.store(true, std::memory_order_release);
     return true;
 }
@@ -537,6 +544,8 @@ void NgxHook::Uninstall() {
 }
 
 uint32_t NgxHook::HookedModules() const { return S().hooked.load(std::memory_order_acquire); }
+
+void NgxHook::SetInstallGapHookForTest(void (*fn)()) { S().installGapHook = fn; }
 
 void NgxHook::LockStateForTest() {
     HookState& s = S();

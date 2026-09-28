@@ -74,6 +74,9 @@ public:
     void Uninstall();
     uint32_t HookedModules() const;
 
+    // Test-only: Install calls fn after its first scan and before it registers
+    // for load notifications, so a test can load a module inside that gap.
+    void SetInstallGapHookForTest(void (*fn)());
     // Test-only: hold every internal lock on the calling thread, to prove the
     // loader-notification callback never waits on one (spec 6.5).
     void LockStateForTest();
