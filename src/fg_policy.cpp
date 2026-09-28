@@ -86,11 +86,18 @@ bool VramGuard::CheckDue(uint64_t frame) const {
     return !checked_ || frame - last_ >= kRecheckFrames;
 }
 
-void VramGuard::Record(uint64_t frame, const VramCheck& result) {
+VramCheck DecideVram(const VramInputs& in) {
+    if (!in.budgetKnown) return VramCheck{};
+    return CheckVideoMemory(in.budgetBytes, in.usageBytes, in.estimateOk ? in.estimateBytes : 0, in.headroomMib);
+}
+
+bool VramGuard::Record(uint64_t frame, const VramCheck& result) {
+    const bool changed = !checked_ || passed_ != result.ok;
     checked_ = true;
     last_ = frame;
     passed_ = result.ok;
     refusal_ = result.ok ? std::string() : result.reason;
+    return changed;
 }
 
 bool HotkeyChordDown(const Hotkey& hotkey, bool keyDown, bool ctrlDown, bool shiftDown, bool altDown) {

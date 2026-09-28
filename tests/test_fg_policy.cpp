@@ -244,6 +244,40 @@ TEST(VramGuard_ChecksBeforeFirstEnableAndEvery60FramesWhileBlocked) {
     CHECK(!g.CheckDue(1000));
 }
 
+TEST(VramGuard_ReportsOnlyAChangedOutcome) {
+    // Review finding F2 (in game): a refusal that lasts is logged once, not
+    // at every recheck.
+    VramGuard g;
+    CHECK(g.Record(10, VramCheck{false, "video memory: need 900 MiB, free 800 MiB"}));
+    CHECK(!g.Record(70, VramCheck{false, "video memory: need 900 MiB, free 790 MiB"}));
+    CHECK(!g.Record(130, VramCheck{false, "video memory: need 900 MiB, free 810 MiB"}));
+    CHECK(g.Record(190, VramCheck{true, ""}));
+}
+
+TEST(VramGuard_AFailedEstimateChecksTheHeadroomOnly) {
+    // Review findings SL-6 and F2 (in game): a failed estimate query must not
+    // keep DLSS-G off for good; the budget check runs with an estimate of 0.
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    VramInputs in;
+    in.estimateOk = false;
+    in.budgetKnown = true;
+    in.budgetBytes = 8000 * MiB;
+    in.usageBytes = 6000 * MiB;
+    in.headroomMib = 512;
+    CHECK(DecideVram(in).ok);
+    in.usageBytes = 7600 * MiB;
+    const VramCheck refused = DecideVram(in);
+    CHECK(!refused.ok);
+    CHECK_EQ(refused.reason, std::string("video memory: need 512 MiB, free 400 MiB"));
+    // With an estimate it counts; without a budget nothing is refused.
+    in.estimateOk = true;
+    in.estimateBytes = 300 * MiB;
+    in.usageBytes = 7200 * MiB;
+    CHECK(!DecideVram(in).ok);
+    in.budgetKnown = false;
+    CHECK(DecideVram(in).ok);
+}
+
 // ---------------------------------------------------------------- hotkey
 
 TEST(Hotkey_ChordNeedsExactlyTheConfiguredModifiers) {

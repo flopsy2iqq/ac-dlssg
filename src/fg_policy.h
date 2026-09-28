@@ -108,13 +108,31 @@ struct VramCheck {
 // counts as nothing free.
 VramCheck CheckVideoMemory(uint64_t budgetBytes, uint64_t usageBytes, uint64_t estimateBytes, unsigned headroomMib);
 
+// What the presenter learned for one check of the guard.
+struct VramInputs {
+    bool estimateOk = false;      // slDLSSGGetState(eRequestVRAMEstimate) returned eOk
+    uint64_t estimateBytes = 0;   // its estimatedVRAMUsageInBytes
+    bool budgetKnown = false;     // IDXGIAdapter3::QueryVideoMemoryInfo succeeded
+    uint64_t budgetBytes = 0;
+    uint64_t usageBytes = 0;
+    unsigned headroomMib = 0;     // fg_vram_headroom_mib
+};
+
+// The guard's decision: CheckVideoMemory when the budget is known, else ok.
+// A failed estimate query counts as an estimate of 0, so that only the
+// headroom is checked instead of keeping DLSS-G off for good (review
+// findings SL-6 and F2).
+VramCheck DecideVram(const VramInputs& in);
+
 // When the guard runs: before DLSS-G is first enabled, then every 60 frames
 // while it refuses; once it passed, never again.
 class VramGuard {
 public:
     static constexpr uint64_t kRecheckFrames = 60;
     bool CheckDue(uint64_t frame) const;
-    void Record(uint64_t frame, const VramCheck& result);
+    // True for the first result and whenever it changes between ok and
+    // refused: the presenter logs only those at INFO.
+    bool Record(uint64_t frame, const VramCheck& result);
     bool Passed() const { return passed_; }
     const std::string& Refusal() const { return refusal_; }
 

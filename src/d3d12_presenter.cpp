@@ -319,6 +319,7 @@ struct D3D12Presenter::Impl {
     CameraLayout prev_camera{};
     std::string state_failure;  // until the next resize or toggle (spec 9)
     VramGuard vram_guard;
+    bool logged_no_estimate = false;
     bool vsync_available = false;  // bIsVsyncSupportAvailable == eTrue
     bool polled_state = false;     // slDLSSGGetState answered at least once while on
     StatusPollClock status_clock;  // when the answer's status is acted on
@@ -360,7 +361,7 @@ struct D3D12Presenter::Impl {
     void PollHotkey();
     DlssgSizeHints Hints() const;
     FrameDecision Decide(const FrameCapture& cap);
-    VramCheck RunVramCheck();
+    void RunVramCheck();  // records the result in vram_guard
     bool SetMode(bool on);
     void LogMode(bool on, const std::string& reason, bool perFrame, const std::string& tagPathReason = {});
     void PollState(bool presentedOn);
@@ -798,7 +799,7 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     }
     FgGateResult gate = DecideFg(g);
     if (gate.on && !vram_guard.Passed()) {
-        if (vram_guard.CheckDue(frame_index)) vram_guard.Record(frame_index, RunVramCheck());
+        if (vram_guard.CheckDue(frame_index)) RunVramCheck();
         if (!vram_guard.Passed()) {
             g.vramRefusal = vram_guard.Refusal();
             gate = DecideFg(g);
@@ -814,27 +815,42 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
 }
 
 // Spec 6.11: the estimate for the current sizes against the free budget.
-VramCheck D3D12Presenter::Impl::RunVramCheck() {
+// A failed estimate checks the headroom only (DecideVram, review findings
+// SL-6 and F2). The check is logged at INFO when its outcome changes and
+// at DEBUG otherwise, so a lasting refusal is not logged every 60 frames.
+void D3D12Presenter::Impl::RunVramCheck() {
+    VramInputs in;
+    in.headroomMib = config.fg_vram_headroom_mib;
     sl::DLSSGState st;
     const sl::Result r = sl->GetDlssgState(true, Hints(), &st);
-    if (r != sl::Result::eOk)
-        return VramCheck{false, std::string("video memory: no DLSS-G estimate (") + SlResultName(r) + ")"};
-    vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
-    uint64_t usage = 0;
-    uint64_t budget = 0;
-    std::string why;
-    if (!QueryVramBytes(adapter3.Get(), &usage, &budget, &why)) {
-        LOGI("fg: video memory check skipped (%s); DLSS-G estimate %llu MiB", why.c_str(),
-             static_cast<unsigned long long>(st.estimatedVRAMUsageInBytes / (1024 * 1024)));
-        return VramCheck{};
+    in.estimateOk = r == sl::Result::eOk;
+    if (in.estimateOk) {
+        in.estimateBytes = st.estimatedVRAMUsageInBytes;
+        vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
+    } else if (!logged_no_estimate) {
+        logged_no_estimate = true;
+        LOGW("fg: no DLSS-G video memory estimate (%s); the video memory check uses the headroom only (logged once)",
+             SlResultName(r));
     }
-    const VramCheck c = CheckVideoMemory(budget, usage, st.estimatedVRAMUsageInBytes, config.fg_vram_headroom_mib);
-    LOGI("fg: video memory check: DLSS-G estimate %llu MiB + headroom %u MiB, budget %llu MiB, usage %llu MiB: %s; "
-         "VSync with DLSS-G %s",
-         static_cast<unsigned long long>(st.estimatedVRAMUsageInBytes / (1024 * 1024)), config.fg_vram_headroom_mib,
-         static_cast<unsigned long long>(budget / (1024 * 1024)), static_cast<unsigned long long>(usage / (1024 * 1024)),
-         c.ok ? "ok" : c.reason.c_str(), vsync_available ? "available" : "not available");
-    return c;
+    std::string why;
+    in.budgetKnown = QueryVramBytes(adapter3.Get(), &in.usageBytes, &in.budgetBytes, &why);
+    const VramCheck c = DecideVram(in);
+    const bool changed = vram_guard.Record(frame_index, c);
+    char estimate[32] = "n/a";
+    if (in.estimateOk)
+        std::snprintf(estimate, sizeof(estimate), "%llu MiB",
+                      static_cast<unsigned long long>(in.estimateBytes / (1024 * 1024)));
+    const LogLevel level = changed ? LogLevel::Info : LogLevel::Debug;
+    if (!in.budgetKnown) {
+        LogWrite(level, "fg: video memory check skipped (%s); DLSS-G estimate %s", why.c_str(), estimate);
+        return;
+    }
+    LogWrite(level,
+             "fg: video memory check: DLSS-G estimate %s + headroom %u MiB, budget %llu MiB, usage %llu MiB: %s; "
+             "VSync with DLSS-G %s",
+             estimate, in.headroomMib, static_cast<unsigned long long>(in.budgetBytes / (1024 * 1024)),
+             static_cast<unsigned long long>(in.usageBytes / (1024 * 1024)), c.ok ? "ok" : c.reason.c_str(),
+             vsync_available ? "available" : "not available");
 }
 
 // slDLSSGSetOptions only when the mode, or while on the size hints, change
