@@ -1,6 +1,6 @@
 # ac-dlssg: design
 
-Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done (see section 11).
+Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done; M2 is built and waits for its in-game checks (see section 11). A hybrid laptop was added as a second target system on 2026-09-28, with a standalone mode for systems without ReShade (sections 2, 3, 5, 6.10, 6.11, 11 and 12).
 
 ## 1. Goal
 
@@ -8,16 +8,18 @@ Bring NVIDIA DLSS Frame Generation (DLSS-G, 2X) to Assetto Corsa with Custom Sha
 
 The game keeps rendering in DirectX 11. Our DLL replaces CSP's swap chain with a proxy. At Present, the proxy copies the finished frame to a DirectX 12 swap chain created through NVIDIA Streamline, and DLSS-G inserts the generated frames there. Depth and motion vectors come from the DLSS upscaling pass that CSP already runs. Camera data comes from a small CSP Lua app.
 
-RTX 40 and RTX 50 cards run DLSS-G natively. RTX 30 cards from the RTX 3070 up are supported through the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) spoof. Our installer downloads it from its author's repository, with the user's consent.
+RTX 40 and RTX 50 cards run DLSS-G natively. RTX 30 cards (every Ampere GeForce GPU, SM86, desktop and laptop) are supported through the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) spoof, which gates only on the SM86 architecture. Our installer downloads it from its author's repository, with the user's consent.
 
 Milestone M0 is already done: on the reference machine (RTX 3080, driver 616.64), the spoof enabled DLSS-G 2X, 3X and 4X in a native DLSS-G game (WheelMates) with no visible problems.
 
+Two machines must run it: the reference desktop (RTX 3080) and a friend's hybrid laptop, an Acer Nitro 5 AN515-57 with an RTX 3050 Ti Laptop GPU (4 GB) whose internal panel is driven by the Intel iGPU. The laptop has no ReShade.
+
 ## 2. Success criteria
 
-1. On the reference system, DLSS-G 2X runs stable for a 15-minute drive: no crash, no device removal, no freeze. The reference system is an RTX 3080 with driver 616.64, Windows 10 22H2, CSP 0.3.0-preview622 and ReShade 6.8.0.
-2. With settings that give a 45-50 fps base, the presented rate is 85-95 fps.
+1. On the reference system, DLSS-G 2X runs stable for a 15-minute drive: no crash, no device removal, no freeze. The reference system is an RTX 3080 with driver 616.64, Windows 10 22H2, CSP 0.3.0-preview622 and ReShade 6.8.0. The second test system is the laptop: RTX 3050 Ti Laptop GPU (4 GB, 60-75 W) with Optimus and no MUX, i5-11400H with Intel UHD graphics, driver 610.88, Windows 11 25H2, CSP 0.3.0-preview634, no ReShade (standalone mode). Criterion 1 applies to both systems.
+2. On the reference system, with settings that give a 45-50 fps base, the presented rate is 85-95 fps. On the laptop, the presented rate is at least 1.5 times the rate with DLSS-G off, and a 15-minute drive shows no stutter from video memory overflow. DLSS-G there costs an estimated 4-6 ms per real frame at 1080p (inferred from the spoof's published RTX 3080 Ti numbers), so a 50 fps base gives about 77-83 fps.
 3. With DLSS-G off, the bridge costs less than 0.5 ms of GPU time per frame compared with no bridge. This includes both frame copies.
-4. With DLSS-G off, the image and the presentation behaviour match the game without the bridge: same resolution, colours, UI, and VSync or tearing behaviour. ReShade effects and its overlay keep working.
+4. With DLSS-G off, the image and the presentation behaviour match the game without the bridge: same resolution, colours, UI, and VSync or tearing behaviour. In ReShade mode, ReShade effects and its overlay keep working.
 5. If DLSS-G cannot run, the bridge passes through and the game runs as it would without the bridge. Reasons include no supported GPU, missing files, unsupported CSP settings, and a failed initialization. There are two exceptions:
    - On RTX 30, `acs.exe` loads the dlssg_for_sm86 proxy (`version.dll`) at process start, whatever the bridge decides. That proxy keeps its LoadLibrary hook and its NVAPI architecture redirect, and CSP's own NVAPI calls see that redirect too. Only removing the spoof gives an unmodified process.
    - The bridge cannot cover its own DLL being missing or blocked. Section 12 describes the recovery.
@@ -29,15 +31,16 @@ In scope for v1:
 - DLSS-G 2X (one generated frame per real frame) and NVIDIA Reflex Low Latency through Streamline.
 - CSP with its DLSS upscaler active (`[FSR] ACTIVE=1`, `OLD_IMPLEMENTATION=3`), in any DLSS quality mode including DLAA.
 - CSP's flip-model swap chain in a borderless window (`FULLSCREEN=1`, the CSP default), at a `video.ini` resolution with the same aspect ratio as the window. CSP renders at the `video.ini` resolution and scales down into a swap chain at desktop resolution. The user's "2560x1440 on a 1080p monitor" setup is therefore CSP supersampling, not driver DSR.
-- ReShade 6.8.0 or newer, in the build with add-on support, installed as `dxgi.dll`.
-- RTX 40 and RTX 50 natively; RTX 30 (3070 and up) through dlssg_for_sm86.
-- A settings panel in the ReShade overlay, a hotkey, a config file and a log.
+- Two load modes. In ReShade mode, ReShade 6.8.0 or newer (the build with add-on support) is `dxgi.dll` and loads the bridge as its `ProxyLibrary`. In standalone mode, ReShade is absent and the bridge itself is the game folder's `dxgi.dll`.
+- RTX 40 and RTX 50 natively; RTX 30 (every Ampere GeForce GPU, SM86, desktop and laptop) through dlssg_for_sm86.
+- Hybrid (Optimus) laptops, where the NVIDIA GPU renders and the integrated GPU drives the display (6.11).
+- A settings panel, a hotkey, a config file and a log. The panel is in the ReShade overlay in ReShade mode and in the CSP Lua app in standalone mode. The M3 plan decides whether ReShade mode also uses the Lua app panel, so that there is one UI.
 - An installer, an uninstaller, and CI-built releases on GitHub with build provenance.
 
 Out of scope for v1. Each case is refused or ignored with a logged reason; the planned follow-ups are in section 15.
 - A HUD-less colour buffer. CSP app windows and the ReShade overlay will show interpolation artifacts.
 - Multi frame generation (3X and above).
-- RTX 20 series. The spoof supports only the 2080 Ti there, and we have no card to test with.
+- RTX 20 series. The spoof has an SM75 route, but the user excluded RTX 20 and we have no card to test with.
 - HDR output, VR, triple-screen mode, MSAA (`AASAMPLES>1`), `OLD_SWAPCHAIN=1`, `EXCLUSIVE_FULLSCREEN=1`, and letterboxed output (a `video.ini` aspect ratio that differs from the window while `ALLOW_STRETCHING=0`).
 - Other CSP upscalers (FSR, XeSS, OptiScaler).
 - Running together with `dlss5-bridge.addon64` or `renodx-dlss5.addon64`.
@@ -93,7 +96,7 @@ acs.exe (D3D11)
  D3D12Presenter: shared-fence wait ─> copy to SL chain ─> tags + constants ─> SL proxy Present ─> DLSS-G
 ```
 
-One DLL, `ac-dlssg.dll`, sits in the game folder. It is ReShade's `ProxyLibrary`, and it also registers itself as a ReShade add-on. Runtime data lives in `<game>\ac-dlssg\`:
+One DLL sits in the game folder. In ReShade mode it is `ac-dlssg.dll`, ReShade's `ProxyLibrary`, and it also registers itself as a ReShade add-on. In standalone mode the same DLL is installed as `dxgi.dll`, and the process binds `dxgi.dll` to the bridge directly, including the imports of `d3d11.dll`, `d3d12.dll` and the Streamline DLLs. The diagram above shows ReShade mode; in standalone mode the ReShade layer is absent. The bridge tells the modes apart by its own module file name and logs the mode. Runtime data lives in `<game>\ac-dlssg\`:
 - `sl\` holds the pinned Streamline files;
 - `logs\` holds the logs;
 - `install\` holds the install manifest, backups and the uninstaller;
@@ -104,7 +107,7 @@ One DLL, `ac-dlssg.dll`, sits in the game folder. It is ReShade's `ProxyLibrary`
 Each unit is a separate source file pair with a narrow interface.
 
 ### 6.1 DxgiExports (`dxgi_exports.cpp`)
-- **Exports.** Exactly the DXGI names ReShade resolves:
+- **Exports.** The DXGI names ReShade resolves, plus every `dxgi.dll` export that `d3d11.dll`, `d3d12.dll` and the Streamline DLLs import by name or ordinal, because in standalone mode they bind to the bridge:
   - `CreateDXGIFactory`, `CreateDXGIFactory1`, `CreateDXGIFactory2`;
   - `DXGIGetDebugInterface1`, `DXGIDeclareAdapterRemovalSupport`, `DXGIDisableVBlankVirtualization`, `DXGIReportAdapterConfiguration`, `DXGIDumpJournal`;
   - `CompatValue`, `CompatString`;
@@ -119,7 +122,7 @@ Each unit is a separate source file pair with a narrow interface.
     - it never names `VERSION.dll`, which would resolve to the spoof's `version.dll` in the game folder;
     - `d3d11`, `d3d12`, `d3dcompiler` and Streamline are resolved at runtime.
   - `DllMain` doing anything beyond storing the module handle. It always returns TRUE.
-- **Re-entrancy.** A thread-local guard, `t_internal_call`, turns every export into a pure pass-through while our own code calls DXGI, D3D12 or Streamline. This is needed because Streamline's `LoadLibraryW(L"dxgi.dll")` resolves to ReShade, which calls back into us.
+- **Re-entrancy.** A thread-local guard, `t_internal_call`, turns every export into a pure pass-through while our own code calls DXGI, D3D12 or Streamline. This is needed because Streamline's `LoadLibraryW(L"dxgi.dll")` resolves to ReShade, which calls back into us, or, in standalone mode, to the bridge itself.
 - **First factory creation** (outside `DllMain`) triggers `Bootstrap` (6.10) and `FactoryHook::Install`.
 
 ### 6.2 FactoryHook (`factory_hook.cpp`)
@@ -321,6 +324,7 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
 - **Bootstrap** runs once, outside the loader lock, on the first `CreateDXGIFactory*` call:
   - it reads the config and opens the log;
   - it detects the GPU from the DXGI adapter `DeviceId`. It does not use NVAPI for this, because the spoof rewrites NVAPI's architecture query;
+  - it logs, per adapter, the D3DKMT hybrid type (hybrid discrete, hybrid integrated or neither), the HAGS state, the number of outputs and the driver version. It warns when an NVIDIA driver is older than 581.29 (NVIDIA's Optimus fix) or than R580 (the spoof's native kernels);
   - it detects the spoof: `version.dll` from the game folder, and later `sm86_backend.dll`;
   - it reads the driver profile (6.8), runs `slInit` and creates the camera section.
 - **Compatibility refusals.** When any of these holds, the bridge does not proxy, and the game runs as without the mod:
@@ -329,10 +333,19 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
   - **AC settings:** `video.ini [VIDEO] AASAMPLES>1`, or `video.ini [CAMERA] MODE` anything other than `DEFAULT` (for example OCULUS, OPENVR or TRIPLE).
   - **Aspect mismatch:** `dxgi_tweaks.ini [COMPATIBILITY] ALLOW_STRETCHING=0` (the default) and `|(video.ini WIDTH/HEIGHT) / (swap-chain Width/Height) − 1| > 0.005`, because CSP then letterboxes.
   - **Other add-ons:** `dlss5-bridge.addon64` or `renodx-dlss5.addon64` is loaded.
-  - **System:** hardware-accelerated GPU scheduling is off; the GPU is unsupported; or the GPU is an RTX 30 without the spoof.
+  - **System:** hardware-accelerated GPU scheduling is off on the adapter of CSP's D3D11 device; CSP's device is not on an NVIDIA adapter; the GPU is unsupported; or the GPU is an RTX 30 without the spoof.
+    - HAGS is read with `D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS)` for that adapter's LUID. The registry value `HwSchMode` can be absent while HAGS is on (the laptop is such a case), so it is only the fallback when the query fails. Streamline's `slIsFeatureSupported` stays the final word for DLSS-G.
+    - The non-NVIDIA refusal names the adapter and tells the user to set `acs.exe` to High performance in Windows graphics settings, or to check CSP's `SELECT_ADAPTER`.
 - **Runtime-only switches.** The same aspect test is repeated with NGX `OutWidth/OutHeight` after every `ResizeBuffers` and every counted `CreateFeature`. The Lua flags (VR, triple screen) arrive after the swap chain exists. Both can only switch DLSS-G off; the proxy stays.
 - **Config.** `ac-dlssg\ac-dlssg.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`.
-- **Log.** `ac-dlssg\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates); and every state change.
+- **Log.** `ac-dlssg\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates, and the render adapter's video memory usage and budget from `IDXGIAdapter3::QueryVideoMemoryInfo`); and every state change.
+
+### 6.11 Hybrid (Optimus) presentation
+- **Render GPU.** The render GPU is the adapter of CSP's D3D11 device, found by its LUID. The bridge never uses `EnumAdapters(0)` (the iGPU on a hybrid laptop) and never takes decisions from the NVIDIA adapter's outputs, which it does not have when the internal panel is used. Monitor data comes from the swap chain's `GetContainingOutput`.
+- **Presentation path.** DXGI presents the D3D12 flip chain across adapters, the way every D3D12 game on such a laptop presents: two copies through system memory, or one copy (CASO) on Windows 11 with a WDDM 3.x iGPU driver. `sl.dlss_g.dll` 2.14.1 contains its own hybrid swap-chain path; the bridge log review checks the Streamline lines `Failed to setup hybrid GPU for swapchain` and `isHybridGPU=`. NVIDIA documents DLSS-G on MS-Hybrid systems, with higher latency and Streamline enforcing VSync through its own pacing.
+- **VSync.** VSync with DLSS-G only when independent flip is active. The laptop default is VSync off with CSP's FPS cap near half the panel refresh rate.
+- **Video memory (M3).** Before DLSS-G is first enabled, the bridge queries `slDLSSGGetState` with `eRequestVRAMEstimate`. When the headroom in the video memory budget is below a threshold (about 0.5 GiB to start, tuned on the laptop), DLSS-G stays off and the panel says why.
+- **Testing.** The laptop runs every milestone checklist from M2 on, on the internal panel. One run on an external monitor on the HDMI port, which is wired to the NVIDIA GPU, separates hybrid-path problems from bridge problems.
 
 ## 7. Per-frame data flow
 
@@ -390,7 +403,7 @@ Bridge frame N. Test presents do not take part (6.3).
 
 ## 10. RTX 30 support through dlssg_for_sm86
 
-- **Installer.** It reads the adapter `DeviceId`. For Ampere GPUs from the RTX 3070 up, it shows the author, the source URL, the risk and this notice: *the repository has no LICENSE file; its README says the project source is GPLv3, but no source is published; the binary embeds NVIDIA's `nvngx_dlssg.dll`, which is not relicensed; running it on RTX 30 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you are that license's licensee.*
+- **Installer.** It reads the adapter `DeviceId`. For Ampere GeForce GPUs (SM86, desktop and laptop), it shows the author, the source URL, the risk and this notice: *the repository has no LICENSE file; its README says the project source is GPLv3, but no source is published; the binary embeds NVIDIA's `nvngx_dlssg.dll`, which is not relicensed; running it on RTX 30 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you are that license's licensee.*
 - **On consent,** in the installer's staging phase (section 12), it:
   - downloads exactly `version.dll` and `dlssg_sm86.ini` from commit `9621db573e07ed54f50c15bbb585ed9a7bdfac28` of `sdli1995/dlssg_for_sm86` (the files of tag `0.3.5`);
   - verifies their git blob SHA-1: `efd92261f2b74e0a0fb927d74bce7a1c0c2413f7` for `version.dll`, `2c97d64f2239b7d511f7d0a36c16e149dd3329f6` for the ini;
@@ -399,6 +412,7 @@ Bridge frame N. Test presents do not take part (6.3).
 - **Load order.** `acs.exe` imports `VERSION.dll` statically, so the spoof loads at process start, before ReShade and our DLL, and is armed before `slInit`.
 - **In the panel.** The bridge shows the real GPU and the spoof state. It logs the spoof's own log locations: `dlssg_sm86\logs\loader_<pid>.jsonl` and `backend_<pid>.jsonl`.
 - **Configuration.** The default `dlssg_sm86.ini` is kept byte for byte.
+- **Supported GPUs.** The upstream README requires only SM86 (or SM75 for RTX 20); an earlier version of this spec wrongly said RTX 3070 and up. The author validated on an RTX 3070 and an RTX 3080 Ti. Users report the RTX 3050 Laptop and the RTX 3050 Ti Laptop working at 2X, with reported flicker (upstream issue #384) and an fps drop after about 2 minutes (#607), which the laptop checks watch for.
 - **Credit.** The README credits sdli1995 (the user reports the author's agreement) and Coldwood1026, whose RTX 20 work ships inside the same `version.dll`.
 
 ## 11. Testing and milestones
@@ -417,11 +431,12 @@ Bridge frame N. Test presents do not take part (6.3).
 - `SetMaximumFrameLatency`;
 - `ResizeBuffers`;
 - create, release and re-create of the main swap chain (from M2 on the second chain must be a pass-through, because the first one's release shuts Streamline down; in M1 both chains are proxied);
-- a forced D3D12 stall (the watchdog must release D3D11).
+- a forced D3D12 stall (the watchdog must release D3D11);
+- standalone mode: the bridge copied next to the test app as `dxgi.dll` and bound by name, so that `d3d11.dll`, `d3d12.dll` and Streamline bind to it too.
 
 DLSS-G itself is exercised only in-game, by the user.
 
-**Milestones.** Each ends with a short in-game checklist run by the user: launch, borderless window, Alt+Tab, a resolution change, pause menu, a replay, and a 15-minute drive. The bridge log is analysed afterwards.
+**Milestones.** Each ends with a short in-game checklist run by the user, on both machines from M2 on (the laptop in standalone mode): launch, borderless window, Alt+Tab, a resolution change, pause menu, a replay, and a 15-minute drive. The bridge log is analysed afterwards.
 - **M0 (done).** dlssg_for_sm86 was verified in WheelMates on the reference machine.
 - **M1.** Proxy swap chain, hidden chain and D3D12 presentation, without Streamline. Checks:
   - the image is identical, and VSync or tearing behaves as without the bridge;
@@ -440,8 +455,8 @@ DLSS-G itself is exercised only in-game, by the user.
   - The bridge log shows the proxy decision for the main window, `bridge_gpu_ms` d3d11 0.025 + d3d12 0.023 ms, no stall and no warning or error, and CSP's `Present(0, 0x200)` passed through with frame latency 2.
   - With the spoof present and `enabled=0`, the game behaved the same. The user saw about 10 fps more in that configuration than in a session with the bridge enabled and no spoof, so two variables changed at once. A test-app A/B on the same machine with visible windows (GPU-bound, about 98 fps) measured the bridge at under 1% (98.5/98.3 fps without it, 97.8/97.7 with it), so the difference comes from the spoof or from the sessions, not from the bridge. The spoof's effect on CSP (it rewrites the NVAPI architecture for every caller) is to be measured in M3. Hidden-window test-app runs are too noisy for such comparisons (84.9-95.9 fps for the same bridge run).
   - VSync was not checked, because the user does not use it. The VSync queue depth is covered by the unit test `Presenter_TakesTheGamesFirstLatencyWait`.
-- **M2.** Streamline init, the proxy chain, Reflex, and the full PCL marker sequence, with DLSS-G off. The Streamline log is clean and Reflex is detected.
-- **M3.** NGX capture, the Lua camera app, and DLSS-G 2X on the RTX 3080 through the spoof. A debug overlay shows the motion vectors and the camera handedness. Success criteria 1 and 2 are met, and DLSS-G is off in menus and pause.
+- **M2.** Streamline init, the proxy chain, Reflex, and the full PCL marker sequence, with DLSS-G off. The Streamline log is clean and Reflex is detected. For the laptop, M2 also brings per-adapter HAGS detection, the NVIDIA-adapter check, the hybrid and video memory logging, standalone mode, and a test package with install, uninstall and log-collection scripts. The package contains no NVIDIA file; its installer downloads the Streamline DLLs from NVIDIA on the target machine, as in section 12.
+- **M3.** NGX capture, the Lua camera app, and DLSS-G 2X on the RTX 3080 and on the laptop through the spoof, with the video memory guard (6.11). A debug overlay shows the motion vectors and the camera handedness. Success criteria 1 and 2 are met on both machines, and DLSS-G is off in menus and pause. Pacing is measured as displayed fps with PresentMon or FrameView, not as presents, because upstream issue #541 reports broken pacing for another DX11-to-D3D12 bridge with this spoof.
 - **M4.** Panel, hotkey, installer, uninstaller, README, CI with attestations, and release v0.1.0.
 
 ## 12. Build, packaging and release
@@ -467,8 +482,8 @@ DLSS-G itself is exercised only in-game, by the user.
 - **Installer.** `install.ps1` is started by `install.bat` as `powershell -NoProfile -ExecutionPolicy Bypass -File`. It refuses to run while `acs.exe` is running.
   - **Phase A: checks and staging.** Nothing in the game folder changes in this phase.
     1. Find Assetto Corsa through the Steam library folders.
-    2. Check the CSP version, and that ReShade with add-on support is installed as `dxgi.dll`. If ReShade is missing, explain where to get it.
-    3. Check HAGS, the driver version and Smart App Control (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState`). At 1 (On) or 2 (Evaluation), refuse and explain: SAC blocks the unsigned bridge DLL, which makes ReShade crash at start, and the self-signed spoof (`Bad Image 0xc0e90002`). Report the compatibility settings from 6.10.
+    2. Check the CSP version and pick the mode: ReShade mode when ReShade with add-on support is `dxgi.dll`, standalone mode when the game folder has no `dxgi.dll`. When another `dxgi.dll` is present, stop and explain.
+    3. Check HAGS per adapter (as in 6.10), the driver version (warn below 581.29 on hybrid laptops and below R580 with the spoof) and Smart App Control (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState`). At 1 (On) or 2 (Evaluation), refuse and explain: SAC blocks the unsigned bridge DLL, which makes ReShade crash at start, and the self-signed spoof (`Bad Image 0xc0e90002`). Report the compatibility settings from 6.10.
     4. List any `nvngx_*.dll` and `sl.*.dll` in the game root and warn that NGX may load that `nvngx_dlssg.dll` instead of ours. Never move or delete them, because CSP and other packages use them.
     5. Download into `%TEMP%\ac-dlssg-setup\`, with TLS 1.2 forced, `$ProgressPreference='SilentlyContinue'`, 3 retries and a 600 MB free-space check:
        - `streamline-sdk-v2.14.1.zip` from the NVIDIA-RTX/Streamline GitHub release. Verify SHA-256 `92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b`. Show `license.txt`, `bin/x64/nvngx_dlss.license.txt` (the NVIDIA RTX SDKs License, which covers `nvngx_dlssg.dll`) and `bin/x64/reflex.license.txt`, and continue only on explicit acceptance. Extract only the production `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll` and `nvngx_dlssg.dll`, plus those three license files.
@@ -480,7 +495,7 @@ DLSS-G itself is exercised only in-game, by the user.
     2. copy the file being replaced into `install\backup\`;
     3. write the new file as `<name>.new`, verify its hash, and rename it over the target.
 
-    Order: `ac-dlssg\sl\`, the spoof files, the Lua app, `ac-dlssg.dll`, and `ReShade.ini` last. Finally copy `uninstall.ps1` and `uninstall.bat` into `install\`. On any failure, replay the journal in reverse and exit with an error.
+    Order: `ac-dlssg\sl\`, the spoof files, the Lua app, then in ReShade mode `ac-dlssg.dll` and `ReShade.ini` last, or in standalone mode the bridge as `dxgi.dll` last. The manifest records the mode. Finally copy `uninstall.ps1` and `uninstall.bat` into `install\`. On any failure, replay the journal in reverse and exit with an error.
   - **ReShade.ini edits are key-level only.**
     - **Which file.** Resolve ReShade's base path the way ReShade 6.8.0 does: `[INSTALL] BasePath` from `<game>\ReShade.ini`, relative to the game folder; else the `RESHADE_BASE_PATH_OVERRIDE` environment variable; else the game folder. Edit `<base>\ReShade.ini`.
     - **Another chained DLL.** If `[PROXY] ProxyLibrary` is non-empty and does not name our DLL, stop and explain that another DLL is already chained behind ReShade.
@@ -493,8 +508,8 @@ DLSS-G itself is exercised only in-game, by the user.
 
     The `[PROXY]` values recorded at first install stay the values the uninstaller restores. If bridge files exist without a manifest, the installer stops and asks the user to remove them, or to set `EnableProxyLibrary=0`, first.
 - **Uninstaller.** `<game>\ac-dlssg\install\uninstall.bat` also ships in the release zip. It runs from a copy in `%TEMP%` and refuses to run while `acs.exe` is running.
-  1. It reverts the two `[PROXY]` keys first, and only if they still hold the values the installer wrote; otherwise it leaves them and reports. It never restores a whole-file copy of `ReShade.ini`, and it leaves an absent `ReShade.ini` absent.
-  2. It re-reads the file, and continues only once ReShade no longer loads our DLL.
+  1. In ReShade mode, it reverts the two `[PROXY]` keys first, and only if they still hold the values the installer wrote; otherwise it leaves them and reports. It never restores a whole-file copy of `ReShade.ini`, and it leaves an absent `ReShade.ini` absent.
+  2. It re-reads the file, and continues only once ReShade no longer loads our DLL. In standalone mode, it first removes `<game>\dxgi.dll` when its SHA-256 is the recorded "after" hash, and otherwise stops and reports.
   3. It reverts the manifest entries in reverse. It skips entries whose file is already gone, and it leaves in place and reports any file whose SHA-256 differs from the recorded "after" hash.
   4. It deletes `<game>\ac-dlssg\`, and, if the user agrees, `<game>\dlssg_sm86\` and `%LOCALAPPDATA%\DlssgSm86\`.
 
@@ -516,6 +531,10 @@ DLSS-G itself is exercised only in-game, by the user.
 | The hidden-chain copy plus the single shared back buffer cost too much | M1 | Ring of shared back buffers |
 | UI artifacts too visible without a HUD-less buffer | M3 | HUD-less capture (v2) |
 | The NGX snippet or Streamline override comes from elsewhere | M2 | Logged and shown in the panel; the user clears the override |
+| Standalone mode misses a `dxgi.dll` export that `d3d11.dll`, `d3d12.dll` or Streamline imports | M2 | Export list checked against their import tables; test-app scenario |
+| Hybrid presentation (cross-adapter present, or `sl.dlss_g`'s hybrid path with our proxy chain) misbehaves | M2 and M3 on the laptop | Compare with an external monitor on the NVIDIA-wired HDMI port; report upstream |
+| 4 GB of video memory overflows with DLSS-G | M3 on the laptop | The video memory guard keeps DLSS-G off; lower CSP settings |
+| Frame pacing with the spoof behind a DX11-to-D3D12 bridge (upstream #541) | M3 | Measure displayed fps; A/B the spoof's `SpoofArchValue` |
 
 ## 15. Planned after v1
 
