@@ -1221,6 +1221,10 @@ TEST(Child_SlPresenter_TagWithoutFgTagsCaptures) {
     CHECK(!log.Matching({"camera: first fresh snapshot: pos (0.000, 0.000, 0.200) fwd (0.0000, 0.0000, 1.0000)"})
                .empty());
     CHECK_EQ(log.Matching({" constants: "}).size(), 1u);
+    // DLSS-G is off for a lasting reason, but with tag_without_fg the frames
+    // that could not be tagged (frame 1: no fresh camera yet) are named by
+    // the throttled per-frame WARN; the first one of its reason is logged.
+    CHECK(!log.Matching({"] WARN fg: frame without DLSS-G: camera not fresh"}).empty());
     CHECK_EQ(log.Matching({"fg: first tags and constants set (frame 2)"}).size(), 1u);
     const char* offReason = supported ? "fg: DLSS-G off (off by the user" : "fg: DLSS-G off (not supported on this adapter)";
     CHECK_EQ(log.Matching({offReason}).size(), 1u);

@@ -68,6 +68,16 @@ FgGateResult DecideFg(const FgGateInputs& in);
 // when a capture, a fresh camera and valid constants exist.
 bool ShouldTag(const FgGateInputs& in, const FgGateResult& gate, bool tagWithoutFg);
 
+// With tag_without_fg, when a lasting reason keeps DLSS-G off (gate.perFrame
+// false), the first per-frame condition of DecideFg that fails (4 and 6-14
+// above), as if DLSS-G were supported, wanted and allowed: why this frame's
+// inputs are incomplete. The presenter logs it as the throttled "fg: frame
+// without DLSS-G" WARN, so a run where DLSS-G cannot turn on still names the
+// frames that could not be tagged. Empty otherwise: without tag_without_fg,
+// while DLSS-G is on, when the gate's own reason is already per frame, or
+// when every per-frame condition holds.
+std::string TagPathReason(const FgGateInputs& in, const FgGateResult& gate, bool tagWithoutFg);
+
 // ---------------------------------------------------------------- capture slots
 
 enum class SlotAction {

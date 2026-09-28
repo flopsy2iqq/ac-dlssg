@@ -143,6 +143,44 @@ TEST(FgGate_TagWithoutFg) {
     CHECK(ShouldTag(in, DecideFg(in), true));
 }
 
+// With tag_without_fg a lasting reason (support, the user's switch, a failure
+// status, the aspect test, the video memory guard) keeps DLSS-G off, and the
+// per-frame reason behind it is what the throttled WARN names: why this
+// frame's inputs are incomplete (the test app's fg-no-camera).
+TEST(FgGate_TagPathReasonNamesThePerFrameReasonBehindALastingOne) {
+    FgGateInputs in = AllowAll();
+    in.supported = false;
+    in.cameraOk = false;
+    in.cameraReason = "not written";
+    const FgGateResult gate = DecideFg(in);
+    CHECK(!gate.on);
+    CHECK(!gate.perFrame);
+    CHECK_EQ(TagPathReason(in, gate, true), std::string("camera: not written"));
+    // Without tag_without_fg the lasting reason is all there is.
+    CHECK(TagPathReason(in, gate, false).empty());
+    // Every lasting reason at once still leaves the per-frame one.
+    in.userOn = false;
+    in.stateFailure = "eFailResolutionTooLow";
+    in.aspectRefusal = "aspect: x";
+    in.vramRefusal = "video memory: x";
+    CHECK_EQ(TagPathReason(in, DecideFg(in), true), std::string("camera: not written"));
+    // A stall is a per-frame reason too, and comes first.
+    in.stalled = true;
+    CHECK_EQ(TagPathReason(in, DecideFg(in), true), std::string("D3D12 stall"));
+    // Complete inputs: nothing to report.
+    in.stalled = false;
+    in.cameraOk = true;
+    CHECK(TagPathReason(in, DecideFg(in), true).empty());
+    // When the gate's own reason is per frame, it is already the WARN.
+    FgGateInputs pf = AllowAll();
+    pf.cameraFresh = false;
+    const FgGateResult stale = DecideFg(pf);
+    CHECK(stale.perFrame);
+    CHECK(TagPathReason(pf, stale, true).empty());
+    // DLSS-G on: nothing to report.
+    CHECK(TagPathReason(AllowAll(), DecideFg(AllowAll()), true).empty());
+}
+
 // ---------------------------------------------------------------- capture slots
 
 TEST(SlotRule_CopyWhenTheSourcesMatch) {

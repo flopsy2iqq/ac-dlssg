@@ -47,6 +47,19 @@ bool ShouldTag(const FgGateInputs& in, const FgGateResult& gate, bool tagWithout
     return tagWithoutFg && in.captured && in.cameraOk && in.cameraFresh && in.constantsOk;
 }
 
+std::string TagPathReason(const FgGateInputs& in, const FgGateResult& gate, bool tagWithoutFg) {
+    if (!tagWithoutFg || gate.on || gate.perFrame) return {};
+    // The gate with every lasting condition met leaves only the per-frame ones.
+    FgGateInputs perFrame = in;
+    perFrame.supported = true;
+    perFrame.userOn = true;
+    perFrame.stateFailure.clear();
+    perFrame.aspectRefusal.clear();
+    perFrame.vramRefusal.clear();
+    const FgGateResult r = DecideFg(perFrame);
+    return r.on ? std::string() : r.reason;
+}
+
 SlotAction DecideSlot(bool matches, bool forceRecreate, bool hasTextures, uint64_t progress, uint64_t lastUse) {
     if (matches && !forceRecreate) return SlotAction::Copy;
     if (!hasTextures || progress >= lastUse) return SlotAction::Recreate;

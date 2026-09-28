@@ -346,6 +346,7 @@ struct D3D12Presenter::Impl {
         bool tag = false;  // tags and constants are set
         std::string reason;
         bool perFrame = false;
+        std::string tagPathReason;  // tag_without_fg: why the inputs are incomplete (TagPathReason)
         sl::Constants constants;
     };
 
@@ -360,7 +361,7 @@ struct D3D12Presenter::Impl {
     FrameDecision Decide(const FrameCapture& cap);
     VramCheck RunVramCheck();
     bool SetMode(bool on);
-    void LogMode(bool on, const std::string& reason, bool perFrame);
+    void LogMode(bool on, const std::string& reason, bool perFrame, const std::string& tagPathReason = {});
     void PollState();
     void CountFrame(const FrameCapture& cap, bool tagged, bool fg);
     void PresentAgain(D3D12Presenter& self);
@@ -806,6 +807,7 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     d.tag = token && ShouldTag(g, gate, config.tag_without_fg);
     d.reason = gate.reason;
     d.perFrame = gate.perFrame;
+    d.tagPathReason = TagPathReason(g, gate, config.tag_without_fg);
     return d;
 }
 
@@ -850,8 +852,11 @@ bool D3D12Presenter::Impl::SetMode(bool on) {
 }
 
 // "fg: DLSS-G on" / "fg: DLSS-G off (<reason>)" on every mode change, and
-// when a lasting off reason changes; per-frame reasons are throttled WARNs.
-void D3D12Presenter::Impl::LogMode(bool on, const std::string& reason, bool perFrame) {
+// when a lasting off reason changes; per-frame reasons are throttled WARNs,
+// and so is tagPathReason, the per-frame reason behind a lasting one that
+// tag_without_fg reports (TagPathReason).
+void D3D12Presenter::Impl::LogMode(bool on, const std::string& reason, bool perFrame,
+                                   const std::string& tagPathReason) {
     if (on) {
         if (!mode_logged || !logged_on) LOGI("fg: DLSS-G on");
         mode_logged = true;
@@ -865,8 +870,9 @@ void D3D12Presenter::Impl::LogMode(bool on, const std::string& reason, bool perF
     }
     mode_logged = true;
     logged_on = false;
-    if (perFrame && frame_off_throttle.ShouldLog(reason, GetTickCount64()))
-        LOGW("fg: frame without DLSS-G: %s", reason.c_str());
+    const std::string& warn = perFrame ? reason : tagPathReason;
+    if (!warn.empty() && frame_off_throttle.ShouldLog(warn, GetTickCount64()))
+        LOGW("fg: frame without DLSS-G: %s", warn.c_str());
 }
 
 // Every 60 frames while DLSS-G is on (spec 6.8, 9).
@@ -1256,7 +1262,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
             reason = "slDLSSGSetOptions(eOn) failed";
             perFrame = false;
         }
-        LogMode(fgThisFrame, reason, perFrame);
+        LogMode(fgThisFrame, reason, perFrame, dec.tagPathReason);
     }
 
     hr = cl->Close();
