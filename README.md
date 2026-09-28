@@ -1,4 +1,4 @@
-# ac-dlssg-bridge
+# ac-dlssg
 
 **Status: design stage. There is nothing to install yet.**
 

@@ -1,4 +1,4 @@
-# ac-dlssg-bridge: design
+# ac-dlssg: design
 
 Date: 2026-09-28. Status: design approved in conversation; revised after an adversarial source review (39 confirmed findings applied); awaiting the user's review of this document.
 
@@ -89,15 +89,15 @@ acs.exe (D3D11)
                                                                ├─ GetBuffer(0): buffer 0 of a hidden D3D11 swap chain (never presented)
                                                                └─ Present ──> copy to a shared texture ──> D3D12Presenter
  CSP DLSS call ──> _nvngx.dll EvaluateFeature (hooked) ──> NgxCapture: depth + MV copied to shared capture slots
- CSP Lua app ──> Local\AcDlssgBridge.Camera.v1 ──> CameraChannel
+ CSP Lua app ──> Local\AcDlssg.Camera.v1 ──> CameraChannel
  D3D12Presenter: shared-fence wait ─> copy to SL chain ─> tags + constants ─> SL proxy Present ─> DLSS-G
 ```
 
-One DLL, `ac-dlssg-bridge.dll`, sits in the game folder. It is ReShade's `ProxyLibrary`, and it also registers itself as a ReShade add-on. Runtime data lives in `<game>\ac-dlssg-bridge\`:
+One DLL, `ac-dlssg.dll`, sits in the game folder. It is ReShade's `ProxyLibrary`, and it also registers itself as a ReShade add-on. Runtime data lives in `<game>\ac-dlssg\`:
 - `sl\` holds the pinned Streamline files;
 - `logs\` holds the logs;
 - `install\` holds the install manifest, backups and the uninstaller;
-- `ac-dlssg-bridge.ini` is the configuration.
+- `ac-dlssg.ini` is the configuration.
 
 ## 6. Components
 
@@ -236,13 +236,13 @@ A complete `IDXGISwapChain4` COM object. It has all 41 vtable slots and its own 
   - The shared fence is then signalled. The slot's fence value, the evaluate parameters and the latched camera snapshot (6.6) pair with the next non-test Present.
 - **Deferred contexts.** If the context is not immediate, capture is disabled and logged.
 
-### 6.6 CameraChannel (`camera_channel.cpp`) and the Lua app (`apps/lua/AcDlssgBridge/`)
-- **The section.** At bootstrap the DLL calls `CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096, L"Local\\AcDlssgBridge.Camera.v1")`.
+### 6.6 CameraChannel (`camera_channel.cpp`) and the Lua app (`apps/lua/AcDlssg/`)
+- **The section.** At bootstrap the DLL calls `CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096, L"Local\\AcDlssg.Camera.v1")`.
   - It must be `PAGE_READWRITE`, because CSP opens the existing object and maps it for read and write.
   - The DLL itself maps only a `FILE_MAP_READ` view.
   - 4096 bytes is larger than the Lua layout. An existing section keeps its size when CSP opens it.
 - **The Lua app.** `manifest.ini` sets `[CORE] LAZY = NONE` and declares one hidden stub window, so CSP always loads the app. The main file:
-  - opens the section with `ac.writeMemoryMappedFile('AcDlssgBridge.Camera.v1', LAYOUT, true)` and keeps a global reference;
+  - opens the section with `ac.writeMemoryMappedFile('AcDlssg.Camera.v1', LAYOUT, true)` and keeps a global reference;
   - writes from `render.onSceneReady` (before the main render), with `script.update` as a fallback;
   - writes `pos` from `ac.getSim().cameraPosition`, which is in world space.
 - **Layout.** A C struct-body string, mirrored by a C++ struct with `static_assert` on `sizeof` and `offsetof`:
@@ -282,10 +282,10 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
 
 ### 6.8 StreamlineRuntime (`streamline_runtime.cpp`)
 - **Loading.**
-  - It loads `ac-dlssg-bridge\sl\sl.interposer.dll` by absolute path, after `sl::security::verifyEmbeddedSignature` succeeds.
+  - It loads `ac-dlssg\sl\sl.interposer.dll` by absolute path, after `sl::security::verifyEmbeddedSignature` succeeds.
   - It resolves the `sl*` exports with `GetProcAddress`.
   - It resolves the feature functions with `slGetFeatureFunction` after `slSetD3DDevice`: `slDLSSGSetOptions`, `slDLSSGGetState`, `slReflexSetOptions`, `slReflexSleep` and `slPCLSetMarker`.
-- **What runs.** Streamline plugins (`sl.*.dll`) load only from `ac-dlssg-bridge\sl\`, except when an override described below is active. The NGX snippet is not pinned: NGX also searches the application folder (the game root) and its model store in `%ProgramData%\NVIDIA\NGX\models`, whatever `pathsToPlugins` and the OTA flags say. On RTX 30, the spoof also redirects `nvngx_dlssg.dll` to its bundled runtime. After `slSetD3DDevice`, and again when DLSS-G first reports active, the bridge logs the full path and file version of every loaded `sl.*.dll` and `nvngx_dlssg*` module, and shows any that sit outside `ac-dlssg-bridge\sl\` in the panel.
+- **What runs.** Streamline plugins (`sl.*.dll`) load only from `ac-dlssg\sl\`, except when an override described below is active. The NGX snippet is not pinned: NGX also searches the application folder (the game root) and its model store in `%ProgramData%\NVIDIA\NGX\models`, whatever `pathsToPlugins` and the OTA flags say. On RTX 30, the spoof also redirects `nvngx_dlssg.dll` to its bundled runtime. After `slSetD3DDevice`, and again when DLSS-G first reports active, the bridge logs the full path and file version of every loaded `sl.*.dll` and `nvngx_dlssg*` module, and shows any that sit outside `ac-dlssg\sl\` in the panel.
 - **`slInit`.** It runs in `Bootstrap`, never in `DllMain`.
   - Flags: `eUseManualHooking | eUseFrameBasedResourceTagging | eDisableCLStateTracking`. `eAllowOTA` and `eLoadDownloadedPlugins` are not set.
   - Features: `kFeatureDLSS_G`, `kFeatureReflex` and `kFeaturePCL`.
@@ -330,8 +330,8 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
   - **Other add-ons:** `dlss5-bridge.addon64` or `renodx-dlss5.addon64` is loaded.
   - **System:** hardware-accelerated GPU scheduling is off; the GPU is unsupported; or the GPU is an RTX 30 without the spoof.
 - **Runtime-only switches.** The same aspect test is repeated with NGX `OutWidth/OutHeight` after every `ResizeBuffers` and every counted `CreateFeature`. The Lua flags (VR, triple screen) arrive after the swap chain exists. Both can only switch DLSS-G off; the proxy stays.
-- **Config.** `ac-dlssg-bridge\ac-dlssg-bridge.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`.
-- **Log.** `ac-dlssg-bridge\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates); and every state change.
+- **Config.** `ac-dlssg\ac-dlssg.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`.
+- **Log.** `ac-dlssg\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates); and every state change.
 
 ## 7. Per-frame data flow
 
@@ -385,7 +385,7 @@ Bridge frame N. Test presents do not take part (6.3).
 | The D3D12 queue makes no progress for 500 ms (seen by the watchdog, a Present or a CPU wait) | CPU-signal the shared fence to `pendingWait` so CSP's D3D11 queue is released, turn DLSS-G off, and stop delivering until `progress` catches up (6.4). |
 | No progress for 4 s, or device removal | Stop the presenter, log `GetDeviceRemovedReason`, and return `DXGI_ERROR_DEVICE_HUNG` or `DXGI_ERROR_DEVICE_REMOVED` from Present, as a real swap chain would. |
 | Exception in a hook | Every hook body is `noexcept` and catches everything. It logs and forwards to the original. |
-| Our DLL missing, blocked or quarantined | Not recoverable by the bridge; ReShade crashes at start. Recovery: run `<game>\ac-dlssg-bridge\install\uninstall.bat`, or set `EnableProxyLibrary=0` in `ReShade.ini`. Documented in the README under "Game crashes at start". |
+| Our DLL missing, blocked or quarantined | Not recoverable by the bridge; ReShade crashes at start. Recovery: run `<game>\ac-dlssg\install\uninstall.bat`, or set `EnableProxyLibrary=0` in `ReShade.ini`. Documented in the README under "Game crashes at start". |
 
 ## 10. RTX 30 support through dlssg_for_sm86
 
@@ -434,7 +434,7 @@ DLSS-G itself is exercised only in-game, by the user.
 
 ## 12. Build, packaging and release
 
-- **Build.** C++20, MSVC (VS 2022 Build Tools) and CMake, Windows SDK 10.0.22621 or newer, static CRT (6.1). CI fails the build if `dumpbin /dependents` on `ac-dlssg-bridge.dll` lists a DLL outside the allow-list, which forbids for example `vcruntime*`, `msvcp*`, `d3dcompiler_*`, `dxgi.dll` and `VERSION.dll`.
+- **Build.** C++20, MSVC (VS 2022 Build Tools) and CMake, Windows SDK 10.0.22621 or newer, static CRT (6.1). CI fails the build if `dumpbin /dependents` on `ac-dlssg.dll` lists a DLL outside the allow-list, which forbids for example `vcruntime*`, `msvcp*`, `d3dcompiler_*`, `dxgi.dll` and `VERSION.dll`.
 - **Third-party code.**
   - Vendored: ReShade `include/` (BSD-3-Clause OR MIT) and Dear ImGui headers (MIT).
   - Fetched at configure time: Streamline headers from the pinned release (MIT).
@@ -442,13 +442,13 @@ DLSS-G itself is exercised only in-game, by the user.
   - `THIRD_PARTY_NOTICES.txt` in the repository and in the release zip reproduces the ReShade, Dear ImGui, Streamline and dlss5-bridge notices.
 - **CI.** GitHub Actions on `windows-latest` builds and tests on every push. On a tag, it:
   - builds the zip;
-  - creates GitHub artifact attestations for the zip and for `ac-dlssg-bridge.dll` with `actions/attest-build-provenance` (permissions `id-token: write, contents: write, attestations: write`);
+  - creates GitHub artifact attestations for the zip and for `ac-dlssg.dll` with `actions/attest-build-provenance` (permissions `id-token: write, contents: write, attestations: write`);
   - writes both SHA-256 values into the release notes.
 
   Anyone can then check a downloaded file with `gh attestation verify <file> --repo flopsy2iqq/ac-dlssg`.
 - **Release zip:**
-  - `ac-dlssg-bridge.dll`;
-  - `apps/lua/AcDlssgBridge/`;
+  - `ac-dlssg.dll`;
+  - `apps/lua/AcDlssg/`;
   - `install.ps1` and `install.bat`;
   - `uninstall.ps1` and `uninstall.bat`;
   - `README.md`, `LICENSE`, `EXCEPTIONS.md` and `THIRD_PARTY_NOTICES.txt`.
@@ -458,33 +458,33 @@ DLSS-G itself is exercised only in-game, by the user.
     2. Check the CSP version, and that ReShade with add-on support is installed as `dxgi.dll`. If ReShade is missing, explain where to get it.
     3. Check HAGS, the driver version and Smart App Control (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState`). At 1 (On) or 2 (Evaluation), refuse and explain: SAC blocks the unsigned bridge DLL, which makes ReShade crash at start, and the self-signed spoof (`Bad Image 0xc0e90002`). Report the compatibility settings from 6.10.
     4. List any `nvngx_*.dll` and `sl.*.dll` in the game root and warn that NGX may load that `nvngx_dlssg.dll` instead of ours. Never move or delete them, because CSP and other packages use them.
-    5. Download into `%TEMP%\ac-dlssg-bridge-setup\`, with TLS 1.2 forced, `$ProgressPreference='SilentlyContinue'`, 3 retries and a 600 MB free-space check:
+    5. Download into `%TEMP%\ac-dlssg-setup\`, with TLS 1.2 forced, `$ProgressPreference='SilentlyContinue'`, 3 retries and a 600 MB free-space check:
        - `streamline-sdk-v2.14.1.zip` from the NVIDIA-RTX/Streamline GitHub release. Verify SHA-256 `92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b`. Show `license.txt`, `bin/x64/nvngx_dlss.license.txt` (the NVIDIA RTX SDKs License, which covers `nvngx_dlssg.dll`) and `bin/x64/reflex.license.txt`, and continue only on explicit acceptance. Extract only the production `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll` and `nvngx_dlssg.dll`, plus those three license files.
        - With consent, the spoof files (section 10).
 
        Any failure in phase A ends the installer with nothing changed.
-  - **Phase B: journaled changes.** Create `<game>\ac-dlssg-bridge\install\` and write `manifest.json` before the first change. For each change:
+  - **Phase B: journaled changes.** Create `<game>\ac-dlssg\install\` and write `manifest.json` before the first change. For each change:
     1. append and flush an entry: action, path relative to the game folder, SHA-256 before, SHA-256 after, backup name;
     2. copy the file being replaced into `install\backup\`;
     3. write the new file as `<name>.new`, verify its hash, and rename it over the target.
 
-    Order: `ac-dlssg-bridge\sl\`, the spoof files, the Lua app, `ac-dlssg-bridge.dll`, and `ReShade.ini` last. Finally copy `uninstall.ps1` and `uninstall.bat` into `install\`. On any failure, replay the journal in reverse and exit with an error.
+    Order: `ac-dlssg\sl\`, the spoof files, the Lua app, `ac-dlssg.dll`, and `ReShade.ini` last. Finally copy `uninstall.ps1` and `uninstall.bat` into `install\`. On any failure, replay the journal in reverse and exit with an error.
   - **ReShade.ini edits are key-level only.**
     - **Which file.** Resolve ReShade's base path the way ReShade 6.8.0 does: `[INSTALL] BasePath` from `<game>\ReShade.ini`, relative to the game folder; else the `RESHADE_BASE_PATH_OVERRIDE` environment variable; else the game folder. Edit `<base>\ReShade.ini`.
     - **Another chained DLL.** If `[PROXY] ProxyLibrary` is non-empty and does not name our DLL, stop and explain that another DLL is already chained behind ReShade.
     - **The edit.** Record the old `EnableProxyLibrary` and `ProxyLibrary` values in the manifest. Replace those lines in place, and add them under `[PROXY]` only when they are missing. Never write a second line for a key. Write the file as UTF-8 and leave every other byte unchanged.
-    - **The value.** `ProxyLibrary=ac-dlssg-bridge.dll` when the base path is the game folder; otherwise the absolute path of `<game>\ac-dlssg-bridge.dll`.
+    - **The value.** `ProxyLibrary=ac-dlssg.dll` when the base path is the game folder; otherwise the absolute path of `<game>\ac-dlssg.dll`.
   - **Re-install and upgrade.** If `manifest.json` exists, the installer runs as an upgrade. It never rewrites the "before" data of existing entries or the files in `install\backup\`. For each target file:
     - if its SHA-256 equals the recorded "after" hash, it is ours: replace it without a new backup and update "after";
     - if the manifest knows the path but the hash differs, someone changed it: report it, and replace it only with consent; the first backup stays the one the uninstaller restores;
     - if the manifest does not know the path, back it up as a new original and add an entry.
 
     The `[PROXY]` values recorded at first install stay the values the uninstaller restores. If bridge files exist without a manifest, the installer stops and asks the user to remove them, or to set `EnableProxyLibrary=0`, first.
-- **Uninstaller.** `<game>\ac-dlssg-bridge\install\uninstall.bat` also ships in the release zip. It runs from a copy in `%TEMP%` and refuses to run while `acs.exe` is running.
+- **Uninstaller.** `<game>\ac-dlssg\install\uninstall.bat` also ships in the release zip. It runs from a copy in `%TEMP%` and refuses to run while `acs.exe` is running.
   1. It reverts the two `[PROXY]` keys first, and only if they still hold the values the installer wrote; otherwise it leaves them and reports. It never restores a whole-file copy of `ReShade.ini`, and it leaves an absent `ReShade.ini` absent.
   2. It re-reads the file, and continues only once ReShade no longer loads our DLL.
   3. It reverts the manifest entries in reverse. It skips entries whose file is already gone, and it leaves in place and reports any file whose SHA-256 differs from the recorded "after" hash.
-  4. It deletes `<game>\ac-dlssg-bridge\`, and, if the user agrees, `<game>\dlssg_sm86\` and `%LOCALAPPDATA%\DlssgSm86\`.
+  4. It deletes `<game>\ac-dlssg\`, and, if the user agrees, `<game>\dlssg_sm86\` and `%LOCALAPPDATA%\DlssgSm86\`.
 
 ## 13. Licensing
 
