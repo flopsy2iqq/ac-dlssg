@@ -60,6 +60,7 @@ add_library(acdb_core STATIC
     src/system_dxgi.cpp
     src/bootstrap.cpp
     src/vtable_patch.cpp
+    src/inline_hook.cpp
     src/factory_hook.cpp
     src/hidden_chain.cpp
     src/fence_pair.cpp
@@ -93,6 +94,7 @@ add_executable(acdb_tests
     tests/test_present_flags.cpp
     tests/test_latency_semaphore.cpp
     tests/test_vtable_patch.cpp
+    tests/test_inline_hook.cpp
     tests/test_factory_hook.cpp
     tests/test_hidden_chain.cpp
     tests/test_fence_pair.cpp
