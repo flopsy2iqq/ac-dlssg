@@ -781,6 +781,67 @@ TEST(CaptureSlots_PingPongMotionVectorsAcrossTheRing) {
     CHECK_EQ(slots->CachedSourceViews(), size_t{1});
 }
 
+// A depth source without BIND_SHADER_RESOURCE is read through a cached copy;
+// that copy must be refreshed on every Copy, not only when it is created.
+TEST(CaptureSlots_CopyRereadsADepthSourceWithoutAShaderBinding) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    ID3D11Device* dev = d.device11.Get();
+    ID3D11DeviceContext* ctx = d.ctx11.Get();
+    std::string err;
+    auto slots = CaptureSlots::Create(dev, d.device12.Get(), &err);
+    REQUIRE(slots != nullptr);
+    const UINT w = 24;
+    const UINT h = 20;
+    Sources base = MakeCspSources(d, w, h, w, h);
+    REQUIRE(base.mvec);
+    std::vector<float> first = FloatDepth(w, h);
+    std::vector<float> second(first.size());
+    for (size_t i = 0; i < first.size(); ++i) second[i] = 1.0f - first[i];
+    auto depth = MakeFilled(dev, ctx, w, h, DXGI_FORMAT_D32_FLOAT, D3D11_BIND_DEPTH_STENCIL, DXGI_FORMAT_R32_TYPELESS,
+                            first.data(), 4);
+    REQUIRE(depth);
+    REQUIRE(slots->Recreate(0, depth.Get(), base.mvec.Get(), &err));
+    REQUIRE(slots->Copy(ctx, 0, depth.Get(), base.mvec.Get(), &err));
+    CHECK(SameFloats(AsFloats(ReadBack11(dev, ctx, slots->Depth11(0), 4)), first));
+
+    // CSP renders the next frame into the same depth texture.
+    auto next = MakeTex(dev, w, h, DXGI_FORMAT_R32_TYPELESS, 0, 1, 1, second.data(), w * 4);
+    REQUIRE(next);
+    ctx->CopyResource(depth.Get(), next.Get());
+    REQUIRE(slots->Copy(ctx, 0, depth.Get(), base.mvec.Get(), &err));
+    CHECK(SameFloats(AsFloats(ReadBack11(dev, ctx, slots->Depth11(0), 4)), second));
+}
+
+// Two depth sources of one desc, used in turn without a Recreate: the view
+// cache must hand out each source's own view.
+TEST(CaptureSlots_CopyReadsEachOfTwoAlternatingDepthSources) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    ID3D11Device* dev = d.device11.Get();
+    ID3D11DeviceContext* ctx = d.ctx11.Get();
+    std::string err;
+    auto slots = CaptureSlots::Create(dev, d.device12.Get(), &err);
+    REQUIRE(slots != nullptr);
+    const UINT w = 20;
+    const UINT h = 12;
+    Sources a = MakeCspSources(d, w, h, w, h);
+    REQUIRE(a.depth && a.mvec);
+    std::vector<float> otherDepth = FloatDepth(w, h);
+    for (float& v : otherDepth) v = 1.0f - v;
+    auto b = MakeFilled(dev, ctx, w, h, DXGI_FORMAT_R32_TYPELESS, D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE,
+                        DXGI_FORMAT_R32_TYPELESS, otherDepth.data(), 4);
+    REQUIRE(b);
+    REQUIRE(slots->Recreate(0, a.depth.Get(), a.mvec.Get(), &err));
+    for (int round = 0; round < 2; ++round) {
+        REQUIRE(slots->Copy(ctx, 0, a.depth.Get(), a.mvec.Get(), &err));
+        CHECK(SameFloats(AsFloats(ReadBack11(dev, ctx, slots->Depth11(0), 4)), a.expected_depth));
+        REQUIRE(slots->Copy(ctx, 0, b.Get(), a.mvec.Get(), &err));
+        CHECK(SameFloats(AsFloats(ReadBack11(dev, ctx, slots->Depth11(0), 4)), otherDepth));
+    }
+    CHECK_EQ(slots->CachedSourceViews(), size_t{2});
+}
+
 // ------------------------------------------------------------ refusals at copy time
 
 TEST(CaptureSlots_CopyRefusesDeferredContext) {
@@ -962,6 +1023,88 @@ TEST(CaptureSlots_CopyReadsADepthBoundAsDepthStencilView) {
     ctx->OMSetRenderTargets(1, rtvs, nullptr);
     REQUIRE(slots->Copy(ctx, 0, s.depth.Get(), s.mvec.Get(), &err));
     CHECK_EQ(slots->DsvUnbinds(), 1u);
+    ctx->ClearState();
+}
+
+// The depth-stencil unbind must give back the whole output-merger state:
+// render targets with a gap between them, and the output-merger UAVs with
+// their hidden counters.
+TEST(CaptureSlots_CopyKeepsTheOutputMergerStateAroundADepthStencilUnbind) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    ID3D11Device* dev = d.device11.Get();
+    ID3D11DeviceContext* ctx = d.ctx11.Get();
+    std::string err;
+    auto slots = CaptureSlots::Create(dev, d.device12.Get(), &err);
+    REQUIRE(slots != nullptr);
+    Sources s = MakeCspSources(d, 32, 16, 32, 16);
+    REQUIRE(s.depth && s.mvec);
+    REQUIRE(slots->Recreate(0, s.depth.Get(), s.mvec.Get(), &err));
+
+    D3D11_DEPTH_STENCIL_VIEW_DESC dd{};
+    dd.Format = DXGI_FORMAT_D32_FLOAT;
+    dd.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    ComPtr<ID3D11DepthStencilView> dsv;
+    REQUIRE(SUCCEEDED(dev->CreateDepthStencilView(s.depth.Get(), &dd, &dsv)));
+    auto rt0 = MakeTex(dev, 32, 16, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET);
+    auto rt2 = MakeTex(dev, 32, 16, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET);
+    REQUIRE(rt0 && rt2);
+    ComPtr<ID3D11RenderTargetView> rtv0, rtv2;
+    REQUIRE(SUCCEEDED(dev->CreateRenderTargetView(rt0.Get(), nullptr, &rtv0)));
+    REQUIRE(SUCCEEDED(dev->CreateRenderTargetView(rt2.Get(), nullptr, &rtv2)));
+
+    D3D11_BUFFER_DESC sb{};
+    sb.ByteWidth = 64;
+    sb.Usage = D3D11_USAGE_DEFAULT;
+    sb.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    sb.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    sb.StructureByteStride = 4;
+    ComPtr<ID3D11Buffer> counterBuf;
+    REQUIRE(SUCCEEDED(dev->CreateBuffer(&sb, nullptr, &counterBuf)));
+    D3D11_UNORDERED_ACCESS_VIEW_DESC ud{};
+    ud.Format = DXGI_FORMAT_UNKNOWN;
+    ud.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+    ud.Buffer.NumElements = 16;
+    ud.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_COUNTER;
+    ComPtr<ID3D11UnorderedAccessView> omUav;
+    REQUIRE(SUCCEEDED(dev->CreateUnorderedAccessView(counterBuf.Get(), &ud, &omUav)));
+
+    ID3D11RenderTargetView* rtvs[] = {rtv0.Get(), nullptr, rtv2.Get()};
+    ID3D11UnorderedAccessView* omUavs[] = {omUav.Get()};
+    const UINT counts[] = {5};
+    ctx->OMSetRenderTargetsAndUnorderedAccessViews(3, rtvs, dsv.Get(), 3, 1, omUavs, counts);
+
+    REQUIRE(slots->Copy(ctx, 0, s.depth.Get(), s.mvec.Get(), &err));
+    CHECK_EQ(slots->DsvUnbinds(), 1u);
+
+    ID3D11RenderTargetView* rtvAfter[3] = {};
+    ComPtr<ID3D11DepthStencilView> dsvAfter;
+    ID3D11UnorderedAccessView* uavAfter[1] = {};
+    ctx->OMGetRenderTargetsAndUnorderedAccessViews(3, rtvAfter, &dsvAfter, 3, 1, uavAfter);
+    CHECK(rtvAfter[0] == rtv0.Get());
+    CHECK(rtvAfter[1] == nullptr);
+    CHECK(rtvAfter[2] == rtv2.Get());
+    CHECK(dsvAfter.Get() == dsv.Get());
+    CHECK(uavAfter[0] == omUav.Get());
+    for (auto* p : rtvAfter)
+        if (p) p->Release();
+    if (uavAfter[0]) uavAfter[0]->Release();
+
+    D3D11_BUFFER_DESC rd{};
+    rd.ByteWidth = 16;
+    rd.Usage = D3D11_USAGE_STAGING;
+    rd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Buffer> countOut;
+    REQUIRE(SUCCEEDED(dev->CreateBuffer(&rd, nullptr, &countOut)));
+    ctx->CopyStructureCount(countOut.Get(), 0, omUav.Get());
+    D3D11_MAPPED_SUBRESOURCE m{};
+    REQUIRE(SUCCEEDED(ctx->Map(countOut.Get(), 0, D3D11_MAP_READ, 0, &m)));
+    const uint32_t count = *static_cast<const uint32_t*>(m.pData);
+    ctx->Unmap(countOut.Get(), 0);
+    if (count != 5) std::printf("  output-merger UAV counter %u, expected 5\n", count);
+    CHECK_EQ(count, 5u);
+
+    CHECK(SameFloats(AsFloats(ReadBack11(dev, ctx, slots->Depth11(0), 4)), s.expected_depth));
     ctx->ClearState();
 }
 
