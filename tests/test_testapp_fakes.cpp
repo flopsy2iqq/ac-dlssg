@@ -165,6 +165,11 @@ D3D11_TEXTURE2D_DESC DescOf(ID3D11Resource* r) {
 
 }  // namespace
 
+// The test app writes the section the bridge reads.
+TEST(TestappFakes_CameraSectionIsTheBridges) {
+    CHECK(std::wstring(testapp::kCameraSectionName) == acdb::kCameraSectionName);
+}
+
 // The 8-phase Halton(2,3) sequence, centred on the pixel: phase i uses the
 // Halton index i + 1, and frame 8 starts over.
 TEST(TestappFakes_JitterIsTheEightPhaseHalton23Sequence) {

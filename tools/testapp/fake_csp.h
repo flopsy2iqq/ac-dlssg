@@ -92,6 +92,11 @@ inline CameraPose PathPose(double seconds) {
     return p;
 }
 
+// The section the Lua app opens: ac.writeMemoryMappedFile('AcDlssg.Camera.v1')
+// under CSP's Local\ prefix. It is shared by every process of the logon
+// session, a running game included.
+constexpr wchar_t kCameraSectionName[] = L"Local\\AcDlssg.Camera.v1";
+
 // The camera constants of the fake drive.
 constexpr float kFovVDeg = 56.0f;
 constexpr float kClipNear = 0.1f;
@@ -197,7 +202,8 @@ public:
         allocate_ = reinterpret_cast<AllocateFn>(GetProcAddress(module, "NVSDK_NGX_D3D11_AllocateParameters"));
         destroy_ = reinterpret_cast<DestroyFn>(GetProcAddress(module, "NVSDK_NGX_D3D11_DestroyParameters"));
         create_ = reinterpret_cast<acdb::PfnNgxCreateFeature>(GetProcAddress(module, "NVSDK_NGX_D3D11_CreateFeature"));
-        eval_ = reinterpret_cast<acdb::PfnNgxEvaluateFeature>(GetProcAddress(module, "NVSDK_NGX_D3D11_EvaluateFeature"));
+        eval_ = reinterpret_cast<acdb::PfnNgxEvaluateFeature>(
+            GetProcAddress(module, "NVSDK_NGX_D3D11_EvaluateFeature"));
         getState_ = reinterpret_cast<StateFn>(GetProcAddress(module, "FakeNgxGetState"));
         if (!allocate_ || !destroy_ || !create_ || !eval_ || !getState_) {
             if (error) *error = "the module does not export the fake NGX entry points";
