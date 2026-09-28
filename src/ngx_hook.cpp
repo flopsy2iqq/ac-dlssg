@@ -23,6 +23,9 @@ constexpr int kMaxLayers = 16;
 // CSP's; anything nested is NGX calling its own plumbing (spec 6.5).
 thread_local int t_nest = 0;
 
+// Depth of sink calls this thread is inside (it then holds sinkLock shared).
+thread_local int t_sinkDepth = 0;
+
 // Runtime-resolved imports (spec 6.1: not statically imported).
 using PfnEnumProcessModules = BOOL(WINAPI*)(HANDLE, HMODULE*, DWORD, LPDWORD);
 using PfnLdrDllNotification = void(CALLBACK*)(ULONG reason, const void* data, void* ctx);
@@ -127,10 +130,14 @@ private:
 // across a loader call (module enumeration, GetProcAddress, GetModuleHandleEx);
 // only Install, Uninstall and ProcessPendingRescan take it, never a detour.
 // recLock guards the feature records and is never held across a loader or an
-// NGX call. Order when both are held: scanLock, then recLock.
+// NGX call. Order when both are held: scanLock, then recLock. sinkLock is held
+// shared for every call into the sink and exclusive by SetSink, so SetSink
+// returns only when no call into the old sink is in progress; it is never
+// taken while scanLock or recLock is held.
 struct HookState {
     SRWLOCK scanLock = SRWLOCK_INIT;
     SRWLOCK recLock = SRWLOCK_INIT;
+    SRWLOCK sinkLock = SRWLOCK_INIT;
     Layer layers[kMaxLayers];
     std::unordered_map<uint64_t, FeatureRecord> records;
     std::atomic<NgxEvaluateSink*> sink{nullptr};
@@ -181,6 +188,27 @@ public:
 private:
     SRWLOCK* l_;
 };
+
+// Calls fn(sink) with sinkLock held shared, so SetSink can wait for it. A call
+// made from inside another sink call on this thread already holds the lock and
+// does not take it again (SRW locks are not recursive).
+template <class Fn>
+void CallSink(Fn&& fn) {
+    HookState& s = S();
+    const bool take = t_sinkDepth == 0;
+    if (take) AcquireSRWLockShared(&s.sinkLock);
+    struct Leave {
+        HookState& s;
+        bool took;
+        ~Leave() {
+            --t_sinkDepth;
+            if (took) ReleaseSRWLockShared(&s.sinkLock);
+        }
+    };
+    ++t_sinkDepth;
+    Leave leave{s, take};
+    if (NgxEvaluateSink* sink = s.sink.load(std::memory_order_acquire)) fn(sink);
+}
 
 bool ReadBytesSafe(const void* p, uint8_t* out, size_t n) {
     __try {
@@ -536,6 +564,7 @@ bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
                                GetProcAddress(nt, "LdrUnregisterDllNotification"))
                          : nullptr;
 
+    SetSink(sink);  // before any hook exists; never under scanLock
     {
         ExclusiveLock scan(&s.scanLock);
         // No callback is registered here (Uninstall unregistered it), so the
@@ -548,7 +577,6 @@ bool NgxHook::Install(NgxEvaluateSink* sink, std::string* error) {
             ExclusiveLock rec(&s.recLock);
             s.records.clear();
         }
-        s.sink.store(sink, std::memory_order_release);
         ScanLocked();
         RecountLocked();
     }
@@ -591,6 +619,7 @@ void NgxHook::Uninstall() {
         s.ldrCookie = nullptr;
     }
     s.installed.store(false, std::memory_order_release);
+    SetSink(nullptr);  // waits for sink calls in progress; never under scanLock
     ExclusiveLock scan(&s.scanLock);
     // A module that went away since the last drain is detached, never written to.
     DrainEventsLocked();
@@ -614,7 +643,6 @@ void NgxHook::Uninstall() {
         ExclusiveLock rec(&s.recLock);
         s.records.clear();
     }
-    s.sink.store(nullptr, std::memory_order_release);
     s.pendingRescan.store(false);
     s.workPending.store(false);
 }
@@ -623,14 +651,30 @@ uint32_t NgxHook::HookedModules() const { return S().hooked.load(std::memory_ord
 
 void NgxHook::SetInstallGapHookForTest(void (*fn)()) { S().installGapHook = fn; }
 
+void NgxHook::SetSink(NgxEvaluateSink* sink) {
+    HookState& s = S();
+    if (t_sinkDepth > 0) {
+        // Called from inside a sink call on this thread: this thread holds
+        // sinkLock shared, so waiting would wait on itself. Swap only.
+        s.sink.store(sink, std::memory_order_release);
+        return;
+    }
+    // Exclusive waits until every call into the old sink has returned; new calls
+    // queue behind it and then see the new sink.
+    ExclusiveLock lock(&s.sinkLock);
+    s.sink.store(sink, std::memory_order_release);
+}
+
 void NgxHook::LockStateForTest() {
     HookState& s = S();
     AcquireSRWLockExclusive(&s.scanLock);
     AcquireSRWLockExclusive(&s.recLock);
+    AcquireSRWLockExclusive(&s.sinkLock);
 }
 
 void NgxHook::UnlockStateForTest() {
     HookState& s = S();
+    ReleaseSRWLockExclusive(&s.sinkLock);
     ReleaseSRWLockExclusive(&s.recLock);
     ReleaseSRWLockExclusive(&s.scanLock);
 }
@@ -668,8 +712,7 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
             ExclusiveLock rec(&s.recLock);
             s.records[key] = FeatureRecord{supersampling, info.createFlags};
         }
-        NgxEvaluateSink* sink = s.sink.load(std::memory_order_acquire);
-        if (supersampling && sink) sink->OnCreateFeature(key, info);
+        if (supersampling) CallSink([&](NgxEvaluateSink* sink) { sink->OnCreateFeature(key, info); });
     } catch (...) {
     }
     return r;
@@ -753,8 +796,7 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         int reset = 0;
         if (params->Get(ngxkey::kReset, &reset) == kNgxSuccess) in.reset = reset != 0;
 
-        NgxEvaluateSink* sink = s.sink.load(std::memory_order_acquire);
-        if (sink) sink->OnEvaluate(in);
+        CallSink([&](NgxEvaluateSink* sink) { sink->OnEvaluate(in); });
     } catch (...) {
     }
     return r;

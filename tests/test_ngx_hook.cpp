@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <d3d11.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -478,6 +479,116 @@ TEST(NgxHook_ReusedBaseIsNotTakenForTheOldModule) {
     CHECK_EQ(Create(b)(nullptr, kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);  // B still runs
     CHECK_EQ(sb->createCalls, 2L);
     FreeLibrary(b);
+}
+
+// SetSink swaps the sink, and when it returns no call into the old sink is in
+// progress: the presenter calls SetSink(nullptr) and is then destroyed.
+namespace {
+struct SlowSink : NgxEvaluateSink {
+    HANDLE entered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::atomic<bool> inside{false};
+    std::atomic<int> evals{0};
+    ~SlowSink() override { CloseHandle(entered); }
+    void OnCreateFeature(uint64_t, const NgxCreateInfo&) override {}
+    void OnEvaluate(const NgxEvaluateInputs&) override {
+        inside = true;
+        ++evals;
+        SetEvent(entered);
+        Sleep(300);
+        inside = false;
+    }
+};
+struct EvalCallCtx {
+    EvalFn eval = nullptr;
+    ID3D11DeviceContext* ctx = nullptr;
+    void* handle = nullptr;
+    FakeNgxParam* params = nullptr;
+};
+DWORD WINAPI EvaluateOnThread(void* p) {
+    auto* c = static_cast<EvalCallCtx*>(p);
+    c->eval(c->ctx, c->handle, c->params, nullptr);
+    return 0;
+}
+}  // namespace
+
+TEST(NgxHook_SetSinkWaitsForCallsInProgress) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x610000);
+    SlowSink slow;
+    NgxHook::Get().Uninstall();
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&slow, &err));
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h);
+    FakeNgxParam ep = CspEvaluate();
+
+    EvalCallCtx call{Eval(fake), d.ctx11.Get(), h, &ep};
+    HANDLE th = CreateThread(nullptr, 0, &EvaluateOnThread, &call, 0, nullptr);
+    REQUIRE(th != nullptr);
+    const bool entered = WaitForSingleObject(slow.entered, 5000) == WAIT_OBJECT_0;
+    NgxHook::Get().SetSink(nullptr);
+    const bool stillInside = slow.inside;  // must be false: SetSink waited for the call
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+    CHECK(entered);
+    CHECK(!stillInside);
+
+    // Later evaluates never reach the old sink; a new sink gets them.
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    CHECK_EQ(slow.evals.load(), 1);
+    RecSink rec;
+    NgxHook::Get().SetSink(&rec);
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);
+    CHECK_EQ(rec.evals.size(), size_t{1});
+    NgxHook::Get().Uninstall();
+    FreeLibrary(fake);
+}
+
+// A sink that clears itself from inside its own OnEvaluate must not wait on its
+// own call (that would deadlock the render thread). Child process: a regression
+// hangs only the child.
+namespace {
+struct SelfClearingSink : NgxEvaluateSink {
+    int evals = 0;
+    void OnCreateFeature(uint64_t, const NgxCreateInfo&) override {}
+    void OnEvaluate(const NgxEvaluateInputs&) override {
+        ++evals;
+        NgxHook::Get().SetSink(nullptr);
+    }
+};
+}  // namespace
+
+TEST(Child_NgxHook_SetSinkFromInsideTheSink) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x620000);
+    SelfClearingSink sink;
+    NgxHook::Get().Uninstall();
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &cp, &h);
+    FakeNgxParam ep = CspEvaluate();
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);  // returns: no self-wait
+    Eval(fake)(d.ctx11.Get(), h, &ep, nullptr);  // the sink is gone now
+    CHECK_EQ(sink.evals, 1);
+    NgxHook::Get().Uninstall();
+    FreeLibrary(fake);
+}
+
+TEST(NgxHook_SetSinkFromInsideTheSink) {
+    CHECK_EQ(RunChildTest("Child_NgxHook_SetSinkFromInsideTheSink", 60000), 0);
 }
 
 TEST(NgxHook_UninstallRestores) {

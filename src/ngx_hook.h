@@ -72,6 +72,13 @@ public:
     void ProcessPendingRescan();
     // Restores patched bytes of modules still loaded (tests / shutdown).
     void Uninstall();
+    // Swaps the sink atomically. When it returns, no call into the previous
+    // sink is in progress on any other thread (it waits for them), so the
+    // caller may destroy that sink: the presenter calls SetSink(nullptr) before
+    // it is destroyed. Called from inside a sink call on the same thread it
+    // swaps without waiting, because it would otherwise wait on its own caller.
+    // Install and Uninstall swap the sink the same way.
+    void SetSink(NgxEvaluateSink* sink);
     uint32_t HookedModules() const;
 
     // Test-only: Install calls fn after its first scan and before it registers
