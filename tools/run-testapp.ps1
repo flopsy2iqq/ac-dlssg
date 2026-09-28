@@ -68,6 +68,29 @@
   scenario, and the bridge log must say "mode: standalone" and read that
   ac-dlssg.ini.
 
+  Before every run the script writes <exe dir>\ac-dlssg\ac-dlssg.ini for
+  the scenario. On this machine Streamline reports DLSS-G unsupported (an
+  RTX 30 without the dlssg_for_sm86 spoof, which the test app never loads),
+  and from M3 on the default (proxy_without_fg=0) then passes the chain
+  through (spec 2, criterion 5). So every scenario gets proxy_without_fg=1
+  and keeps proxying, except fg-unsupported-passthrough, which keeps the
+  default and expects a pass-through whose decision or failure line names
+  "DLSS-G is not supported on this adapter".
+
+  M3 scenarios (spec 6.5-6.7, 7): the test app plays CSP's DLSS calls
+  (--fake-ngx: fake_nvngx.dll, the build's fake NGX module, copied next to
+  testapp.exe) and the CSP Lua app's camera writer (--fake-camera), with
+  tag_without_fg=1 so that the capture -> camera -> constants -> tags path
+  runs although DLSS-G itself cannot. fg-pipeline and fg-pipeline-resize
+  expect the bridge's once-only capture, camera, constants and first-tags
+  lines and, after the first statistics line, captures, camera_fresh and
+  tagged each at 90% of base_fps or more, no double evaluates and no
+  undelivered frames; fg-no-camera expects captures but no fresh camera, no
+  tags, and a throttled "fg: frame without DLSS-G:" warning naming the
+  camera. The camera section Local\AcDlssg.Camera.v1 is shared by every
+  process of the logon session, so these scenarios SKIP while acs.exe runs.
+  DLSS-G generating frames is never seen here; the user checks it in game.
+
   -ReShadeDll names ReShade's dxgi.dll. By default it is the dxgi.dll in the
   Assetto Corsa folder found through Steam's libraryfolders.vdf; it is only
   read and copied. A DLL whose version resource ProductName is not "ReShade",
@@ -125,7 +148,25 @@ $scenarios = @(
     # The bridge as the game's dxgi.dll, without ReShade (see the description).
     @{ Name = 'standalone';          Args = @('--standalone', '--frames', '3000', '--expect-proxy'); Standalone = $true },
     @{ Name = 'standalone-combined'; Args = @('--standalone', '--vsync', '--resize', '--recreate', '--test-present',
-                                              '--expect-proxy'); Standalone = $true }
+                                              '--expect-proxy'); Standalone = $true },
+    # M3 (see the description): with the default proxy_without_fg=0 a chain
+    # whose adapter Streamline refuses DLSS-G for passes through.
+    @{ Name = 'fg-unsupported-passthrough'; Args = @('--expect-passthrough', '--expect-passthrough-reason',
+                                                     '"DLSS-G is not supported on this adapter"'); DefaultFg = $true },
+    # The capture -> camera -> constants -> tags path with CSP's DLSS calls
+    # and the Lua app's camera played by the test app; tag_without_fg=1 runs
+    # it although DLSS-G itself is unsupported here. 3000 frames at 500 fps:
+    # about six statistics lines.
+    @{ Name = 'fg-pipeline';        Args = @('--fake-ngx', '--fake-camera', '--frames', '3000', '--fps-cap', '500',
+                                             '--expect-proxy', '--expect-fg', 'pipeline'); Ini = @('tag_without_fg=1');
+       Camera = $true },
+    @{ Name = 'fg-pipeline-resize'; Args = @('--fake-ngx', '--fake-camera', '--resize', '--frames', '3000',
+                                             '--fps-cap', '500', '--expect-proxy', '--expect-fg', 'pipeline');
+       Ini = @('tag_without_fg=1'); Camera = $true },
+    # DLSS's inputs without the Lua app: captured, never tagged, and the
+    # throttled per-frame reason names the camera.
+    @{ Name = 'fg-no-camera';       Args = @('--fake-ngx', '--frames', '3000', '--fps-cap', '500', '--expect-proxy',
+                                             '--expect-fg', 'no-camera'); Ini = @('tag_without_fg=1'); Camera = $true }
 )
 if ($Scenario.Count) {
     $unknown = @($Scenario | Where-Object { $n = $_; -not ($scenarios | Where-Object { $_.Name -eq $n }) })
@@ -163,7 +204,7 @@ function Resolve-ReShadeDll([string]$Requested) {
 # nothing else in the folder is deleted.
 function Initialize-ReShadeRunDir([string]$RunDir, [string]$TestAppDir, [string]$ReShadePath) {
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
-    foreach ($file in @('testapp.exe', 'ac-dlssg.dll')) {
+    foreach ($file in @('testapp.exe', 'ac-dlssg.dll', 'fake_nvngx.dll')) {
         Copy-Item -LiteralPath (Join-Path $TestAppDir $file) -Destination (Join-Path $RunDir $file) -Force
     }
     Copy-Item -Path (Join-Path $PSScriptRoot 'testapp\fixtures\*') -Destination $RunDir -Recurse -Force
@@ -180,17 +221,32 @@ function Initialize-ReShadeRunDir([string]$RunDir, [string]$TestAppDir, [string]
 # because the bridge must only be reachable as dxgi.dll.
 function Initialize-StandaloneRunDir([string]$RunDir, [string]$TestAppDir) {
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
-    Copy-Item -LiteralPath (Join-Path $TestAppDir 'testapp.exe') -Destination (Join-Path $RunDir 'testapp.exe') -Force
+    foreach ($file in @('testapp.exe', 'fake_nvngx.dll')) {
+        Copy-Item -LiteralPath (Join-Path $TestAppDir $file) -Destination (Join-Path $RunDir $file) -Force
+    }
     Copy-Item -LiteralPath (Join-Path $TestAppDir 'ac-dlssg.dll') -Destination (Join-Path $RunDir 'dxgi.dll') -Force
     Remove-Item -LiteralPath (Join-Path $RunDir 'ac-dlssg.dll') -Force -ErrorAction SilentlyContinue
     Copy-Item -Path (Join-Path $PSScriptRoot 'testapp\fixtures\*') -Destination $RunDir -Recurse -Force
     $slDir = Join-Path $RunDir 'ac-dlssg\sl'
     New-Item -ItemType Directory -Force -Path $slDir | Out-Null
     Copy-Item -Path (Join-Path $TestAppDir 'ac-dlssg\sl\*.dll') -Destination $slDir -Force
-    # The defaults of dev-install.ps1's ac-dlssg.ini.
-    $ini = @('; ac-dlssg settings for the standalone test scenarios.', '[bridge]', 'enabled=1', 'start_with_fg=1',
-        'hotkey=ctrl+f10', 'log_level=debug', '')
-    [System.IO.File]::WriteAllText((Join-Path $RunDir 'ac-dlssg\ac-dlssg.ini'), ($ini -join "`r`n"), $utf8NoBom)
+}
+
+# The ac-dlssg.ini of one scenario, written into <exe dir>\ac-dlssg before
+# every run. DLSS-G is unsupported on a machine without it (an RTX 30 without
+# the dlssg_for_sm86 spoof, which the test app never loads), and from M3 on
+# the default then passes the chain through; so every scenario proxies
+# anyway (proxy_without_fg=1) except those that test the default
+# (DefaultFg). The standalone scenarios get dev-install.ps1's defaults too
+# (log_level=debug). Ini holds the scenario's own extra lines.
+function Write-BridgeIni([string]$ExeDir, $Scenario) {
+    $lines = @("; ac-dlssg settings written by run-testapp.ps1 for the scenario $($Scenario.Name).", '[bridge]')
+    if ($Scenario.Standalone) { $lines += @('enabled=1', 'start_with_fg=1', 'hotkey=ctrl+f10', 'log_level=debug') }
+    if (-not $Scenario.DefaultFg) { $lines += 'proxy_without_fg=1' }
+    if ($Scenario.Ini) { $lines += @($Scenario.Ini) }
+    $dir = Join-Path $ExeDir 'ac-dlssg'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dir 'ac-dlssg.ini'), (($lines + '') -join "`r`n"), $utf8NoBom)
 }
 
 # Bridge log checks of a standalone scenario on top of the test app's own.
@@ -212,7 +268,8 @@ function Test-StandaloneLog([string]$LogPath, [string]$RunDir) {
     if (-not @($lines | Where-Object { $_ -match "config: $ini$" }).Count) {
         $problems.Add('the bridge did not read ac-dlssg\ac-dlssg.ini')
     }
-    if (-not @($lines | Where-Object { $_ -match 'config: enabled=1 .* log_level=debug$' }).Count) {
+    # M3 appends its keys after log_level.
+    if (-not @($lines | Where-Object { $_ -match 'config: enabled=1 .* log_level=debug( |$)' }).Count) {
         $problems.Add('the config line does not show enabled=1 and log_level=debug')
     }
     return $problems
@@ -400,6 +457,20 @@ foreach ($cfg in $Config) {
             Initialize-StandaloneRunDir $standaloneDir $testAppDir
             $standaloneReady = $true
         }
+        # The camera section Local\AcDlssg.Camera.v1 is per logon session: a
+        # running game (its bridge and its Lua app) would share it with the
+        # test app, and each would read the other's camera.
+        if ($s.Camera) {
+            $game = @(Get-RunningGame)
+            if ($game.Count) {
+                $results.Add([pscustomobject]@{ Config = $cfg; Scenario = $s.Name; Result = 'SKIP'; Seconds = 0.0;
+                        BridgeMs = ''; Args = $argText
+                        Detail = "acs.exe is running (pid $(($game | ForEach-Object { $_.Id }) -join ', ')), and the " +
+                            'camera section Local\AcDlssg.Camera.v1 would be shared with it' })
+                continue
+            }
+        }
+        Write-BridgeIni $exeDir $s
 
         Write-Host "[$cfg] $($s.Name): testapp $argText$(if ($s.ReShade -or $s.Standalone) { " (in $exeDir)" })"
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -429,7 +500,15 @@ foreach ($cfg in $Config) {
             $proc.WaitForExit()
         }
         $watch.Stop()
-        $output = $stdout.Result + $stderr.Result
+        # A child process that inherited the pipes (the NGX runtime starts
+        # nvngx_update.exe) keeps them open after the test app exited; the
+        # test app makes its handles non-inheritable, and this is the backstop.
+        if ($stdout.Wait(30000) -and $stderr.Wait(5000)) {
+            $output = $stdout.Result + $stderr.Result
+        } else {
+            $output = "run-testapp: the test app's output pipes were still open 30 s after it exited (a child " +
+                "process holds them); its output is lost`r`n"
+        }
         [System.IO.File]::WriteAllText($outFile, $output, $utf8NoBom)
         if (Test-Path -LiteralPath $bridgeLog -PathType Leaf) {
             Copy-Item -LiteralPath $bridgeLog -Destination $keptLog -Force
@@ -486,6 +565,18 @@ foreach ($cfg in $Config) {
             }
         }
 
+        if ($s.Camera -or $s.DefaultFg) {
+            # The test app checks these lines itself; they are printed as evidence.
+            $fgPattern = ' (NGX hook: |capture: first |camera: first |constants: |fg: first |fg: DLSS-G |' +
+                'fg: frame without DLSS-G: |stats: base_fps=)|CreateSwapChainForHwnd: .*\(main window\)|' +
+                'proxy swap chain (created|creation failed)'
+            $evidence = @(if (Test-Path -LiteralPath $keptLog -PathType Leaf) {
+                    [System.IO.File]::ReadAllLines($keptLog) | Where-Object { $_ -match $fgPattern } })
+            Write-Host "  bridge.log M3 evidence ($($evidence.Count) lines):"
+            $evidence | ForEach-Object { Write-Host "    $_" }
+            @($lines | Where-Object { $_ -match '^testapp: (fake |note: fg)' }) | ForEach-Object { Write-Host "  $_" }
+        }
+
         if ($s.Budget) {
             # Success criterion 3: both frame copies together below the budget.
             Write-Host "  bridge statistics ($($stats.Lines.Count) lines):"
@@ -517,10 +608,10 @@ foreach ($cfg in $Config) {
 }
 
 Write-Host ''
-Write-Host ('{0,-8} {1,-19} {2,-7} {3,7} {4,9}  {5}' -f 'Config', 'Scenario', 'Result', 'Time', 'Bridge ms', 'Detail')
-Write-Host ('{0,-8} {1,-19} {2,-7} {3,7} {4,9}  {5}' -f '------', '--------', '------', '----', '---------', '------')
+Write-Host ('{0,-8} {1,-27} {2,-7} {3,7} {4,9}  {5}' -f 'Config', 'Scenario', 'Result', 'Time', 'Bridge ms', 'Detail')
+Write-Host ('{0,-8} {1,-27} {2,-7} {3,7} {4,9}  {5}' -f '------', '--------', '------', '----', '---------', '------')
 foreach ($r in $results) {
-    Write-Host ('{0,-8} {1,-19} {2,-7} {3,6}s {4,9}  {5}' -f $r.Config, $r.Scenario, $r.Result, $r.Seconds, $r.BridgeMs,
+    Write-Host ('{0,-8} {1,-27} {2,-7} {3,6}s {4,9}  {5}' -f $r.Config, $r.Scenario, $r.Result, $r.Seconds, $r.BridgeMs,
         $r.Detail)
 }
 $skipped = @($results | Where-Object { $_.Result -eq 'SKIP' }).Count
