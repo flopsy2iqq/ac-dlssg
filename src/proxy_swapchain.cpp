@@ -38,7 +38,7 @@ BOOL CurrentWindowed(D3D12Presenter* presenter, BOOL fallback) {
 HRESULT ProxySwapChain::Create(IDXGIFactory2* factory, ID3D11Device* device11, HWND hwnd,
                                const DXGI_SWAP_CHAIN_DESC1& desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
                                const Config& config, StreamlineRuntime* streamline, IDXGISwapChain1** out,
-                               std::string* error) {
+                               std::string* error, const PresenterEnvironment& env) {
     std::string err;
     HRESULT hr = E_FAIL;
     try {
@@ -78,6 +78,8 @@ HRESULT ProxySwapChain::Create(IDXGIFactory2* factory, ID3D11Device* device11, H
                 info.hwnd = hwnd;
                 info.game_desc = d;
                 info.streamline = streamline;
+                info.config = config;
+                info.env = env;
                 proxy->presenter_ = D3D12Presenter::Create(info, &err);
             }
             if (proxy->hidden_ && proxy->presenter_) {

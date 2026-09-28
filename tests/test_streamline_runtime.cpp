@@ -13,17 +13,22 @@
 #include <filesystem>
 #include <initializer_list>
 #include <memory>
+#include <regex>
 #include <string>
 #include <vector>
 
+#include "camera_channel.h"
 #include "camera_layout.h"
+#include "camera_writer.h"
 #include "child_process.h"
 #include "config.h"
 #include "d3d12_presenter.h"
 #include "factory_hook.h"
 #include "frame_constants.h"
+#include "gpu_info.h"
 #include "gpu_test_devices.h"
 #include "log.h"
+#include "ngx_hook.h"
 #include "pcl_sequencer.h"
 #include "proxy_swapchain.h"
 #include "streamline_runtime.h"
@@ -58,6 +63,15 @@ std::wstring SlLogDir() {
 ULONG RefCount(IUnknown* obj) {
     obj->AddRef();
     return obj->Release();
+}
+
+// The RTX 3080 of the reference machine has no DLSS-G without the spoof, so
+// presenters that must exist there keep the M2 behaviour (spec criterion 5
+// otherwise passes the chain through).
+Config ProxyWithoutFg() {
+    Config c;
+    c.proxy_without_fg = true;
+    return c;
 }
 
 // Our log for the lifetime of the object, in a scratch directory.
@@ -803,6 +817,7 @@ TEST(Child_SlPresenter_FramesMarkersResizeAndShutdown) {
         info.hwnd = window.Get();
         info.game_desc = CspDesc(640, 360);
         info.streamline = &rt;
+        info.config = ProxyWithoutFg();
         auto p = D3D12Presenter::Create(info, &err);
         if (!p) std::printf("  D3D12Presenter::Create: %s\n", err.c_str());
         REQUIRE(p != nullptr);
@@ -902,7 +917,7 @@ TEST(Child_SlProxy_FinalReleaseShutsStreamlineDown) {
 
     ComPtr<IDXGISwapChain1> chain;
     HRESULT hr = ProxySwapChain::Create(factory.Get(), d.device11.Get(), window.Get(), CspDesc(640, 360), nullptr,
-                                        Config(), &rt, chain.GetAddressOf(), &err);
+                                        ProxyWithoutFg(), &rt, chain.GetAddressOf(), &err);
     if (FAILED(hr)) std::printf("  ProxySwapChain::Create: 0x%08lX %s\n", static_cast<unsigned long>(hr), err.c_str());
     REQUIRE(SUCCEEDED(hr) && chain);
     {
@@ -953,7 +968,7 @@ TEST(Child_SlProxy_FinalReleaseShutsStreamlineDown) {
     // A proxy that tried Streamline anyway fails cleanly and creates nothing.
     ComPtr<IDXGISwapChain1> second;
     std::string secondErr;
-    hr = ProxySwapChain::Create(factory.Get(), d.device11.Get(), window.Get(), CspDesc(640, 360), nullptr, Config(), &rt,
+    hr = ProxySwapChain::Create(factory.Get(), d.device11.Get(), window.Get(), CspDesc(640, 360), nullptr, ProxyWithoutFg(), &rt,
                                 second.GetAddressOf(), &secondErr);
     std::printf("  second proxy after shutdown: 0x%08lX %s\n", static_cast<unsigned long>(hr), secondErr.c_str());
     CHECK(FAILED(hr));
@@ -998,6 +1013,7 @@ TEST(Child_SlPresenter_CreationFailureAfterSetDevice) {
         info.hwnd = window.Get();
         info.game_desc = CspDesc(640, 360);
         info.streamline = &rt;
+        info.config = ProxyWithoutFg();  // get past the DLSS-G support rule to step 5
         auto p = D3D12Presenter::Create(info, &err);
         std::printf("  D3D12Presenter::Create on an occupied window: %s\n", err.c_str());
         CHECK(p == nullptr);
@@ -1013,6 +1029,215 @@ TEST(Child_SlPresenter_CreationFailureAfterSetDevice) {
     occupant.Reset();
     d.ctx11->ClearState();
     d.ctx11->Flush();
+}
+
+// --- M3: DLSS-G support rule, capture, tags and constants ------------------------
+
+// Spec criterion 5: when Streamline refuses DLSS-G and proxy_without_fg=0 (the
+// default), the presenter is not created, Streamline is shut down after the
+// drain and before the releases, and the chain passes through.
+TEST(SlPresenter_WithoutDlssgIsNotCreatedByDefault) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlPresenter_WithoutDlssgIsNotCreatedByDefault", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlPresenter_WithoutDlssgIsNotCreatedByDefault) {
+    LogCapture log(L"sl_no_fg");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+    acdb_test::GpuTestDevices d;
+    if (!NvidiaDevices(&d)) {
+        rt.Shutdown();
+        return;
+    }
+    HiddenWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    DXGI_ADAPTER_DESC1 ad{};
+    d.adapter->GetDesc1(&ad);
+    {
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = CspDesc(640, 360);
+        info.streamline = &rt;
+        auto p = D3D12Presenter::Create(info, &err);
+        if (p && p->DlssgSupported()) {
+            std::printf("  SKIP: DLSS-G is supported on this adapter\n");
+            p->ShutdownStreamlineOnRelease();
+            p.reset();
+            return;
+        }
+        std::printf("  D3D12Presenter::Create without DLSS-G: %s\n", err.c_str());
+        CHECK(p == nullptr);
+        CHECK(err.find("DLSS-G is not supported on this adapter (") == 0);
+        CHECK(err.find("eErrorNoSupportedAdapterFound") != std::string::npos ||
+              err.find("eError") != std::string::npos);
+        // No spoof in the test process: an SM86 GPU gets the hint.
+        const bool sm86 = IsAmpereSm86(ad.VendorId, ad.DeviceId);
+        CHECK_EQ(err.find("RTX 30 needs dlssg_for_sm86 (version.dll) in the game folder") != std::string::npos, sm86);
+    }
+    CHECK(rt.IsShutDown());
+    const auto lines = log.Lines();
+    const size_t shutdownAt = FirstLine(lines, "Streamline: slShutdown eOk");
+    const size_t releasedAt = FirstLine(lines, "presenter released");
+    CHECK(shutdownAt != std::string::npos);
+    CHECK(shutdownAt < releasedAt);
+    // The NGX hook is attached only by presenters that were created.
+    CHECK(log.Matching({"NGX hook: installed"}).empty());
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+}
+
+namespace {
+
+// CSP's DLSS inputs (spec 4), render size 320x180.
+struct CaptureSources {
+    ComPtr<ID3D11Texture2D> depth;
+    ComPtr<ID3D11Texture2D> mvec;
+};
+
+CaptureSources MakeCaptureSources(ID3D11Device* dev, UINT w, UINT h) {
+    CaptureSources s;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.Format = DXGI_FORMAT_R32_TYPELESS;
+    td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    dev->CreateTexture2D(&td, nullptr, &s.depth);
+    td.Format = DXGI_FORMAT_R16G16_FLOAT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    dev->CreateTexture2D(&td, nullptr, &s.mvec);
+    return s;
+}
+
+NgxEvaluateInputs CspEvaluate(ID3D11DeviceContext* ctx, const CaptureSources& s, UINT w, UINT h) {
+    NgxEvaluateInputs in;
+    in.ctx = ctx;
+    in.depth = s.depth.Get();
+    in.mvec = s.mvec.Get();
+    in.jitterX = 0.25f;
+    in.jitterY = -0.25f;
+    in.mvScaleX = -static_cast<float>(w);
+    in.mvScaleY = -static_cast<float>(h);
+    in.subrectW = w;
+    in.subrectH = h;
+    in.createFlags = dlss_create_flags::kMVLowRes;
+    in.featureKey = 0x4000;
+    return in;
+}
+
+}  // namespace
+
+// The test app's path (tag_without_fg=1, proxy_without_fg=1) on a machine
+// without DLSS-G: a fake CSP evaluate through the capture coordinator is
+// copied, paired with the Present, tagged and given constants, and Streamline
+// accepts both (spec 7 step 5.4), while DLSS-G itself stays off.
+TEST(SlPresenter_TagWithoutFgTagsCapturesAndSetsConstants) {
+    CHECK_EQ(acdb_test::RunChildTest("Child_SlPresenter_TagWithoutFgTagsCaptures", kChildTimeoutMs), 0);
+}
+
+TEST(Child_SlPresenter_TagWithoutFgTagsCaptures) {
+    LogCapture log(L"sl_tags");
+    StreamlineRuntime& rt = StreamlineRuntime::Get();
+    std::string err;
+    REQUIRE(rt.Init(SlDir(), SlLogDir(), &err));
+    acdb_test::GpuTestDevices d;
+    if (!NvidiaDevices(&d)) {
+        rt.Shutdown();
+        return;
+    }
+    HiddenWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    acdb_test::TestCameraWriter writer;
+    CameraChannel camera(writer.Name().c_str());
+    REQUIRE(writer.Ok());
+    REQUIRE(camera.Create(&err));
+    constexpr int kFrames = 40;
+    bool supported = false;
+    {
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = CspDesc(640, 360);
+        info.streamline = &rt;
+        info.config = ProxyWithoutFg();
+        info.config.tag_without_fg = true;
+        info.config.start_with_fg = false;  // DLSS-G stays off where it is supported
+        info.env.camera = &camera;
+        auto p = D3D12Presenter::Create(info, &err);
+        if (!p) std::printf("  D3D12Presenter::Create: %s\n", err.c_str());
+        REQUIRE(p != nullptr);
+        supported = p->DlssgSupported();
+        NgxEvaluateSink* sink = p->CaptureSink();
+        REQUIRE(sink != nullptr);
+        Source11 src = CreateSource11(d.device11.Get(), 640, 360);
+        CaptureSources cs = MakeCaptureSources(d.device11.Get(), 320, 180);
+        REQUIRE(src.rtv && cs.depth && cs.mvec);
+        int bad = 0;
+        for (int i = 1; i <= kFrames; ++i) {
+            // The Lua app writes from render.onSceneReady, before CSP's DLSS pass.
+            writer.Write(acdb_test::TestCameraWriter::Camera(static_cast<uint32_t>(i), 0, 320.0f, 180.0f));
+            sink->OnEvaluate(CspEvaluate(d.ctx11.Get(), cs, 320, 180));
+            const float color[4] = {static_cast<float>(i) / kFrames, 0.5f, 0.25f, 1.0f};
+            d.ctx11->ClearRenderTargetView(src.rtv.Get(), color);
+            if (!PresentOk(p->PresentFrame(d.ctx11.Get(), src.tex.Get(), 0, 0))) ++bad;
+            window.Pump();
+            if (i == 20) {
+                // A resize in the middle: DLSS-G is off, so no extra Present;
+                // the camera latch restarts, the slots stay.
+                CHECK(SUCCEEDED(p->Resize(800, 450)));
+                src = CreateSource11(d.device11.Get(), 800, 450);
+            }
+        }
+        Sleep(1000);  // one more frame after a second writes a stats line
+        writer.Write(acdb_test::TestCameraWriter::Camera(kFrames + 1, 0, 320.0f, 180.0f));
+        sink->OnEvaluate(CspEvaluate(d.ctx11.Get(), cs, 320, 180));
+        if (!PresentOk(p->PresentFrame(d.ctx11.Get(), src.tex.Get(), 0, 0))) ++bad;
+        CHECK_EQ(bad, 0);
+        const D3D12Presenter::FgTotals t = p->Totals();
+        std::printf("  captures %u, camera fresh %u, tagged %u, fg frames %u\n", t.captures, t.camera_fresh, t.tagged,
+                    t.fg_frames);
+        CHECK_EQ(t.captures, static_cast<uint32_t>(kFrames + 1));
+        // Frame 1 and the first frame after the resize have no fresh camera.
+        CHECK_EQ(t.camera_fresh, static_cast<uint32_t>(kFrames - 1));
+        CHECK_EQ(t.tagged, static_cast<uint32_t>(kFrames - 1));
+        CHECK_EQ(t.fg_frames, 0u);
+        CHECK_EQ(p->FramesWithMarkers(), static_cast<uint32_t>(kFrames + 1));
+        CHECK_EQ(p->MarkerProblems(), 0u);
+        p->ShutdownStreamlineOnRelease();
+    }
+    CHECK(rt.IsShutDown());
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+
+    Print("fg lines", log.Matching({" fg: "}));
+    CHECK(!log.Matching({"capture: first counted evaluate: depth 39 320x180, mvec 34 320x180, subrect 320x180, "
+                         "create flags 0x2, mv scale -320.000,-180.000, jitter 0.2500,-0.2500"})
+               .empty());
+    CHECK(!log.Matching({"camera: first fresh snapshot: pos (0.000, 0.000, 0.200) fwd (0.0000, 0.0000, 1.0000)"})
+               .empty());
+    CHECK_EQ(log.Matching({" constants: "}).size(), 1u);
+    CHECK_EQ(log.Matching({"fg: first tags and constants set (frame 2)"}).size(), 1u);
+    const char* offReason = supported ? "fg: DLSS-G off (off by the user" : "fg: DLSS-G off (not supported on this adapter)";
+    CHECK_EQ(log.Matching({offReason}).size(), 1u);
+    CHECK(log.Matching({"fg: DLSS-G on"}).empty());
+    Print("tag and constants lines", log.Matching({"slSetTagForFrame"}));
+    CHECK(log.Matching({"slSetTagForFrame failed"}).empty());
+    CHECK(log.Matching({"slSetConstants failed"}).empty());
+    const auto stats = log.Matching({" stats: "});
+    Print("stats lines", stats);
+    REQUIRE(!stats.empty());
+    const std::regex fields(" fg=off stalls=0 streamline=on reflex=on pcl_problems=0 captures=[0-9]+ camera_fresh=[0-9]+ "
+                            "tagged=[0-9]+ fg_frames=0 generated=n/a double_evaluates=0 vram_mib=");
+    for (const auto& l : stats) CHECK(std::regex_search(l, fields));
+    CheckNoPerFrameFailures(log);
+    CHECK_EQ(rt.ErrorsLogged(), 0u);
+    Print("errors in our log", log.Matching({" ERROR "}));
+    CHECK(log.Matching({" ERROR "}).empty());
 }
 
 #endif  // ACDB_SL_BIN_DIR

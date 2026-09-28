@@ -12,8 +12,18 @@
 #include <mutex>
 #include <thread>
 
+#include <cstring>
+
+#include "camera_channel.h"
+#include "capture_coordinator.h"
+#include "capture_slots.h"
+#include "compat.h"
+#include "fg_policy.h"
+#include "frame_constants.h"
+#include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
+#include "ngx_hook.h"
 #include "pcl_sequencer.h"
 #include "present_flags.h"
 #include "streamline_runtime.h"
@@ -119,9 +129,9 @@ double QpcMs(int64_t ticks) {
 
 constexpr unsigned kMaxOcclusionLogs = 100;  // per presenter; the stats line keeps counting
 
-// Local video memory of the render adapter for this process, in MiB. False
+// Local video memory of the render adapter for this process, in bytes. False
 // (with *err set when err is given) when the adapter cannot tell.
-bool QueryVramMiB(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std::string* err) {
+bool QueryVramBytes(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std::string* err) {
     if (!adapter) {
         if (err) *err = "the adapter has no IDXGIAdapter3";
         return false;
@@ -132,9 +142,60 @@ bool QueryVramMiB(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std
         if (err) *err = HrText("IDXGIAdapter3::QueryVideoMemoryInfo", hr);
         return false;
     }
-    *usage = info.CurrentUsage / (1024 * 1024);
-    *budget = info.Budget / (1024 * 1024);
+    *usage = info.CurrentUsage;
+    *budget = info.Budget;
     return true;
+}
+
+// The same in MiB.
+bool QueryVramMiB(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std::string* err) {
+    if (!QueryVramBytes(adapter, usage, budget, err)) return false;
+    *usage /= 1024 * 1024;
+    *budget /= 1024 * 1024;
+    return true;
+}
+
+constexpr uint32_t kStatePollFrames = 60;  // slDLSSGGetState while DLSS-G is on (spec 6.8)
+constexpr uint32_t kViewport = 0;
+
+// NgxHook is installed once per process, by the first presenter that asks.
+std::atomic<bool> g_ngx_installed{false};
+
+bool SameHints(const DlssgSizeHints& a, const DlssgSizeHints& b) {
+    return a.numBackBuffers == b.numBackBuffers && a.mvecDepthWidth == b.mvecDepthWidth &&
+           a.mvecDepthHeight == b.mvecDepthHeight && a.colorWidth == b.colorWidth && a.colorHeight == b.colorHeight &&
+           a.colorBufferFormat == b.colorBufferFormat && a.mvecBufferFormat == b.mvecBufferFormat &&
+           a.depthBufferFormat == b.depthBufferFormat;
+}
+
+// The file names of the loaded modules NgxHook hooks: every module that
+// exports the NGX D3D11 entry points and passes NgxClassifyModule.
+std::string NgxModuleNames() {
+    using EnumFn = BOOL(WINAPI*)(HANDLE, HMODULE*, DWORD, LPDWORD);
+    const HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    const auto enumModules = k32 ? reinterpret_cast<EnumFn>(GetProcAddress(k32, "K32EnumProcessModules")) : nullptr;
+    if (!enumModules) return "(module list unavailable)";
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    if (!enumModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) return "(module list unavailable)";
+    const DWORD count = (needed < sizeof(mods) ? needed : static_cast<DWORD>(sizeof(mods))) / sizeof(HMODULE);
+    const HMODULE host = GetModuleHandleW(nullptr);
+    std::string names;
+    for (DWORD i = 0; i < count; ++i) {
+        void* create = reinterpret_cast<void*>(GetProcAddress(mods[i], "NVSDK_NGX_D3D11_CreateFeature"));
+        void* eval = reinterpret_cast<void*>(GetProcAddress(mods[i], "NVSDK_NGX_D3D11_EvaluateFeature"));
+        void* evalC = reinterpret_cast<void*>(GetProcAddress(mods[i], "NVSDK_NGX_D3D11_EvaluateFeature_C"));
+        if (!create || (!eval && !evalC)) continue;
+        wchar_t path[MAX_PATH] = {};
+        GetModuleFileNameW(mods[i], path, MAX_PATH);
+        if (NgxClassifyModule(path, mods[i] == host, create, eval, evalC) != NgxSkip::None) continue;
+        const wchar_t* file = std::wcsrchr(path, L'\\');
+        char narrow[MAX_PATH] = {};
+        WideCharToMultiByte(CP_UTF8, 0, file ? file + 1 : path, -1, narrow, MAX_PATH - 1, nullptr, nullptr);
+        if (!names.empty()) names += ", ";
+        names += narrow;
+    }
+    return names.empty() ? std::string("(none yet)") : names;
 }
 
 }  // namespace
@@ -233,10 +294,78 @@ struct D3D12Presenter::Impl {
     HANDLE debug_cancel = nullptr;
     std::thread debug_thread;
 
+    // M3: DLSS-G.
+    Config config;
+    PresenterEnvironment env;
+    bool fg_supported = false;  // slIsFeatureSupported and the DLSS-G functions
+    std::unique_ptr<CaptureSlots> slots;
+    std::unique_ptr<CaptureCoordinator> coordinator;
+    bool ngx_attached = false;
+    uint32_t ngx_modules_logged = UINT32_MAX;
+    // pcl and token: the render thread's evaluate emits markers too.
+    std::mutex marker_mu;
+    bool fg_user_on = true;  // start_with_fg, then the hotkey
+    KeyEdge hotkey_edge;
+    bool reset_next_fg = false;  // a toggle: the next DLSS-G frame has reset
+    bool mode_known = false;     // SetDlssgOptions succeeded once
+    bool mode_on = false;        // the DLSS-G mode Streamline has
+    DlssgSizeHints mode_hints;
+    bool mode_logged = false;  // the first mode line was written
+    bool logged_on = false;    // the last mode line said on
+    std::string logged_off_reason;
+    ReasonThrottle frame_off_throttle{10000};
+    bool prev_had_inputs = false;  // frame N-1 was presented with tags and constants
+    bool prev_tagged = false;
+    bool have_prev_camera = false;  // frame N-1's snapshot, for BuildFrameConstants
+    CameraLayout prev_camera{};
+    std::string state_failure;  // until the next resize or toggle (spec 9)
+    VramGuard vram_guard;
+    bool vsync_available = false;  // bIsVsyncSupportAvailable == eTrue
+    bool polled_state = false;     // slDLSSGGetState answered at least once while on
+    uint32_t frames_since_state = 0;
+    uint32_t last_mvec_w = 0;
+    uint32_t last_mvec_h = 0;
+    DXGI_FORMAT last_mvec_format = DXGI_FORMAT_UNKNOWN;
+    bool have_csp_present = false;
+    UINT last_csp_sync = 0;
+    UINT last_csp_flags = 0;
+    bool logged_vsync_fallback = false;
+    bool logged_constants = false;
+    bool logged_first_tags = false;
+    bool logged_active = false;
+    bool logged_aspect = false;
+    D3D12Presenter::FgTotals totals;
+    unsigned stats_captures = 0;
+    unsigned stats_camera_fresh = 0;
+    unsigned stats_tagged = 0;
+    unsigned stats_fg_frames = 0;
+    unsigned stats_double = 0;
+    uint64_t stats_generated = 0;
+
+    struct FrameDecision {
+        bool fg = false;   // the gate allows DLSS-G for this Present
+        bool tag = false;  // tags and constants are set
+        std::string reason;
+        bool perFrame = false;
+        sl::Constants constants;
+    };
+
     bool Init(D3D12Presenter& self, const PresenterCreateInfo& info, std::string* err);
     void StartFrame();
-    void EmitMarkers(const std::vector<PclMarker>& markers);
-    void BeforeChainChange();
+    void EmitMarkers(const std::vector<PclMarker>& markers);  // caller holds marker_mu
+    void OnFirstEvaluate();
+    void AttachNgx();
+    void ProcessNgx();
+    void PollHotkey();
+    DlssgSizeHints Hints() const;
+    FrameDecision Decide(const FrameCapture& cap);
+    VramCheck RunVramCheck();
+    bool SetMode(bool on);
+    void LogMode(bool on, const std::string& reason, bool perFrame);
+    void PollState();
+    void CountFrame(const FrameCapture& cap, bool tagged, bool fg);
+    void PresentAgain(D3D12Presenter& self);
+    void BeforeChainChange(D3D12Presenter& self);
     bool CreateSharedTexture(UINT w, UINT h, std::string* err);
     bool FetchBuffers(D3D12Presenter& self, std::string* err);
     ID3D11DeviceContext4* Ctx4For(ID3D11DeviceContext* ctx);
@@ -283,6 +412,9 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     hwnd = info.hwnd;
     width = gd.Width;
     height = gd.Height;
+    config = info.config;
+    env = info.env;
+    fg_user_on = config.start_with_fg;
     device11->GetImmediateContext(&ctx11);
     HRESULT hr = ctx11 ? ctx11.As(&ctx4) : E_NOINTERFACE;
     if (FAILED(hr)) {
@@ -338,6 +470,17 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
         std::string why;
         const bool fg = sl->DlssgSupported(ad.AdapterLuid, &why);
         LOGI("Streamline: DLSS-G %s on this adapter (%s)", fg ? "supported" : "not supported", why.c_str());
+        fg_supported = fg && sl->DlssgFunctionsResolved();
+        if (fg && !fg_supported) why += "; slDLSSGSetOptions or slDLSSGGetState could not be resolved";
+        // Spec criterion 5: without DLSS-G the chain passes through, unless
+        // proxy_without_fg keeps the M2 behaviour.
+        if (!fg_supported) {
+            if (!config.proxy_without_fg) {
+                *err = DlssgUnsupportedMessage(why, IsAmpereSm86(ad.VendorId, ad.DeviceId), env.spoof_loaded);
+                return false;
+            }
+            LOGI("presenter: DLSS-G is not supported; the chain is proxied anyway (proxy_without_fg=1)");
+        }
         void* p = device12.Get();
         if (!sl->Upgrade(&p) || !p || p == device12.Get()) {
             *err = "Streamline: slUpgradeInterface(ID3D12Device) failed";
@@ -435,6 +578,19 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     // 7. Fences, shared back buffer, command recording, timers, watchdog.
     fences = FencePair::Create(device12.Get(), device11.Get(), err);
     if (!fences) return false;
+    // M3: capture slots on the native device pair, and the coordinator that
+    // NgxHook reports CSP's evaluates to (spec 6.4, 6.5).
+    slots = CaptureSlots::Create(device11.Get(), device12.Get(), err);
+    if (!slots) return false;
+    {
+        CaptureCoordinator::Deps deps;
+        deps.device11 = device11.Get();
+        deps.slots = slots.get();
+        deps.fences = fences.get();
+        deps.camera = env.camera ? env.camera : &CameraChannel::Get();
+        deps.onFirstEvaluate = [this] { OnFirstEvaluate(); };
+        coordinator = std::make_unique<CaptureCoordinator>(deps);
+    }
     if (!CreateSharedTexture(width, height, err)) return false;
     if (!FetchBuffers(self, err)) return false;
     for (UINT i = 0; i < kBuffers; ++i) {
@@ -452,10 +608,10 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     timer12 = std::make_unique<GpuTimer12>();
     if (!timer12->Init(device12.Get(), queue.Get(), kBuffers)) LOGW("presenter: D3D12 GPU timing unavailable");
 
-    wchar_t env[32] = {};
-    const DWORD envLen = GetEnvironmentVariableW(kDebugStallEnv, env, static_cast<DWORD>(std::size(env)));
-    if (envLen > 0 && envLen < std::size(env)) {
-        const unsigned long ms = std::wcstoul(env, nullptr, 10);
+    wchar_t envText[32] = {};
+    const DWORD envLen = GetEnvironmentVariableW(kDebugStallEnv, envText, static_cast<DWORD>(std::size(envText)));
+    if (envLen > 0 && envLen < std::size(envText)) {
+        const unsigned long ms = std::wcstoul(envText, nullptr, 10);
         if (ms > 0) {
             debug_stall_ms = static_cast<DWORD>(std::min<unsigned long>(ms, kDebugStallMaxMs));
             debug_cancel = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -498,6 +654,8 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     }
     // Spec 7 step 1 for the first frame: it starts at the end of creation.
     if (sl) StartFrame();
+    // Last: from here on CSP's evaluates reach this presenter.
+    AttachNgx();
     shutdown_sl = false;  // from now on the owner decides (ShutdownStreamlineOnRelease)
     return true;
 }
@@ -505,8 +663,10 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
 // Spec 7 step 1: frame token, Reflex sleep, SimulationStart.
 void D3D12Presenter::Impl::StartFrame() {
     ++frame_index;
-    token = sl->NewFrameToken(frame_index);
-    if (token) sl->ReflexSleep(*token);
+    sl::FrameToken* next = sl->NewFrameToken(frame_index);
+    if (next) sl->ReflexSleep(*next);  // blocks for pacing: outside the lock
+    std::lock_guard<std::mutex> lock(marker_mu);
+    token = next;
     EmitMarkers(pcl.BeginFrame(frame_index));
 }
 
@@ -515,12 +675,332 @@ void D3D12Presenter::Impl::EmitMarkers(const std::vector<PclMarker>& markers) {
     for (PclMarker m : markers) sl->Marker(m, *token);
 }
 
-// M3 hook (spec 6.3 "Resizing" step 1): with DLSS-G on, set eOff and null
-// tags, then present the current frame once more through spec 7 steps 4-7
-// with its own frame token and the full marker sequence, not counted as a CSP
-// frame. Runs before ResizeBuffers, SetFullscreenState and ResizeTarget. M2
-// never turns DLSS-G on, so there is nothing to do yet.
-void D3D12Presenter::Impl::BeforeChainChange() {}
+// Spec 7 step 2, from the render thread: the first qualifying evaluate of the
+// frame ends the simulation and starts the render submission.
+void D3D12Presenter::Impl::OnFirstEvaluate() {
+    if (!sl) return;
+    std::lock_guard<std::mutex> lock(marker_mu);
+    EmitMarkers(pcl.OnEvaluate());
+}
+
+// NgxHook is installed once per process; every presenter attaches its
+// coordinator as the last step of its creation.
+void D3D12Presenter::Impl::AttachNgx() {
+    if (!env.install_ngx_hook || !coordinator) return;
+    if (!g_ngx_installed.exchange(true)) {
+        std::string e;
+        if (!NgxHook::Get().Install(coordinator.get(), &e))
+            LOGW("NGX hook: installation failed: %s; DLSS-G gets no captures", e.c_str());
+    }
+    NgxHook::Get().SetSink(coordinator.get());
+    ngx_attached = true;
+    ProcessNgx();
+}
+
+// Start of every PresentFrame: finish a rescan a DLL load deferred, and log
+// the hooked modules whenever their number changes.
+void D3D12Presenter::Impl::ProcessNgx() {
+    NgxHook::Get().ProcessPendingRescan();
+    const uint32_t n = NgxHook::Get().HookedModules();
+    if (n == ngx_modules_logged) return;
+    ngx_modules_logged = n;
+    LOGI("NGX hook: installed on %u module(s): %s", n, NgxModuleNames().c_str());
+}
+
+// Spec 6.9: the hotkey toggles DLSS-G on the present thread, only while the
+// game window has the focus.
+void D3D12Presenter::Impl::PollHotkey() {
+    const HWND foreground = GetForegroundWindow();
+    const bool focused = foreground && (foreground == hwnd || GetAncestor(foreground, GA_ROOT) == GetAncestor(hwnd, GA_ROOT));
+    bool chord = false;
+    if (focused) {
+        const auto down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+        const Hotkey& hk = config.hotkey;
+        chord = HotkeyChordDown(hk, down(static_cast<int>(hk.vk)), down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
+    }
+    if (!hotkey_edge.Pressed(chord)) return;
+    fg_user_on = !fg_user_on;
+    reset_next_fg = true;    // spec 8: the next DLSS-G frame has reset
+    state_failure.clear();   // spec 9: a failure status is retried after a toggle
+    LOGI("fg: hotkey -> %s", fg_user_on ? "on" : "off");
+}
+
+// The size and format hints for slDLSSGSetOptions and the estimate: the
+// Streamline chain's back buffers, the depth slot (R32_FLOAT) and the last
+// captured motion vectors.
+DlssgSizeHints D3D12Presenter::Impl::Hints() const {
+    DlssgSizeHints h;
+    h.numBackBuffers = kBuffers;
+    h.colorWidth = width;
+    h.colorHeight = height;
+    h.colorBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    h.depthBufferFormat = DXGI_FORMAT_R32_FLOAT;
+    h.mvecDepthWidth = last_mvec_w;
+    h.mvecDepthHeight = last_mvec_h;
+    h.mvecBufferFormat = last_mvec_format;
+    return h;
+}
+
+// Spec 7 step 5.4 plus the video memory guard (6.11).
+D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapture& cap) {
+    FrameDecision d;
+    FgGateInputs g;
+    g.userOn = fg_user_on;
+    g.supported = fg_supported;
+    g.stateFailure = state_failure;
+    g.stalled = stalled;
+    g.aspectRefusal = RuntimeAspectRefusal(env.allow_stretching, cap.outWidth, cap.outHeight, width, height);
+    g.captured = cap.captured;
+    g.captureReason = cap.reason;
+    g.forcedOff = cap.forcedOff;
+    g.mvScaleMissing = cap.mvScaleMissing;
+    g.cameraOk = cap.cameraResult == CameraChannel::ReadResult::Ok;
+    g.cameraReason = CameraReadResultText(cap.cameraResult);
+    g.cameraFresh = cap.cameraFresh;
+    g.cameraFlags = g.cameraOk ? cap.camera.flags : 0;
+    if (cap.captured && g.cameraOk) {
+        CameraLayout cur = cap.camera;
+        CameraLayout prev = prev_camera;
+        const uint32_t rw = cap.params.renderW;
+        const uint32_t rh = cap.params.renderH;
+        // The projection's aspect (the camera's render size) and the MV
+        // scale's reference (the subrect) must agree; the subrect wins.
+        if (AspectMismatch(cur.renderW, cur.renderH, rw, rh)) {
+            if (!logged_aspect) {
+                logged_aspect = true;
+                LOGW("camera: render size %.0fx%.0f and the DLSS subrect %ux%u differ in aspect by more than 0.5%%; "
+                     "the subrect is used for both (logged once)",
+                     cur.renderW, cur.renderH, rw, rh);
+            }
+            cur.renderW = prev.renderW = static_cast<float>(rw);
+            cur.renderH = prev.renderH = static_cast<float>(rh);
+        }
+        // An origin re-base between N-1 and N must not look like motion.
+        const bool originChanged =
+            have_prev_camera && std::memcmp(prev_camera.originShift, cur.originShift, sizeof(cur.originShift)) != 0;
+        if (originChanged)
+            LOGD("camera: origin shift changed (%.3f, %.3f, %.3f) -> (%.3f, %.3f, %.3f); reset", prev.originShift[0],
+                 prev.originShift[1], prev.originShift[2], cur.originShift[0], cur.originShift[1], cur.originShift[2]);
+        ConstantsInput in;
+        in.cur = &cur;
+        in.prev = have_prev_camera ? &prev : nullptr;
+        in.capture = cap.params;
+        in.prevFrameHadInputs = prev_had_inputs && !originChanged && !reset_next_fg;
+        in.options.flipHandedness = config.camera_flip_handedness;
+        in.options.negateSide = config.camera_negate_side;
+        g.constantsOk = BuildFrameConstants(in, &d.constants, &g.constantsWhy);
+        if (g.constantsOk && !logged_constants) {
+            logged_constants = true;
+            LOGI("constants: %s", FormatConstantsForLog(d.constants).c_str());
+        }
+    }
+    FgGateResult gate = DecideFg(g);
+    if (gate.on && !vram_guard.Passed()) {
+        if (vram_guard.CheckDue(frame_index)) vram_guard.Record(frame_index, RunVramCheck());
+        if (!vram_guard.Passed()) {
+            g.vramRefusal = vram_guard.Refusal();
+            gate = DecideFg(g);
+        }
+    }
+    if (!token) gate = FgGateResult{false, "no Streamline frame token", true};
+    d.fg = gate.on;
+    d.tag = token && ShouldTag(g, gate, config.tag_without_fg);
+    d.reason = gate.reason;
+    d.perFrame = gate.perFrame;
+    return d;
+}
+
+// Spec 6.11: the estimate for the current sizes against the free budget.
+VramCheck D3D12Presenter::Impl::RunVramCheck() {
+    sl::DLSSGState st;
+    const sl::Result r = sl->GetDlssgState(true, Hints(), &st);
+    frames_since_state = 0;
+    if (r != sl::Result::eOk)
+        return VramCheck{false, std::string("video memory: no DLSS-G estimate (") + SlResultName(r) + ")"};
+    vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
+    uint64_t usage = 0;
+    uint64_t budget = 0;
+    std::string why;
+    if (!QueryVramBytes(adapter3.Get(), &usage, &budget, &why)) {
+        LOGI("fg: video memory check skipped (%s); DLSS-G estimate %llu MiB", why.c_str(),
+             static_cast<unsigned long long>(st.estimatedVRAMUsageInBytes / (1024 * 1024)));
+        return VramCheck{};
+    }
+    const VramCheck c = CheckVideoMemory(budget, usage, st.estimatedVRAMUsageInBytes, config.fg_vram_headroom_mib);
+    LOGI("fg: video memory check: DLSS-G estimate %llu MiB + headroom %u MiB, budget %llu MiB, usage %llu MiB: %s; "
+         "VSync with DLSS-G %s",
+         static_cast<unsigned long long>(st.estimatedVRAMUsageInBytes / (1024 * 1024)), config.fg_vram_headroom_mib,
+         static_cast<unsigned long long>(budget / (1024 * 1024)), static_cast<unsigned long long>(usage / (1024 * 1024)),
+         c.ok ? "ok" : c.reason.c_str(), vsync_available ? "available" : "not available");
+    return c;
+}
+
+// slDLSSGSetOptions only when the mode, or while on the size hints, change
+// (spec 6.8). Returns the mode Streamline has afterwards.
+bool D3D12Presenter::Impl::SetMode(bool on) {
+    if (!sl || !fg_supported) return false;
+    const DlssgSizeHints h = Hints();
+    if (mode_known && on == mode_on && (!on || SameHints(h, mode_hints))) return mode_on;
+    if (sl->SetDlssgOptions(on, h) == sl::Result::eOk) {
+        mode_known = true;
+        if (on && !mode_on) frames_since_state = 0;
+        mode_on = on;
+        mode_hints = h;
+    }
+    return mode_on;
+}
+
+// "fg: DLSS-G on" / "fg: DLSS-G off (<reason>)" on every mode change, and
+// when a lasting off reason changes; per-frame reasons are throttled WARNs.
+void D3D12Presenter::Impl::LogMode(bool on, const std::string& reason, bool perFrame) {
+    if (on) {
+        if (!mode_logged || !logged_on) LOGI("fg: DLSS-G on");
+        mode_logged = true;
+        logged_on = true;
+        logged_off_reason.clear();
+        return;
+    }
+    if (!mode_logged || logged_on || (!perFrame && reason != logged_off_reason)) {
+        LOGI("fg: DLSS-G off (%s)", reason.c_str());
+        logged_off_reason = reason;
+    }
+    mode_logged = true;
+    logged_on = false;
+    if (perFrame && frame_off_throttle.ShouldLog(reason, GetTickCount64()))
+        LOGW("fg: frame without DLSS-G: %s", reason.c_str());
+}
+
+// Every 60 frames while DLSS-G is on (spec 6.8, 9).
+void D3D12Presenter::Impl::PollState() {
+    if (!sl || !fg_supported || !mode_on || frames_since_state < kStatePollFrames) return;
+    const uint32_t real = frames_since_state;
+    sl::DLSSGState st;
+    const sl::Result r = sl->GetDlssgState(false, Hints(), &st);
+    frames_since_state = 0;
+    if (r != sl::Result::eOk) {
+        state_failure = std::string("query failed: ") + SlResultName(r);
+        LOGW("fg: slDLSSGGetState failed (%s); DLSS-G stays off until the next resize or toggle", SlResultName(r));
+        return;
+    }
+    vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
+    polled_state = true;
+    const uint32_t generated = GeneratedFrames(st.numFramesActuallyPresented, real);
+    stats_generated += generated;
+    if (generated > 0 && !logged_active) {
+        logged_active = true;
+        LOGI("fg: DLSS-G active");
+        LOGD("fg: %u frames presented for %u real frames", st.numFramesActuallyPresented, real);
+        sl->LogLoadedModules();  // spec 6.8: again when DLSS-G first reports active
+    }
+    const uint32_t status = static_cast<uint32_t>(st.status);
+    if (status != 0) {
+        state_failure = DlssgStatusText(status);
+        LOGW("fg: DLSS-G status %s; DLSS-G stays off until the next resize or toggle", state_failure.c_str());
+    }
+}
+
+void D3D12Presenter::Impl::CountFrame(const FrameCapture& cap, bool tagged, bool fg) {
+    if (cap.captured) {
+        ++stats_captures;
+        ++totals.captures;
+    }
+    if (cap.captured && cap.cameraFresh) {
+        ++stats_camera_fresh;
+        ++totals.camera_fresh;
+    }
+    if (tagged) {
+        ++stats_tagged;
+        ++totals.tagged;
+    }
+    if (fg) {
+        ++stats_fg_frames;
+        ++totals.fg_frames;
+    }
+}
+
+// Spec 6.3 "Resizing" step 1: the last frame once more, D3D12 side only
+// (spec 7 steps 5-7), with its own frame token and the full marker sequence
+// and DLSS-G already set to eOff. Not a CSP frame: no statistics, no latency
+// release.
+void D3D12Presenter::Impl::PresentAgain(D3D12Presenter& self) {
+    if (self.stopped_ || stalled || !have_csp_present || !fences) return;
+    const UINT idx = self.chain_->GetCurrentBackBufferIndex();
+    if (idx >= kBuffers) return;
+    if (!fences->CpuWaitProgress(buffer_value[idx], kCpuWaitMs)) {
+        EnterStall("a D3D12 back buffer was still in use after 500 ms");
+        return;
+    }
+    if (timer12_pending[idx]) {
+        double ms = 0;
+        if (timer12->Read(idx, &ms)) {
+            sum12 += ms;
+            ++n12;
+        }
+        timer12_pending[idx] = false;
+    }
+    ID3D12GraphicsCommandList* cl = list[idx].Get();
+    HRESULT hr = alloc[idx]->Reset();
+    if (SUCCEEDED(hr)) hr = cl->Reset(alloc[idx].Get(), nullptr);
+    if (FAILED(hr)) return;
+    const D3D12_RESOURCE_BARRIER toCopy =
+        Transition(back[idx].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+    cl->ResourceBarrier(1, &toCopy);
+    cl->CopyResource(back[idx].Get(), shared12.Get());
+    const D3D12_RESOURCE_BARRIER toPresent =
+        Transition(back[idx].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+    cl->ResourceBarrier(1, &toPresent);
+    if (FAILED(cl->Close())) return;
+    ID3D12CommandList* lists[] = {cl};
+    queue->ExecuteCommandLists(1, lists);
+
+    BOOL fullscreen = FALSE;
+    if (FAILED(self.chain_->GetFullscreenState(&fullscreen, nullptr))) fullscreen = FALSE;
+    const PresentPlan plan = PlanPresent(last_csp_sync, last_csp_flags, tearing, !fullscreen, false, vsync_available);
+    {
+        std::lock_guard<std::mutex> lock(marker_mu);
+        EmitMarkers(pcl.BeforePresent());
+    }
+    const HRESULT presentHr = self.chain_->Present(plan.sync, plan.flags);
+    {
+        std::lock_guard<std::mutex> lock(marker_mu);
+        const std::vector<PclMarker> after = pcl.AfterPresent();
+        if (token && !after.empty()) ++frames_with_markers;
+        EmitMarkers(after);
+    }
+    const uint64_t done = fences->Next();
+    queue->Signal(fences->Shared12(), done);
+    queue->Signal(fences->Progress(), done);
+    fences->last_submitted.store(done);
+    buffer_value[idx] = done;
+    prev_value = done;
+    LOGI("fg: the last frame was presented once more with DLSS-G off before the swap chain change (0x%08lX)",
+         static_cast<unsigned long>(presentHr));
+    if (IsDeviceError(presentHr)) {
+        last_device_error.store(presentHr);
+        Stop(self, StopErrorFor(presentHr), "Present returned a device error");
+        return;
+    }
+    StartFrame();
+}
+
+// Spec 6.3 "Resizing" step 1 and spec 8: runs before ResizeBuffers,
+// SetFullscreenState and ResizeTarget. The camera latch restarts; the capture
+// slots are recreated lazily when the sources change.
+void D3D12Presenter::Impl::BeforeChainChange(D3D12Presenter& self) {
+    if (coordinator) coordinator->ResetCamera();
+    have_prev_camera = false;
+    prev_had_inputs = false;
+    if (!sl) return;
+    state_failure.clear();  // spec 9: retried after the next resize
+    const bool wasOn = mode_on;
+    if (wasOn) {
+        SetMode(false);
+        LogMode(false, "swap chain change", false);
+    }
+    if (prev_tagged && token) sl->SetNullTags(*token, kViewport);
+    prev_tagged = false;
+    if (wasOn) PresentAgain(self);
+}
 
 bool D3D12Presenter::Impl::CreateSharedTexture(UINT w, UINT h, std::string* err) {
     shared12.Reset();
@@ -624,6 +1104,7 @@ HRESULT D3D12Presenter::PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* 
 
 HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceContext* ctx, ID3D11Texture2D* source,
                                            UINT cspSync, UINT cspFlags) {
+    if (ngx_attached) ProcessNgx();
     if (self.stopped_) return stop_error;
     if (!ctx) return E_INVALIDARG;
     ++stats_presents;
@@ -638,6 +1119,30 @@ HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceCon
 
 HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext* ctx, ID3D11Texture2D* source,
                                       UINT cspSync, UINT cspFlags) {
+    // M3: this Present ends the bridge frame; its capture pairs with it.
+    FrameCapture cap;
+    if (coordinator) cap = coordinator->EndFrame();
+    if (cap.evaluates > 1) {
+        ++stats_double;
+        ++totals.double_evaluates;
+    }
+    if (cap.captured) {
+        last_mvec_w = cap.mvecWidth;
+        last_mvec_h = cap.mvecHeight;
+        last_mvec_format = cap.mvecFormat;
+    }
+    if (sl) PollHotkey();
+    // A frame that is not delivered breaks the history (spec 6.7 reset).
+    struct NotDelivered {
+        Impl& impl;
+        bool delivered = false;
+        ~NotDelivered() {
+            if (delivered) return;
+            impl.prev_had_inputs = false;
+            impl.have_prev_camera = false;
+        }
+    } history{*this};
+
     // Stall handling first (spec 6.4 "Stalled mode").
     if (watchdog->DeviceRemoved() || device12->GetDeviceRemovedReason() != S_OK) {
         Stop(self, DXGI_ERROR_DEVICE_REMOVED, "the D3D12 device was removed");
@@ -678,7 +1183,10 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     // D3D12 side.
     ++frames;
     if (debug_stall_ms && frames == kDebugStallFrame) StartDebugStall();
-    HRESULT hr = queue->Wait(fences->Shared12(), v);
+    HRESULT hr = S_OK;
+    // Nothing on the queue reads the capture slot before its copy is done.
+    if (cap.captured) hr = queue->Wait(fences->Shared12(), cap.fenceValue);
+    if (SUCCEEDED(hr)) hr = queue->Wait(fences->Shared12(), v);
     if (FAILED(hr)) LOGW("presenter: queue Wait failed: 0x%08lX", static_cast<unsigned long>(hr));
     const UINT idx = self.chain_->GetCurrentBackBufferIndex();
     if (idx >= kBuffers) {
@@ -717,6 +1225,41 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     const D3D12_RESOURCE_BARRIER toPresent =
         Transition(back[idx].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
     cl->ResourceBarrier(1, &toPresent);
+
+    // M3, spec 7 step 5.4: DLSS-G for this Present; tags and constants for
+    // this frame's token, with the frame's open command list.
+    bool tagged = false;
+    bool fgThisFrame = false;
+    if (sl) {
+        const FrameDecision dec = Decide(cap);
+        if (dec.tag) {
+            const sl::Extent extent{0, 0, cap.params.renderW, cap.params.renderH};
+            const sl::Result tagResult =
+                sl->SetTagsForFrame(*token, kViewport, slots->Depth12(cap.slot), slots->Mvec12(cap.slot), extent, cl);
+            const sl::Result constResult =
+                tagResult == sl::Result::eOk ? sl->SetConstants(dec.constants, *token, kViewport) : tagResult;
+            tagged = tagResult == sl::Result::eOk && constResult == sl::Result::eOk;
+            if (tagged && !logged_first_tags) {
+                logged_first_tags = true;
+                LOGI("fg: first tags and constants set (frame %u)", frame_index);
+            }
+        }
+        if (!tagged && prev_tagged && token) sl->SetNullTags(*token, kViewport);
+        std::string reason = dec.reason;
+        bool perFrame = dec.perFrame;
+        if (dec.fg && !tagged) {
+            reason = "Streamline refused the tags or constants";
+            perFrame = true;
+        }
+        fgThisFrame = SetMode(dec.fg && tagged);
+        if (dec.fg && tagged && !fgThisFrame) {
+            reason = "slDLSSGSetOptions(eOn) failed";
+            perFrame = false;
+        }
+        LogMode(fgThisFrame, reason, perFrame);
+        if (fgThisFrame) reset_next_fg = false;
+    }
+
     hr = cl->Close();
     if (FAILED(hr)) {
         LOGE("presenter: command list close failed: 0x%08lX", static_cast<unsigned long>(hr));
@@ -728,11 +1271,24 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
 
     BOOL fullscreen = FALSE;
     if (FAILED(self.chain_->GetFullscreenState(&fullscreen, nullptr))) fullscreen = FALSE;
-    const PresentPlan plan = PlanPresent(cspSync, cspFlags, tearing, !fullscreen, false, true);
+    // Spec 7 step 6, with the VSync rule for DLSS-G.
+    const PresentPlan plan = PlanPresent(cspSync, cspFlags, tearing, !fullscreen, fgThisFrame, vsync_available);
+    if (plan.vsync_unavailable_with_fg && !logged_vsync_fallback) {
+        logged_vsync_fallback = true;
+        LOGW("fg: VSync is not available with DLSS-G here (bIsVsyncSupportAvailable is not eTrue); presenting with "
+             "sync interval 0 without tearing, DWM keeps the borderless window tear-free (logged once)");
+    }
     LogPresentMode(cspSync, cspFlags, plan, fullscreen);
-    if (sl) EmitMarkers(pcl.BeforePresent());
+    have_csp_present = true;
+    last_csp_sync = cspSync;
+    last_csp_flags = cspFlags;
+    if (sl) {
+        std::lock_guard<std::mutex> lock(marker_mu);
+        EmitMarkers(pcl.BeforePresent());
+    }
     const HRESULT presentHr = self.chain_->Present(plan.sync, plan.flags);
     if (sl) {
+        std::lock_guard<std::mutex> lock(marker_mu);
         const std::vector<PclMarker> after = pcl.AfterPresent();
         if (token && !after.empty()) ++frames_with_markers;
         EmitMarkers(after);
@@ -745,6 +1301,20 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     buffer_value[idx] = done;
     prev_value = done;
     last_present_hr.store(presentHr);
+
+    // M3: the D3D12 side is done with the slot once progress passes done;
+    // this frame is frame N-1 of the next one.
+    if (tagged && coordinator) coordinator->NoteTagged(cap.slot, done);
+    history.delivered = true;
+    prev_tagged = tagged;
+    prev_had_inputs = tagged;
+    have_prev_camera = cap.cameraResult == CameraChannel::ReadResult::Ok;
+    if (have_prev_camera) prev_camera = cap.camera;
+    CountFrame(cap, tagged, fgThisFrame && SUCCEEDED(presentHr));
+    if (sl) {
+        ++frames_since_state;
+        PollState();
+    }
 
     if (FAILED(presentHr)) {
         ++stats_failed;
@@ -846,8 +1416,16 @@ void D3D12Presenter::ShutdownStreamlineOnRelease() {
 uint32_t D3D12Presenter::FramesWithMarkers() const { return impl_ ? impl_->frames_with_markers : 0; }
 
 uint32_t D3D12Presenter::MarkerProblems() const {
-    return impl_ ? impl_->pcl.AbandonedFrames() + impl_->pcl.OutOfOrderCalls() : 0;
+    if (!impl_) return 0;
+    std::lock_guard<std::mutex> lock(impl_->marker_mu);
+    return impl_->pcl.AbandonedFrames() + impl_->pcl.OutOfOrderCalls();
 }
+
+NgxEvaluateSink* D3D12Presenter::CaptureSink() const { return impl_ ? impl_->coordinator.get() : nullptr; }
+
+bool D3D12Presenter::DlssgSupported() const { return impl_ && impl_->fg_supported; }
+
+D3D12Presenter::FgTotals D3D12Presenter::Totals() const { return impl_ ? impl_->totals : FgTotals(); }
 
 bool D3D12Presenter::Impl::SourceMatches(ID3D11Texture2D* source) {
     if (!source || !shared11) return false;
@@ -884,16 +1462,31 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     if (QueryVramMiB(adapter3.Get(), &vramUsage, &vramBudget, nullptr))
         std::snprintf(vram, sizeof(vram), "%llu/%llu", static_cast<unsigned long long>(vramUsage),
                       static_cast<unsigned long long>(vramBudget));
+    // generated: frames DLSS-G added in this second, from
+    // numFramesActuallyPresented (n/a until slDLSSGGetState answered).
+    char generated[24] = "n/a";
+    if (polled_state)
+        std::snprintf(generated, sizeof(generated), "%llu", static_cast<unsigned long long>(stats_generated));
+    uint32_t pclProblems = 0;
+    {
+        std::lock_guard<std::mutex> lock(marker_mu);
+        pclProblems = pcl.AbandonedFrames() + pcl.OutOfOrderCalls();
+    }
     // base: CSP frames; presented: frames the D3D12 chain accepted (occluded
-    // ones included). M1 has no frame generation, hence fg=off. vram_mib:
+    // ones included). fg: the DLSS-G mode Streamline has; its off reason is
+    // logged when it changes. The M3 fields sit before vram_mib; vram_mib:
     // local video memory usage/budget of the render adapter, last so that
     // parsers of the fields before it keep working.
     LOGI("stats: base_fps=%.1f presented_fps=%.1f skipped=%u failed=%u occluded=%u uncopied=%u max_frame_ms=%.1f "
-         "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=off stalls=%u streamline=%s reflex=%s "
-         "pcl_problems=%u vram_mib=%s",
+         "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=%s stalls=%u streamline=%s reflex=%s "
+         "pcl_problems=%u captures=%u camera_fresh=%u tagged=%u fg_frames=%u generated=%s double_evaluates=%u "
+         "vram_mib=%s",
          stats_presents / seconds, stats_delivered / seconds, stats_skipped, stats_failed, stats_occluded,
-         stats_uncopied, max_frame_ms, max_present_ms, a11, a12, stalls, sl ? "on" : "off", reflex_on ? "on" : "off",
-         pcl.AbandonedFrames() + pcl.OutOfOrderCalls(), vram);
+         stats_uncopied, max_frame_ms, max_present_ms, a11, a12, mode_on ? "on" : "off", stalls, sl ? "on" : "off",
+         reflex_on ? "on" : "off", pclProblems, stats_captures, stats_camera_fresh, stats_tagged, stats_fg_frames,
+         generated, stats_double, vram);
+    stats_captures = stats_camera_fresh = stats_tagged = stats_fg_frames = stats_double = 0;
+    stats_generated = 0;
     stats_start = now;
     stats_presents = stats_delivered = stats_skipped = stats_failed = stats_occluded = stats_uncopied = 0;
     max_frame_ms = max_present_ms = 0;
@@ -907,6 +1500,12 @@ void D3D12Presenter::Impl::EnterStall(const char* reason) {
     stalled = true;
     stall_start = GetTickCount64();
     ++stalls;
+    // Spec 6.4 "Stalled mode": DLSS-G off, on this (the presenting) thread.
+    prev_had_inputs = false;
+    if (mode_on) {
+        SetMode(false);
+        LogMode(false, "D3D12 stall", false);
+    }
     const uint64_t pending = fences->pending_wait.load();
     fences->CpuSignalShared(pending);  // releases CSP's D3D11 queue
     LOGW("D3D12 stall: %s (progress %llu, last submitted %llu, pending wait %llu); D3D11 released, nothing is "
@@ -998,7 +1597,7 @@ HRESULT D3D12Presenter::Resize(UINT width, UINT height) {
         if (!impl_ || !chain_) return DXGI_ERROR_INVALID_CALL;
         if (stopped_) return impl_->stop_error;
         if (width == 0 || height == 0) return DXGI_ERROR_INVALID_CALL;
-        impl_->BeforeChainChange();
+        impl_->BeforeChainChange(*this);
         if (!impl_->Drain(*this, "ResizeBuffers")) {
             // Stall path: the resize runs once the queue has caught up.
             impl_->resize_pending = true;
@@ -1028,7 +1627,7 @@ HRESULT D3D12Presenter::TestPresent() const {
 HRESULT D3D12Presenter::SetFullscreenState(BOOL fullscreen, IDXGIOutput* target) {
     try {
         if (!impl_ || !chain_) return DXGI_ERROR_INVALID_CALL;
-        if (!stopped_) impl_->BeforeChainChange();
+        if (!stopped_) impl_->BeforeChainChange(*this);
         if (!stopped_ && !impl_->Drain(*this, "SetFullscreenState")) return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
         return chain_->SetFullscreenState(fullscreen, target);
     } catch (...) {
@@ -1048,7 +1647,7 @@ HRESULT D3D12Presenter::GetFullscreenState(BOOL* fullscreen, IDXGIOutput** targe
 HRESULT D3D12Presenter::ResizeTarget(const DXGI_MODE_DESC* params) {
     try {
         if (!impl_ || !chain_) return DXGI_ERROR_INVALID_CALL;
-        if (!stopped_) impl_->BeforeChainChange();
+        if (!stopped_) impl_->BeforeChainChange(*this);
         if (!stopped_ && !impl_->Drain(*this, "ResizeTarget")) return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
         return chain_->ResizeTarget(params);
     } catch (...) {
@@ -1079,6 +1678,20 @@ void D3D12Presenter::Impl::StartDebugStall() {
 // ---------------------------------------------------------------- shutdown
 
 void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
+    // M3: no evaluate reaches the coordinator from here on.
+    if (ngx_attached) {
+        NgxHook::Get().SetSink(nullptr);
+        ngx_attached = false;
+    }
+    // Spec 6.3 "Final Release" step 1: DLSS-G off and null tags.
+    if (sl && !self.stopped_) {
+        if (mode_on) {
+            SetMode(false);
+            LogMode(false, "the swap chain is released", false);
+        }
+        if (prev_tagged && token) sl->SetNullTags(*token, kViewport);
+        prev_tagged = false;
+    }
     // Release the debug wait first so that the drain below can finish.
     if (debug_thread.joinable()) {
         SetEvent(debug_cancel);
@@ -1137,6 +1750,8 @@ void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
             back[i].Detach();
         }
         static_cast<void>(timer12.release());
+        static_cast<void>(slots.release());
+        coordinator.reset();  // holds no GPU object
         shared12.Detach();
         self.chain_.Detach();
         static_cast<void>(fences.release());
@@ -1153,6 +1768,8 @@ void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
     }
     self.chain_.Reset();
     timer12.reset();
+    coordinator.reset();
+    slots.reset();
     shared12.Reset();
     shared11.Reset();
     fences.reset();

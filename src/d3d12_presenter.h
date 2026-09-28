@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "config.h"
 #include "fence_pair.h"
 #include "gpu_timers.h"
 #include "stall_watchdog.h"
@@ -24,6 +25,19 @@ namespace acdb {
 extern const GUID IID_ReShadeUnwrappedObject;
 
 class StreamlineRuntime;
+class CameraChannel;
+class NgxEvaluateSink;
+
+// What FactoryHook knows from the bootstrap (M3). The defaults are what the
+// unit tests need: no NGX hook, the process-wide camera channel.
+struct PresenterEnvironment {
+    // Install NgxHook once per process (first presenter) and attach this
+    // presenter's capture coordinator with NgxHook::SetSink.
+    bool install_ngx_hook = false;
+    bool spoof_loaded = false;      // dlssg_for_sm86's version.dll from the game folder
+    bool allow_stretching = false;  // dxgi_tweaks.ini ALLOW_STRETCHING=1 (runtime aspect test)
+    const CameraChannel* camera = nullptr;  // nullptr: CameraChannel::Get()
+};
 
 struct PresenterCreateInfo {
     ID3D11Device* device11 = nullptr;   // CSP's native device
@@ -33,6 +47,8 @@ struct PresenterCreateInfo {
     // the plain M1 path (unit tests only; production never proxies without
     // Streamline).
     StreamlineRuntime* streamline = nullptr;
+    Config config;              // M3: start_with_fg, hotkey, camera switches, DLSS-G policy
+    PresenterEnvironment env;   // M3
 };
 
 // Streamline path (spec 6.4, M2), differences from the plain path:
@@ -57,6 +73,39 @@ struct PresenterCreateInfo {
 //  - shutdown: the destructor drains, CPU-signals pending_wait, and when the
 //    owner asked for it (ShutdownStreamlineOnRelease) calls
 //    StreamlineRuntime::Shutdown before releasing any D3D12/DXGI object.
+//
+// M3 (DLSS-G), Streamline path:
+//  - creation: when DlssgSupported (slIsFeatureSupported and the DLSS-G
+//    functions) is false and config.proxy_without_fg is 0, creation fails
+//    with DlssgUnsupportedMessage (after SetDevice, so Streamline is shut down
+//    before the device is released, and the chain passes through). Both
+//    paths create CaptureSlots on the native device pair and a
+//    CaptureCoordinator; with env.install_ngx_hook the first presenter of the
+//    process installs NgxHook, and every presenter attaches its coordinator
+//    (SetSink) as the last step of creation and detaches it first thing in
+//    the destructor. "NGX hook: installed on <n> module(s): <names>" is
+//    logged then and whenever the number of hooked modules changes.
+//  - PresentFrame: NgxHook::ProcessPendingRescan first; the hotkey (Ctrl+F10
+//    by default, only while the game window is in the foreground) toggles
+//    DLSS-G; the coordinator's frame ends (EndFrame); the D3D12 queue waits
+//    for the capture's fence value before the frame's commands; the gate
+//    (DecideFg) with BuildFrameConstants (frame N-1's snapshot as prev, the
+//    subrect as the render size when the camera's aspect differs by more
+//    than 0.5%, reset when originShift changed or frame N-1 had no DLSS-G
+//    inputs) and the video memory guard decides DLSS-G for this Present;
+//    tags (the open command list, extent {0,0,subrect}) and constants are
+//    set when DLSS-G is on, or with tag_without_fg when the inputs exist;
+//    null tags when the previous frame was tagged and this one is not;
+//    SetDlssgOptions only when the mode (or, while on, the size hints)
+//    changes; PlanPresent with the mode and bIsVsyncSupportAvailable;
+//    slDLSSGGetState every 60 frames while on (a failure status keeps DLSS-G
+//    off until the next resize or toggle; generated frames and "fg: DLSS-G
+//    active" come from numFramesActuallyPresented).
+//  - Resize, SetFullscreenState, ResizeTarget: with DLSS-G on, eOff and null
+//    tags, then the last frame is presented once more with its own token and
+//    the full marker sequence (not a CSP frame); the camera latch restarts.
+//  - stalls: entering stalled mode sets eOff.
+//  - log lines and stats fields: see the M3 log contract (tests).
 
 class D3D12Presenter {
 public:
@@ -139,6 +188,20 @@ public:
     // Frames that reached PresentEnd, and PCL sequencing problems (tests).
     uint32_t FramesWithMarkers() const;
     uint32_t MarkerProblems() const;  // abandoned frames + out-of-order calls
+
+    // M3. The capture coordinator NgxHook reports to (tests feed it directly).
+    NgxEvaluateSink* CaptureSink() const;
+    // Streamline accepted DLSS-G on this adapter and its functions resolved.
+    bool DlssgSupported() const;
+    // Counts since creation, the per-second stats fields' totals (tests).
+    struct FgTotals {
+        uint32_t captures = 0;          // Presents paired with a capture
+        uint32_t camera_fresh = 0;      // ... whose camera snapshot was fresh
+        uint32_t tagged = 0;            // Presents whose tags and constants Streamline accepted
+        uint32_t fg_frames = 0;         // Presents with DLSS-G on
+        uint32_t double_evaluates = 0;  // frames with more than one counted evaluate
+    };
+    FgTotals Totals() const;
 
 private:
     D3D12Presenter() = default;

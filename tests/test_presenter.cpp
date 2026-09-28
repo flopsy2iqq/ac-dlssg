@@ -17,6 +17,7 @@
 #include "d3d12_presenter.h"
 #include "gpu_test_devices.h"
 #include "log.h"
+#include "ngx_hook.h"
 #include "temp_dir.h"
 #include "test_framework.h"
 
@@ -137,6 +138,47 @@ HRESULT Frame(D3D12Presenter* p, ID3D11DeviceContext* ctx, const Source& src, in
 
 bool PresentOk(HRESULT hr) { return hr == S_OK || hr == DXGI_STATUS_OCCLUDED; }
 
+// CSP's DLSS inputs (spec 4).
+struct CaptureSources {
+    ComPtr<ID3D11Texture2D> depth;
+    ComPtr<ID3D11Texture2D> mvec;
+};
+
+CaptureSources CreateCaptureSources(ID3D11Device* dev, UINT w, UINT h) {
+    CaptureSources s;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.Format = DXGI_FORMAT_R32_TYPELESS;
+    td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    dev->CreateTexture2D(&td, nullptr, &s.depth);
+    td.Format = DXGI_FORMAT_R16G16_FLOAT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    dev->CreateTexture2D(&td, nullptr, &s.mvec);
+    return s;
+}
+
+// What NgxHook reports for CSP's evaluate.
+NgxEvaluateInputs EvaluateInputs(ID3D11DeviceContext* ctx, const CaptureSources& s) {
+    D3D11_TEXTURE2D_DESC desc{};
+    s.depth->GetDesc(&desc);
+    NgxEvaluateInputs in;
+    in.ctx = ctx;
+    in.depth = s.depth.Get();
+    in.mvec = s.mvec.Get();
+    in.mvScaleX = -static_cast<float>(desc.Width);
+    in.mvScaleY = -static_cast<float>(desc.Height);
+    in.subrectW = desc.Width;
+    in.subrectH = desc.Height;
+    in.createFlags = 2;
+    in.featureKey = 0x9000;
+    return in;
+}
+
 std::unique_ptr<D3D12Presenter> CreatePresenter(const acdb_test::GpuTestDevices& d, HWND hwnd, UINT w, UINT h) {
     PresenterCreateInfo info;
     info.device11 = d.device11.Get();
@@ -202,6 +244,40 @@ TEST(Presenter_CreatePresentAndResize) {
         // Invalid resizes are refused without harm.
         CHECK_EQ(p->Resize(0, 900), DXGI_ERROR_INVALID_CALL);
         CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), big, 1)));
+    }
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+}
+
+// M3: the presenter owns the capture coordinator; an evaluate pairs with the
+// next Present, whose D3D12 queue waits for the capture's fence value, and
+// the counters see captures and double evaluates. The plain path has no
+// Streamline, so nothing is tagged.
+TEST(Presenter_CaptureSinkPairsEachCaptureWithThePresent) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    GameWindow window(640, 360);
+    REQUIRE(window.Get() != nullptr);
+    {
+        auto p = CreatePresenter(d, window.Get(), 640, 360);
+        REQUIRE(p != nullptr);
+        NgxEvaluateSink* sink = p->CaptureSink();
+        REQUIRE(sink != nullptr);
+        Source src = CreateSource(d.device11.Get(), 640, 360);
+        CaptureSources cs = CreateCaptureSources(d.device11.Get(), 320, 180);
+        REQUIRE(src.rtv && cs.depth && cs.mvec);
+        for (int i = 0; i < 10; ++i) {
+            sink->OnEvaluate(EvaluateInputs(d.ctx11.Get(), cs));
+            if (i == 4) sink->OnEvaluate(EvaluateInputs(d.ctx11.Get(), cs));  // a double evaluate
+            CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, i)));
+        }
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 10)));  // a frame without an evaluate
+        const D3D12Presenter::FgTotals t = p->Totals();
+        CHECK_EQ(t.captures, 10u);
+        CHECK_EQ(t.double_evaluates, 1u);
+        CHECK_EQ(t.tagged, 0u);
+        CHECK_EQ(t.fg_frames, 0u);
+        CHECK(!p->Stopped());
     }
     d.ctx11->ClearState();
     d.ctx11->Flush();
@@ -340,7 +416,8 @@ TEST(Presenter_LogsStatisticsEverySecond) {
     const std::regex full(
         " INFO stats: base_fps=[0-9]+\\.[0-9] presented_fps=[0-9]+\\.[0-9] skipped=0 failed=0 occluded=[0-9]+ "
         "uncopied=0 max_frame_ms=[0-9]+\\.[0-9] max_present_ms=[0-9]+\\.[0-9] bridge_gpu_ms d3d11=[0-9.na/]+ "
-        "d3d12=[0-9.na/]+ fg=off stalls=0 streamline=off reflex=off pcl_problems=0 vram_mib=" + vram + "\n");
+        "d3d12=[0-9.na/]+ fg=off stalls=0 streamline=off reflex=off pcl_problems=0 captures=0 camera_fresh=0 "
+        "tagged=0 fg_frames=0 generated=n/a double_evaluates=0 vram_mib=" + vram + "\n");
     CHECK(std::regex_search(log, full));
     // Budget and usage are logged once at creation.
     const std::regex created(d.warp ? " INFO presenter: VRAM " : " INFO presenter: VRAM \\(local\\) budget [1-9][0-9]* MiB, "

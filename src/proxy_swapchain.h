@@ -32,12 +32,13 @@ public:
     // proxies in one process while Streamline allows one lifetime). The
     // final Release of a Streamline-backed proxy calls
     // StreamlineRuntime::Shutdown (spec 6.3 "Final Release"), after which
-    // FactoryHook passes every later chain through.
+    // FactoryHook passes every later chain through. config and env go to the
+    // presenter (M3: DLSS-G policy, NGX hook, camera, spoof and stretching).
     static HRESULT Create(IDXGIFactory2* factory, ID3D11Device* device11, HWND hwnd,
                           const DXGI_SWAP_CHAIN_DESC1& desc,
                           const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc,
                           const Config& config, StreamlineRuntime* streamline, IDXGISwapChain1** out,
-                          std::string* error);
+                          std::string* error, const PresenterEnvironment& env = PresenterEnvironment());
 
     // IUnknown
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override;
