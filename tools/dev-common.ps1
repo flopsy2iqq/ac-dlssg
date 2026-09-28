@@ -17,6 +17,11 @@ $script:AcdbDataDirName = 'ac-dlssg'
 # Windows 10/11 x64 installation. Never VERSION.dll (the spoof's name), the VC
 # runtime, d3d11/d3d12/dxgi or d3dcompiler.
 $script:AcdbImportAllowList = @('KERNEL32.dll', 'USER32.dll', 'ADVAPI32.dll', 'SHELL32.dll', 'ole32.dll')
+# The Streamline runtime the bridge loads from <game>\ac-dlssg\sl (spec 6.3,
+# 12); each DLL must carry NVIDIA's Authenticode signature.
+$script:AcdbSlDirName = 'sl'
+$script:AcdbSlDlls = @('sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll')
+$script:AcdbSlSignerCn = 'NVIDIA Corporation'
 $script:AcdbGameExe = 'acs.exe'
 $script:AcdbSteamAppId = '244210'
 $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
@@ -46,6 +51,17 @@ function Get-Sha256OfBytes([byte[]]$Bytes) {
     } finally {
         $sha.Dispose()
     }
+}
+
+# Empty when the file carries a valid Authenticode signature whose signer's
+# common name is NVIDIA Corporation; otherwise the reason.
+function Get-NvidiaSignatureProblem([string]$Path) {
+    $sig = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($sig.Status -ne 'Valid') { return "signature status $($sig.Status) ($($sig.StatusMessage))" }
+    if (-not $sig.SignerCertificate) { return 'no signer certificate' }
+    $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    if ($cn -ne $script:AcdbSlSignerCn) { return "signed by '$cn', not '$($script:AcdbSlSignerCn)'" }
+    return ''
 }
 
 function Get-NormalizedPath([string]$Path) {

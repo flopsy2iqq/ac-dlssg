@@ -14,7 +14,8 @@
 // ADVANCED_PACING.
 //
 // Whether the bridge proxied a swap chain is read from the bridge log, which
-// is the same evidence a user has in the game.
+// is the same evidence a user has in the game. The build puts the Streamline
+// DLLs in <exe dir>\ac-dlssg\sl, as the installer does in the game folder.
 //
 // Exit codes: 0 every check passed, 1 a check failed (the reason is printed),
 // 2 usage or set-up error.
@@ -342,6 +343,7 @@ struct App {
     double max_frame_ms = 0;
     int slow_frames = 0;
     int max_frame_index = -1;
+    std::vector<std::string> proxy_resizes;  // "presenter resized to WxH" for each resize of a proxy
 
     // --stall: 1x1 staging texture for the blocking read-back.
     ComPtr<ID3D11Texture2D> probe;
@@ -550,8 +552,19 @@ bool ClassifyChain(App& a) {
     Print("swap chain %d: %s (bridge log: %s)", a.chains_created, a.is_proxy ? "proxy" : "pass-through",
           d.line.c_str());
     if (d.creation_failed) return Fail("the bridge wanted a proxy but its creation failed");
-    if (a.opt.expect == Expect::Proxy && !a.is_proxy)
+    // Streamline allows one Init/Shutdown per process and the final Release
+    // of a proxy shuts it down (spec 6.3, 8): after that, --expect-proxy
+    // expects pass-through chains with that reason.
+    if (a.opt.expect == Expect::Proxy && a.proxies_released > 0) {
+        if (a.is_proxy)
+            return Fail("swap chain %d: expected a pass-through after Streamline was shut down, the bridge proxied it",
+                        a.chains_created);
+        if (d.line.find(": pass-through: Streamline already shut down") == std::string::npos)
+            return Fail("swap chain %d: pass-through without the reason \"Streamline already shut down\"",
+                        a.chains_created);
+    } else if (a.opt.expect == Expect::Proxy && !a.is_proxy) {
         return Fail("swap chain %d: expected a proxy, the bridge passed it through", a.chains_created);
+    }
     if (a.opt.expect == Expect::Passthrough && a.is_proxy)
         return Fail("swap chain %d: expected a pass-through, the bridge proxied it", a.chains_created);
     // A proxy logs its presenter; a pass-through must not create one.
@@ -724,6 +737,11 @@ bool ResizeChain(App& a, UINT width, UINT height) {
                     static_cast<unsigned long>(hr), HrName(hr));
     a.width = width;
     a.height = height;
+    if (a.is_proxy) {
+        char line[64];
+        std::snprintf(line, sizeof(line), "presenter resized to %ux%u", width, height);
+        a.proxy_resizes.push_back(line);
+    }
     if (!CheckDesc1(a, "after ResizeBuffers")) return false;
     return FetchBufferAndViews(a);
 }
@@ -985,9 +1003,16 @@ bool CheckLogAfterRun(App& a) {
     if (!log.found) return Fail("bridge log not found: %s", Narrow(a.log_path).c_str());
     bool ok = true;
     for (const auto& line : log.lines) {
+        // Streamline's own lines ("sl: ") included: none may be an error.
         if (line.find("] ERROR ") != std::string::npos) ok = Fail("bridge log error: %s", line.c_str());
-        // The stall scenario warns on purpose (the debug stall, its handling,
-        // and a resize the stall defers); anything else warning is a defect.
+        // Streamline's warnings are its own (without the spoof: no DLSS-G on
+        // this GPU) and only reported. The stall scenario warns on purpose (the
+        // debug stall, its handling, and a resize the stall defers); any other
+        // warning is a defect.
+        if (line.find("] WARN sl: ") != std::string::npos) {
+            Print("note: Streamline warning: %s", line.c_str());
+            continue;
+        }
         const bool expectedWarning =
             a.opt.stall && (line.find("stall") != std::string::npos || line.find("Stall") != std::string::npos);
         if (line.find("] WARN ") != std::string::npos && !expectedWarning)
@@ -1009,14 +1034,33 @@ bool CheckLogAfterRun(App& a) {
         std::snprintf(line, sizeof(line), "SetMaximumFrameLatency(%u): 0x00000000", kLatency);
         if (log.Count(line) != a.proxies_created)
             ok = Fail("the bridge log does not show SetMaximumFrameLatency(%u) for every proxy", kLatency);
-        if (a.opt.resize) {
-            char up[64];
-            char back[64];
-            std::snprintf(up, sizeof(up), "presenter resized to %ux%u", kResizeWidth, kResizeHeight);
-            std::snprintf(back, sizeof(back), "presenter resized to %ux%u", kWidth, kHeight);
-            if (!log.Has(up)) ok = Fail("the bridge log does not show \"%s\"", up);
-            if (!log.Has(back)) ok = Fail("the bridge log does not show \"%s\"", back);
+        // Resizes of a pass-through chain (after --recreate) never reach the presenter.
+        for (const auto& resized : a.proxy_resizes)
+            if (!log.Has(resized.c_str())) ok = Fail("the bridge log does not show \"%s\"", resized.c_str());
+
+        // M2: every proxy presents through Streamline's proxy chain with Reflex
+        // low latency and the PCL markers (spec 6.4, 7, 9).
+        if (log.Count("Streamline: initialised from ") != 1)
+            ok = Fail("the bridge log does not show \"Streamline: initialised from\" once");
+        if (const int n = log.Count(", Streamline proxy chain"); n != a.proxies_created)
+            ok = Fail("%d of %d presenters use the Streamline proxy chain", n, a.proxies_created);
+        if (const int n = log.Count("Streamline: Reflex low latency on (lowLatencyAvailable yes)");
+            n != a.proxies_created)
+            ok = Fail("Reflex low latency is available and on for %d of %d presenters", n, a.proxies_created);
+        int dlssg = 0;
+        for (const auto& l : log.lines) {
+            if (l.find("Streamline: DLSS-G ") == std::string::npos || l.find(" on this adapter (") == std::string::npos)
+                continue;
+            if (dlssg++ == 0) Print("note: %s", l.c_str());
         }
+        if (dlssg != a.proxies_created)
+            ok = Fail("the bridge log has %d DLSS-G support lines for %d presenters", dlssg, a.proxies_created);
+        constexpr char kStatsEnd[] = " streamline=on reflex=on pcl_problems=0";
+        constexpr size_t kStatsEndLen = sizeof(kStatsEnd) - 1;
+        for (const auto& l : log.lines)
+            if (l.find(" stats: base_fps=") != std::string::npos &&
+                (l.size() < kStatsEndLen || l.compare(l.size() - kStatsEndLen, kStatsEndLen, kStatsEnd) != 0))
+                ok = Fail("statistics without streamline=on reflex=on pcl_problems=0: %s", l.c_str());
         if (a.opt.stall) {
             if (!log.Has("debug stall")) ok = Fail("the bridge log does not show the debug stall");
             if (!log.Has("StallWatchdog: D3D12 progress stuck"))
@@ -1057,7 +1101,8 @@ void Usage() {
         "  --recreate            release and re-create the swap chain at frame 300\n"
         "  --stall               ACDLSSG_DEBUG_STALL_MS=1500: the D3D12 queue stalls; blocking read-backs on\n"
         "                        frames 20-60 must be released by the bridge's watchdog, frames must resume\n"
-        "  --expect-proxy        fail unless the bridge proxies every swap chain\n"
+        "  --expect-proxy        fail unless the bridge proxies every swap chain until a proxy is released;\n"
+        "                        later chains must pass through with \"Streamline already shut down\"\n"
         "  --expect-passthrough  fail unless the bridge passes every swap chain through\n"
         "  --fixture NAME        docs fixture: default = fixture\\docs, else fixture\\NAME\\docs\n"
         "  --fps-cap N           CPU frame limiter like CSP's FPS_CAP (--stall defaults to 200)\n"

@@ -6,7 +6,14 @@
   Runs build\tools\testapp\<Config>\testapp.exe once per scenario, in
   sequence, each with a timeout. The test app loads ac-dlssg.dll from
   its own directory the way ReShade loads its ProxyLibrary; the build copies
-  the DLL and the fixtures there.
+  the DLL and the fixtures there, and the staged Streamline DLLs to
+  ac-dlssg\sl, the layout of <game>\ac-dlssg\sl.
+
+  M2: a proxy presents through Streamline's proxy chain with Reflex and the
+  PCL markers; the test app checks that in the bridge log (--expect-proxy).
+  Streamline allows one lifetime per process and the first proxy's final
+  Release shuts it down, so with --recreate the second chain is a pass-through
+  with the reason "Streamline already shut down".
 
   For the default scenario the script also prints the bridge's "stats:" lines
   and checks the GPU budget of success criterion 3 (spec 2): the average of
@@ -34,7 +41,8 @@
   <BuildDir>\testapp-reshade\<Config>, which holds testapp.exe, ac-dlssg.dll,
   the fixtures, a copy of ReShade's dxgi.dll and a generated ReShade.ini
   (proxy library on, no effect or texture search paths, the effect cache in
-  that folder, tutorial done); no add-ons or shaders. There testapp.exe loads
+  that folder, tutorial done), the Streamline DLLs in ac-dlssg\sl; no add-ons
+  or shaders. There testapp.exe loads
   ReShade at process start through d3d11.dll's dxgi.dll import, as acs.exe
   does, and --via-dxgi makes it take its factory from ReShade. Besides the
   test app's own checks, the run folder's ReShade.log must show that ReShade
@@ -82,11 +90,15 @@ $scenarios = @(
     @{ Name = 'vsync';        Args = @('--vsync', '--expect-proxy') },
     @{ Name = 'resize';       Args = @('--resize', '--expect-proxy') },
     @{ Name = 'test-present'; Args = @('--test-present', '--expect-proxy') },
+    # The second chain passes through with "Streamline already shut down"
+    # (see the description), as in every scenario with --recreate.
     @{ Name = 'recreate';     Args = @('--recreate', '--expect-proxy') },
     @{ Name = 'stall';        Args = @('--stall', '--expect-proxy') },
-    # The second chain's debug stall (about frame 330) covers the resize at
-    # frame 400, so the presenter defers it and applies it once the queue
-    # catches up (resize_pending in d3d12_presenter.cpp).
+    # Since M2 the re-created chain passes through ("Streamline already shut
+    # down"), so only the first chain has the debug stall (its 30th frame) and
+    # the resize back at frame 400 goes to DXGI's chain. A resize that falls
+    # into a stall is deferred (resize_pending in d3d12_presenter.cpp); the
+    # test app notes it when the log shows one.
     @{ Name = 'stall-resize'; Args = @('--stall', '--resize', '--recreate', '--expect-proxy') },
     # The refusal path, with every chain operation, as a baseline against real DXGI.
     @{ Name = 'passthrough';  Args = @('--fixture', 'passthrough', '--expect-passthrough', '--resize', '--recreate',
@@ -139,6 +151,10 @@ function Initialize-ReShadeRunDir([string]$RunDir, [string]$TestAppDir, [string]
         Copy-Item -LiteralPath (Join-Path $TestAppDir $file) -Destination (Join-Path $RunDir $file) -Force
     }
     Copy-Item -Path (Join-Path $PSScriptRoot 'testapp\fixtures\*') -Destination $RunDir -Recurse -Force
+    # The Streamline DLLs the build staged next to testapp.exe.
+    $slDir = Join-Path $RunDir 'ac-dlssg\sl'
+    New-Item -ItemType Directory -Force -Path $slDir | Out-Null
+    Copy-Item -Path (Join-Path $TestAppDir 'ac-dlssg\sl\*.dll') -Destination $slDir -Force
     Copy-Item -LiteralPath $ReShadePath -Destination (Join-Path $RunDir 'dxgi.dll') -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $RunDir 'reshade-cache') | Out-Null
 }

@@ -11,23 +11,27 @@
       <game>\ReShade.ini, else RESHADE_BASE_PATH_OVERRIDE, else the game
       folder) and edits <base>\ReShade.ini;
     - refuses when [PROXY] ProxyLibrary names another DLL;
+    - requires the six Streamline DLLs in -StreamlineDir, each with a valid
+      Authenticode signature by NVIDIA Corporation;
     - records the old EnableProxyLibrary/ProxyLibrary lines and the file
       hashes in <game>\ac-dlssg\install\dev-manifest.json before
       changing anything;
-    - copies the DLL to <game>\ac-dlssg.dll through a .new file, a hash
-      check and a rename;
+    - copies the Streamline DLLs and the license files next to them into
+      <game>\ac-dlssg\sl, then the bridge DLL to <game>\ac-dlssg.dll, each
+      through a .new file, a hash check and a rename;
     - sets EnableProxyLibrary=1 and ProxyLibrary in place (adding them under
       [PROXY] only when missing), keeping every other byte of ReShade.ini;
     - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults and
       log_level=debug when it does not exist.
 
-  Running it again is an upgrade: the DLL is replaced, and the values recorded
-  by the first run stay the ones dev-uninstall.ps1 restores. The DLL being
-  replaced is copied to <game>\ac-dlssg\install\backup first, so that a
-  failed upgrade puts it back; after a successful upgrade the copy is deleted
-  when it was the build recorded in the manifest. A DLL whose hash matches
-  neither that build nor the new one was changed outside this script: it is
-  replaced only with -Force, and its copy is kept.
+  Running it again is an upgrade: the files are replaced, and the values
+  recorded by the first run stay the ones dev-uninstall.ps1 restores. A file
+  being replaced is copied to <game>\ac-dlssg\install\backup first, so that
+  a failed upgrade puts it back; after a successful upgrade the copy is
+  deleted when it was the version recorded in the manifest. A file whose hash
+  matches neither that version nor the new one was changed outside this
+  script (or is not in the manifest): it is replaced only with -Force, and
+  its copy is kept.
 
 .PARAMETER GameDir
   The Assetto Corsa folder (the one with acs.exe). Default: found through
@@ -37,8 +41,13 @@
   The bridge DLL to install. Default: build\Release\ac-dlssg.dll in the
   work tree this script belongs to.
 
+.PARAMETER StreamlineDir
+  The folder with the Streamline runtime DLLs and their license files.
+  Default: deps\streamline-2.14.1\bin\x64 in the work tree this script
+  belongs to, staged by tools\fetch-deps.ps1.
+
 .PARAMETER Force
-  Replace an installed ac-dlssg.dll that was changed outside this script.
+  Replace installed files that were changed outside this script.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-install.ps1
@@ -46,6 +55,7 @@
 param(
     [string]$GameDir,
     [string]$Dll,
+    [string]$StreamlineDir,
     [switch]$Force
 )
 
@@ -138,6 +148,80 @@ function Write-Manifest([string]$Path, $Manifest) {
     Write-Utf8NoBom $Path ($Manifest | ConvertTo-Json -Depth 8)
 }
 
+# The Streamline files to install from $Dir: the six DLLs, which must carry
+# NVIDIA's signature, and the license files next to them.
+function Get-StreamlineSources([string]$Dir) {
+    $problems = @()
+    $files = @()
+    foreach ($name in $script:AcdbSlDlls) {
+        $path = Join-Path $Dir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $problems += "$name is missing"; continue }
+        $problem = Get-NvidiaSignatureProblem $path
+        if ($problem) { $problems += "$name`: $problem" } else { $files += $path }
+    }
+    if ($problems.Count -gt 0) {
+        Stop-Refused ("the Streamline files in $Dir cannot be installed: " + ($problems -join '; ') +
+            '. Stage them again with tools\fetch-deps.ps1.')
+    }
+    $files += @(Get-ChildItem -LiteralPath $Dir -File -Filter '*license*' | Sort-Object Name | ForEach-Object { $_.FullName })
+    return $files
+}
+
+# How one file gets installed. $Recorded is the hash the manifest has for the
+# target ($null when it has none); a target that is neither that nor the new
+# file was changed outside this script.
+function New-FilePlan([string]$Source, [string]$Target, [string]$Rel, [string]$Recorded) {
+    $targetHash = $null
+    if (Test-Path -LiteralPath $Target -PathType Leaf) { $targetHash = Get-Sha256OfFile $Target }
+    $sourceHash = Get-Sha256OfFile $Source
+    return [pscustomobject]@{
+        Source     = $Source
+        Target     = $Target
+        Rel        = $Rel
+        SourceHash = $sourceHash
+        TargetHash = $targetHash
+        Recorded   = $Recorded
+        Foreign    = [bool]($targetHash -and $targetHash -ne $sourceHash -and $targetHash -ne $Recorded)
+    }
+}
+
+function New-DirForInstall([string]$Dir) {
+    if (Test-Path -LiteralPath $Dir) { return }
+    New-DirForInstall (Split-Path -Parent $Dir)
+    New-Item -ItemType Directory -Path $Dir | Out-Null
+    $script:rollback += @{ Kind = 'dir'; Path = $Dir }
+}
+
+# Copies one planned file through .new, a hash check and a rename. A file
+# being replaced is backed up first for the rollback; returns that backup
+# when it can go after a successful run (the replaced file was ours).
+function Install-PlannedFile($Plan, [string]$BackupDir, [string]$Stamp) {
+    if ($Plan.TargetHash -eq $Plan.SourceHash) {
+        Step "$($Plan.Target) is already this version"
+        return $null
+    }
+    New-DirForInstall (Split-Path -Parent $Plan.Target)
+    $drop = $null
+    if ($Plan.TargetHash) {
+        New-DirForInstall $BackupDir
+        $backup = Join-Path $BackupDir ('{0}.{1}' -f (Split-Path -Leaf $Plan.Target), $Stamp)
+        Copy-Item -LiteralPath $Plan.Target -Destination $backup -Force
+        if ((Get-Sha256OfFile $backup) -ne $Plan.TargetHash) { throw "hash check of the backup $backup failed" }
+        $script:rollback += @{ Kind = 'restorefile'; Path = $Plan.Target; Backup = $backup }
+        if ($Plan.Foreign) {
+            Step "note: $($Plan.Target) was changed outside this script (-Force); the replaced file is kept as $backup"
+        } else {
+            $drop = $backup
+        }
+    } else {
+        $script:rollback += @{ Kind = 'file'; Path = $Plan.Target }
+    }
+    $script:tempFiles += "$($Plan.Target).new"
+    [void](Copy-FileViaTemp $Plan.Source $Plan.Target)
+    Step "copied $($Plan.Rel) (hash verified)"
+    return $drop
+}
+
 $exitCode = 0
 $rollback = @()
 $tempFiles = @()
@@ -164,6 +248,14 @@ try {
     }
     $sourceHash = Get-Sha256OfFile $source
     Step "bridge DLL: $source (SHA-256 $sourceHash)"
+
+    if (-not $StreamlineDir) { $StreamlineDir = Join-Path $PSScriptRoot '..\deps\streamline-2.14.1\bin\x64' }
+    if (-not (Test-Path -LiteralPath $StreamlineDir -PathType Container)) {
+        Stop-Refused "Streamline folder not found: $StreamlineDir. Stage it first: tools\fetch-deps.ps1"
+    }
+    $slSourceDir = Get-NormalizedPath (Resolve-Path -LiteralPath $StreamlineDir).ProviderPath
+    $slSources = @(Get-StreamlineSources $slSourceDir)
+    Step "Streamline: $slSourceDir ($($script:AcdbSlDlls.Count) DLLs signed by $($script:AcdbSlSignerCn), $($slSources.Count - $script:AcdbSlDlls.Count) license files)"
 
     $dxgi = Join-Path $game 'dxgi.dll'
     if (-not (Test-Path -LiteralPath $dxgi -PathType Leaf)) {
@@ -203,14 +295,37 @@ try {
     } elseif (Test-Path -LiteralPath $target) {
         Stop-Refused "$target exists but there is no $manifestPath. Remove the DLL, or set EnableProxyLibrary=0 in ReShade.ini and delete the DLL, then run this again."
     }
-    $targetHash = $null
-    if (Test-Path -LiteralPath $target -PathType Leaf) { $targetHash = Get-Sha256OfFile $target }
+
+    # Streamline first, the bridge DLL after it (spec 12 order).
+    $slDir = Join-Path $dataDir $script:AcdbSlDirName
+    $slRecorded = @{}
+    $slOldFiles = @()
+    if ($manifest -and $manifest.PSObject.Properties['streamline']) {
+        $slOldFiles = @($manifest.streamline.files)
+        foreach ($f in $slOldFiles) { $slRecorded[([string]$f.path).ToLowerInvariant()] = [string]$f.sha256 }
+    }
+    $slPlans = @()
+    foreach ($file in $slSources) {
+        $name = Split-Path -Leaf $file
+        $rel = "$($script:AcdbDataDirName)\$($script:AcdbSlDirName)\$name"
+        $slTarget = Join-Path $slDir $name
+        if (-not $manifest -and (Test-Path -LiteralPath $slTarget)) {
+            Stop-Refused "$slTarget exists but there is no $manifestPath. Remove $slDir first, then run this again."
+        }
+        $slPlans += New-FilePlan $file $slTarget $rel $slRecorded[$rel.ToLowerInvariant()]
+    }
+    $dllRecorded = $null
+    if ($manifest) { $dllRecorded = [string]$manifest.dll.sha256 }
+    $dllPlan = New-FilePlan $source $target $script:AcdbDllName $dllRecorded
+    $plans = @($slPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
-    $foreignDll = [bool]($manifest -and $targetHash -and $targetHash -ne $sourceHash -and
-        $targetHash -ne [string]$manifest.dll.sha256)
-    if ($foreignDll -and -not $Force) {
-        Stop-Refused ("$target was changed outside this script: its SHA-256 is $targetHash, the recorded build is " +
-            "$($manifest.dll.sha256). Run again with -Force to replace it; a copy is kept in $installDir\backup.")
+    $foreign = @($plans | Where-Object { $_.Foreign })
+    if ($foreign.Count -gt 0 -and -not $Force) {
+        $what = @($foreign | ForEach-Object {
+                $was = if ($_.Recorded) { "the recorded one is $($_.Recorded)" } else { 'the manifest has no record of it' }
+                "$($_.Target) was changed outside this script: its SHA-256 is $($_.TargetHash), $was"
+            })
+        Stop-Refused (($what -join '; ') + ". Run again with -Force to replace it; a copy is kept in $installDir\backup.")
     }
 
     $iniBytes = [System.IO.File]::ReadAllBytes($ini)
@@ -255,6 +370,12 @@ try {
         }
         $configCreated = -not $configExisted
     }
+    # The files this run installs, plus earlier ones it no longer ships (the
+    # uninstaller still removes those).
+    $slFiles = @($slPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
+    foreach ($f in $slOldFiles) {
+        if (-not ($slPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $slFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
+    }
     $newManifest = [ordered]@{
         schema       = 1
         tool         = 'tools\dev-install.ps1'
@@ -263,17 +384,14 @@ try {
         updatedUtc   = $now
         gameDir      = $game
         reshade      = $reshadeRecord
+        streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
         dll          = [ordered]@{ path = $script:AcdbDllName; source = $source; sha256 = $sourceHash }
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }
     }
 
     # Changes start here. The manifest goes first so that an interrupted
     # install can still be undone by dev-uninstall.ps1.
-    if (-not (Test-Path -LiteralPath $installDir)) {
-        if (-not (Test-Path -LiteralPath $dataDir)) { $rollback += @{ Kind = 'dir'; Path = $dataDir } }
-        New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-        $rollback += @{ Kind = 'dir'; Path = $installDir }
-    }
+    New-DirForInstall $installDir
     if ($manifest) {
         $rollback += @{ Kind = 'restore'; Path = $manifestPath; Text = [System.IO.File]::ReadAllText($manifestPath) }
     } else {
@@ -282,33 +400,12 @@ try {
     Write-Manifest $manifestPath $newManifest
     Step "wrote $manifestPath"
 
-    $backupToDrop = $null
-    if ($targetHash -eq $sourceHash) {
-        Step "$target is already this build"
-    } else {
-        if ($targetHash) {
-            # A copy for the rollback below; kept afterwards only for a DLL
-            # that was changed outside this script.
-            $backupDir = Join-Path $installDir 'backup'
-            if (-not (Test-Path -LiteralPath $backupDir)) {
-                New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-                $rollback += @{ Kind = 'dir'; Path = $backupDir }
-            }
-            $backup = Join-Path $backupDir ("$($script:AcdbDllName).{0}" -f [DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
-            Copy-Item -LiteralPath $target -Destination $backup -Force
-            if ((Get-Sha256OfFile $backup) -ne $targetHash) { throw "hash check of the backup $backup failed" }
-            $rollback += @{ Kind = 'restorefile'; Path = $target; Backup = $backup }
-            if ($foreignDll) {
-                Step "note: $target was changed outside this script (-Force); the replaced DLL is kept as $backup"
-            } else {
-                $backupToDrop = $backup
-            }
-        } else {
-            $rollback += @{ Kind = 'file'; Path = $target }
-        }
-        $tempFiles += "$target.new"
-        [void](Copy-FileViaTemp $source $target)
-        Step "copied the DLL to $target (hash verified)"
+    $backupDir = Join-Path $installDir 'backup'
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
+    $backupsToDrop = @()
+    foreach ($plan in $plans) {
+        $drop = Install-PlannedFile $plan $backupDir $stamp
+        if ($drop) { $backupsToDrop += $drop }
     }
 
     if ($configExisted) {
@@ -331,11 +428,10 @@ try {
 
     $newManifest.state = 'installed'
     Write-Manifest $manifestPath $newManifest
-    if ($backupToDrop) {
-        # The previous build of ours: only the rollback needed it.
-        Remove-Item -LiteralPath $backupToDrop -Force
-        $backupDir = Split-Path -Parent $backupToDrop
-        if (@(Get-ChildItem -LiteralPath $backupDir -Force).Count -eq 0) { Remove-Item -LiteralPath $backupDir -Force }
+    # Previous versions of ours: only the rollback needed them.
+    foreach ($drop in $backupsToDrop) { Remove-Item -LiteralPath $drop -Force }
+    if ($backupsToDrop.Count -gt 0 -and @(Get-ChildItem -LiteralPath $backupDir -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $backupDir -Force
     }
     Say "done. ReShade now loads $proxyValue. Undo with tools\dev-uninstall.ps1."
 } catch {

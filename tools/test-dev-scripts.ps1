@@ -11,6 +11,12 @@
   The scripts are never pointed at a real game folder: every run passes
   -GameDir, and the runner refuses any -GameDir outside -FakeRoot.
 
+  The Streamline runtime installed by every case is the real, NVIDIA-signed
+  one from -StreamlineDir (default: deps\streamline-2.14.1\bin\x64, staged by
+  fetch-deps.ps1). Copies of it under -FakeRoot stand in for a newer build
+  (another signed DLL under one of the names), a tampered DLL (one byte
+  changed) and an unsigned one (certificate table removed).
+
   The fake dxgi.dll is a resource-only DLL whose version resource ProductName
   is "ReShade". It is built once with the Windows SDK's rc.exe and MSVC's
   link.exe, which the project's build needs anyway.
@@ -30,6 +36,7 @@
 #>
 param(
     [string]$FakeRoot,
+    [string]$StreamlineDir,
     [switch]$Keep
 )
 
@@ -140,9 +147,11 @@ function Invoke-Tool([string]$Script, [string[]]$Arguments) {
     return [pscustomobject]@{ Code = $code; Text = ($output -join "`n") }
 }
 
-function Install([string]$Game, [string]$Dll, [switch]$Force) {
+# -Sl '' leaves -StreamlineDir to the script's default.
+function Install([string]$Game, [string]$Dll, [switch]$Force, [string]$Sl = $slReal) {
     $a = @('-GameDir', $Game)
     if ($Dll) { $a += @('-Dll', $Dll) }
+    if ($Sl) { $a += @('-StreamlineDir', $Sl) }
     if ($Force) { $a += '-Force' }
     return Invoke-Tool $installScript $a
 }
@@ -354,6 +363,57 @@ $dllV2 = Join-Path $fakeBuild 'v2\ac-dlssg.dll'
 New-FakePeDll $dllV1 $goodExports
 New-FakePeDll $dllV2 $goodExports -Salt '-v2'
 
+if (-not $StreamlineDir) { $StreamlineDir = Join-Path $tools '..\deps\streamline-2.14.1\bin\x64' }
+$slReal = Get-NormalizedPath $StreamlineDir
+$slProblems = @(foreach ($n in $script:AcdbSlDlls) {
+        $p = Join-Path $slReal $n
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { "$n is missing" } else { $x = Get-NvidiaSignatureProblem $p; if ($x) { "$n`: $x" } }
+    })
+if ($slProblems.Count -gt 0) {
+    Write-Host "test-dev-scripts: FAILED, $slReal does not hold the signed Streamline runtime ($($slProblems -join '; ')). Stage it with tools\fetch-deps.ps1."
+    exit 1
+}
+$slRealFiles = @(Get-ChildItem -LiteralPath $slReal -File | Where-Object { $script:AcdbSlDlls -contains $_.Name -or $_.Name -like '*license*' } |
+        ForEach-Object { $_.Name } | Sort-Object)
+$slLicense = @($slRealFiles | Where-Object { $_ -like '*license*' })[0]
+
+function New-SlVariant([string]$Name) {
+    $dir = Join-Path $FakeRoot "streamline\$Name"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    foreach ($f in $slRealFiles) { Copy-Item -LiteralPath (Join-Path $slReal $f) -Destination $dir }
+    return $dir
+}
+
+# Drops the Authenticode certificate table of a PE32+ file: its data
+# directory entry (index 4) holds a file offset, and the table ends the file.
+function Remove-PeSignature([string]$Path) {
+    $b = [IO.File]::ReadAllBytes($Path)
+    $opt = [BitConverter]::ToInt32($b, 0x3C) + 24
+    if ([BitConverter]::ToUInt16($b, $opt) -ne 0x20B) { throw "$Path is not PE32+" }
+    $entry = $opt + 112 + 8 * 4
+    $offset = [BitConverter]::ToInt32($b, $entry)
+    if ($offset -le 0) { throw "$Path has no certificate table" }
+    for ($i = 0; $i -lt 8; $i++) { $b[$entry + $i] = 0 }
+    $out = New-Object byte[] $offset
+    [Array]::Copy($b, $out, $offset)
+    [IO.File]::WriteAllBytes($Path, $out)
+}
+
+Write-Host 'test-dev-scripts: building the Streamline variants'
+# A newer build: another NVIDIA-signed DLL under one name, a changed license.
+$slV2 = New-SlVariant 'v2'
+Copy-Item -LiteralPath (Join-Path $slReal 'sl.reflex.dll') -Destination (Join-Path $slV2 'sl.pcl.dll') -Force
+[IO.File]::AppendAllText((Join-Path $slV2 $slLicense), "changed for the upgrade test`r`n")
+$slTampered = New-SlVariant 'tampered'
+$tamperedDll = Join-Path $slTampered 'sl.common.dll'
+$tb = [IO.File]::ReadAllBytes($tamperedDll)
+$tb[0x1000] = $tb[0x1000] -bxor 0xFF
+[IO.File]::WriteAllBytes($tamperedDll, $tb)
+$slUnsigned = New-SlVariant 'unsigned'
+Remove-PeSignature (Join-Path $slUnsigned 'sl.pcl.dll')
+$slMissing = New-SlVariant 'missing'
+Remove-Item -LiteralPath (Join-Path $slMissing 'sl.interposer.dll')
+
 Write-Host 'test-dev-scripts: building the fake dxgi.dll files'
 $resourceTools = Find-ResourceTools
 $fakeReShade = $null
@@ -455,6 +515,136 @@ Invoke-Case 'A: realistic ReShade.ini, EnableProxyLibrary=0, CRLF, upgrade, full
     Check (Test-Path -LiteralPath $log) 'uninstall keeps logs'
     Check (Test-Path -LiteralPath $cfg) 'uninstall keeps the config'
     Check (-not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'uninstall removes the manifest'
+}
+
+# ---------------------------------------------------------------------------
+function Get-SlDir([string]$Game) { return Join-Path $Game 'ac-dlssg\sl' }
+
+# True when <game>\ac-dlssg\sl holds exactly the Streamline files of $Source.
+function Test-SlMatches([string]$Game, [string]$Source) {
+    $sl = Get-SlDir $Game
+    if (-not (Test-Path -LiteralPath $sl -PathType Container)) { return $false }
+    $names = @(Get-ChildItem -LiteralPath $sl -Force | ForEach-Object { $_.Name } | Sort-Object)
+    if (($names -join '|') -ne ($slRealFiles -join '|')) { return $false }
+    foreach ($n in $names) {
+        if ((Get-Sha (Join-Path $sl $n)) -ne (Get-Sha (Join-Path $Source $n))) { return $false }
+    }
+    return $true
+}
+
+# The hash the manifest records for ac-dlssg\sl\<Name>; $null unless there is exactly one record.
+function Get-SlRecordedHash($Manifest, [string]$Name) {
+    $rec = @($Manifest.streamline.files | Where-Object { $_.path -eq "ac-dlssg\sl\$Name" })
+    if ($rec.Count -ne 1) { return $null }
+    return [string]$rec[0].sha256
+}
+
+Invoke-Case 'SL1: Streamline runtime: fresh install, upgrade, re-run, uninstall' {
+    $game = New-FakeGame 'SL1'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
+    Write-Bytes $ini $original
+    $sl = Get-SlDir $game
+    $r = Install $game $dllV1 -Sl ''
+    Check ($r.Code -eq 0) 'install with the default -StreamlineDir exits 0'
+    Check ($r.Text -match '6 DLLs signed by NVIDIA Corporation') 'install reports the signature check'
+    Check (Test-SlMatches $game $slReal) 'ac-dlssg\sl holds the six DLLs and the license files with the same hashes, nothing else'
+    $m = Get-Manifest $game
+    Check (Test-SamePath $m.streamline.source $slReal) 'manifest records deps\streamline-2.14.1\bin\x64 as the source'
+    $bad = @($slRealFiles | Where-Object { (Get-SlRecordedHash $m $_) -ne (Get-Sha (Join-Path $slReal $_)) })
+    Check (@($m.streamline.files).Count -eq $slRealFiles.Count -and $bad.Count -eq 0) 'manifest records every Streamline file with its hash'
+    $firstSl = $r.Text.IndexOf('copied ac-dlssg\sl\')
+    Check ($firstSl -ge 0 -and $firstSl -lt $r.Text.IndexOf("copied $ourDll")) 'Streamline is copied before the bridge DLL'
+
+    $afterFirst = Read-Bytes $ini
+    $r = Install $game $dllV2 -Sl $slV2
+    Check ($r.Code -eq 0) 'upgrade to a newer Streamline exits 0'
+    Check (Test-SlMatches $game $slV2) 'the changed Streamline files are replaced'
+    Check ($r.Text -match 'sl\.common\.dll is already this version' -and $r.Text -match 'copied ac-dlssg\\sl\\sl\.pcl\.dll') 'only the changed files are copied'
+    Check (Test-SameBytes (Read-Bytes $ini) $afterFirst) 'ReShade.ini unchanged by the upgrade'
+    $m = Get-Manifest $game
+    Check ((Get-SlRecordedHash $m 'sl.pcl.dll') -eq (Get-Sha (Join-Path $slV2 'sl.pcl.dll')) -and
+        (Get-SlRecordedHash $m $slLicense) -eq (Get-Sha (Join-Path $slV2 $slLicense))) 'manifest records the new hashes'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\install\backup'))) 'no backups left after the upgrade'
+    Check (Test-NoLeftovers @($game, $sl)) 'no .new files left'
+    $r = Install $game $dllV2 -Sl $slV2
+    Check ($r.Code -eq 0 -and (Test-SlMatches $game $slV2) -and $r.Text -notmatch 'copied ') 'a re-run copies nothing'
+
+    $r = Uninstall $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    $verified = $r.Text.IndexOf('verified:')
+    Check ($verified -ge 0 -and $r.Text.IndexOf("deleted $sl\") -gt $verified) 'the Streamline files are deleted after ReShade.ini is reverted and verified'
+    Check (-not (Test-Path -LiteralPath $sl)) 'uninstall removes ac-dlssg\sl'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'uninstall deletes the bridge DLL'
+    Check (Test-SameBytes (Read-Bytes $ini) $original) 'round trip restores a byte-identical ReShade.ini'
+}
+
+Invoke-Case 'SL2: Streamline refusals and files changed outside the script' {
+    $game = New-FakeGame 'SL2'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-Utf8Bytes $simpleIni
+    Write-Bytes $ini $original
+    Check ((Get-AuthenticodeSignature -LiteralPath $tamperedDll).Status -eq 'HashMismatch') 'the tampered fixture fails its signature check'
+    Check ((Get-AuthenticodeSignature -LiteralPath (Join-Path $slUnsigned 'sl.pcl.dll')).Status -eq 'NotSigned') 'the unsigned fixture has no signature'
+    $r = Install $game $dllV1 -Sl $slTampered
+    Check ((Test-Refused $r) -and $r.Text -match 'sl\.common\.dll: signature status HashMismatch') 'install refuses a tampered Streamline DLL'
+    $r = Install $game $dllV1 -Sl $slUnsigned
+    Check ((Test-Refused $r) -and $r.Text -match 'sl\.pcl\.dll: signature status NotSigned') 'install refuses an unsigned Streamline DLL'
+    $r = Install $game $dllV1 -Sl $slMissing
+    Check ((Test-Refused $r) -and $r.Text -match 'sl\.interposer\.dll is missing') 'install refuses a missing Streamline DLL'
+    $r = Install $game $dllV1 -Sl (Join-Path $FakeRoot 'streamline\none')
+    Check ((Test-Refused $r) -and $r.Text -match 'fetch-deps') 'install refuses a missing -StreamlineDir'
+    Check (Test-SameBytes (Read-Bytes $ini) $original) 'ReShade.ini unchanged'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'no data folder created'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'no DLL copied'
+
+    Write-Bytes (Join-Path $game 'ac-dlssg\sl\sl.common.dll') (Read-Bytes (Join-Path $slReal 'sl.common.dll'))
+    $r = Install $game $dllV1
+    Check ((Test-Refused $r) -and $r.Text -match 'sl\.common\.dll exists but there is no') 'install refuses Streamline files without a manifest'
+    Remove-Item -LiteralPath (Join-Path $game 'ac-dlssg') -Recurse -Force
+
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    $common = Join-Path $game 'ac-dlssg\sl\sl.common.dll'
+    Copy-Item -LiteralPath $tamperedDll -Destination $common -Force
+    $manifestBefore = Read-Bytes (Get-ManifestPath $game)
+    $r = Install $game $dllV2 -Sl $slV2
+    Check ((Test-Refused $r) -and $r.Text -match 'sl\.common\.dll was changed outside this script' -and
+        $r.Text -match (Get-Sha (Join-Path $slReal 'sl.common.dll'))) 'the upgrade refuses a tampered installed DLL and names the recorded hash'
+    Check ((Get-Sha $common) -eq (Get-Sha $tamperedDll)) 'the tampered file is untouched'
+    Check ((Get-Sha (Join-Path $game 'ac-dlssg\sl\sl.pcl.dll')) -eq (Get-Sha (Join-Path $slReal 'sl.pcl.dll'))) 'no other Streamline file is replaced'
+    Check ((Get-Sha (Join-Path $game $ourDll)) -eq (Get-Sha $dllV1)) 'the bridge DLL is not replaced'
+    Check (Test-SameBytes (Read-Bytes (Get-ManifestPath $game)) $manifestBefore) 'the manifest is untouched'
+    $r = Install $game $dllV2 -Sl $slV2 -Force
+    Check ($r.Code -eq 0 -and (Test-SlMatches $game $slV2)) 'with -Force the upgrade replaces it'
+    $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue)
+    Check ($backups.Count -eq 1 -and (Get-Sha $backups[0].FullName) -eq (Get-Sha $tamperedDll)) 'only the tampered DLL is kept in install\backup'
+
+    $license = Join-Path (Get-SlDir $game) $slLicense
+    [IO.File]::AppendAllText($license, "edited`r`n")
+    $r = Uninstall $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check ((Test-Path -LiteralPath $license) -and $r.Text -match "WARNING: .*$([regex]::Escape($slLicense)) is not the file") 'a Streamline file changed after the install is kept with a warning'
+    Check (@(Get-ChildItem -LiteralPath (Get-SlDir $game) -Force).Count -eq 1) 'the other Streamline files are deleted'
+    Check (Test-SameBytes (Read-Bytes $ini) $original) 'round trip restores a byte-identical ReShade.ini'
+}
+
+Invoke-Case 'SL3: upgrade of an M1 install (manifest without Streamline)' {
+    $game = New-FakeGame 'SL3'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-Utf8Bytes $simpleIni
+    Write-Bytes $ini $original
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    $m = Get-Manifest $game
+    $m.PSObject.Properties.Remove('streamline')
+    [IO.File]::WriteAllText((Get-ManifestPath $game), ($m | ConvertTo-Json -Depth 8), $utf8)
+    Remove-Item -LiteralPath (Get-SlDir $game) -Recurse -Force
+    $r = Install $game $dllV2
+    Check ($r.Code -eq 0 -and (Test-SlMatches $game $slReal)) 'the upgrade installs Streamline'
+    Check (@((Get-Manifest $game).streamline.files).Count -eq $slRealFiles.Count) 'the manifest now records the Streamline files'
+    $r = Uninstall $game
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-SlDir $game)) -and (Test-SameBytes (Read-Bytes $ini) $original)) 'uninstall removes them and restores ReShade.ini'
 }
 
 # ---------------------------------------------------------------------------
@@ -860,17 +1050,18 @@ Invoke-Case 'V: an upgrade whose ReShade.ini write fails changes nothing' {
     # Readable but not replaceable while this handle is open.
     $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
-        $r = Install $game $dllV2
+        $r = Install $game $dllV2 -Sl $slV2
     } finally {
         $lock.Dispose()
     }
     Check ($r.Code -ne 0 -and $r.Text -match 'FAILED:') 'the upgrade fails'
     Check ($r.Text -match 'rolled back: restored .*ac-dlssg\.dll from its backup') 'the rollback reports the restored DLL'
     Check ((Get-Sha (Join-Path $game $ourDll)) -eq (Get-Sha $dllV1)) 'the old DLL is back'
+    Check (Test-SlMatches $game $slReal) 'the old Streamline files are back'
     Check (Test-SameBytes (Read-Bytes (Get-ManifestPath $game)) $manifestBefore) 'the manifest is byte-identical to before'
     Check ((Get-Manifest $game).dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest still records the old DLL'
     Check (Test-SameBytes (Read-Bytes $ini) $switchedOff) 'ReShade.ini unchanged'
-    Check (Test-NoLeftovers @($game)) 'no .new files left'
+    Check (Test-NoLeftovers @($game, (Get-SlDir $game))) 'no .new files left'
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\install\backup'))) 'no backup folder left'
     $r = Uninstall $game
     Check ($r.Code -eq 0) 'uninstall exits 0'
