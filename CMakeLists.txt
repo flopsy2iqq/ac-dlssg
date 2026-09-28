@@ -113,6 +113,7 @@ add_library(acdb_core STATIC
     src/camera_layout.h
     src/frame_constants.cpp
     src/capture_slots.cpp
+    src/fg_policy.cpp
     ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
@@ -155,6 +156,7 @@ add_executable(acdb_tests
     tests/test_camera_channel.cpp
     tests/test_frame_constants.cpp
     tests/test_capture_slots.cpp
+    tests/test_fg_policy.cpp
     tests/test_bridge_mode.cpp
     tests/test_dxgi_export_coverage.cpp
     tests/test_version.rc
