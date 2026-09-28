@@ -156,7 +156,7 @@ void LogAdapters() {
              i, ToUtf8(d.Description).c_str(), d.VendorId, d.DeviceId, d.SubSysId, d.Revision,
              static_cast<unsigned long>(d.AdapterLuid.HighPart), static_cast<unsigned long>(d.AdapterLuid.LowPart),
              ArchName(ArchFromIds(d.VendorId, d.DeviceId)),
-             IsRtx30From3070(d.VendorId, d.DeviceId) ? " (RTX 3070 or higher)" : "",
+             IsAmpereSm86(d.VendorId, d.DeviceId) ? " (SM86)" : "",
              (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? ", software" : "",
              static_cast<unsigned long long>(d.DedicatedVideoMemory / (1024 * 1024)), driver.c_str());
     }

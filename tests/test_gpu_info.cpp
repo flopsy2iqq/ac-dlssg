@@ -12,32 +12,57 @@ namespace {
 constexpr uint32_t kNv = 0x10DE;
 }
 
-TEST(GpuInfo_Rtx3080IsAmpereAndSupportedRtx30) {
+TEST(GpuInfo_Rtx3080IsSm86Ampere) {
     CHECK(ArchFromIds(kNv, 0x2206) == GpuArch::Ampere);
-    CHECK(IsRtx30From3070(kNv, 0x2206));
+    CHECK(IsAmpereSm86(kNv, 0x2206));
 }
 
-TEST(GpuInfo_Rtx3060IsAmpereButNotSupportedRtx30) {
-    CHECK(ArchFromIds(kNv, 0x2503) == GpuArch::Ampere);
-    CHECK(!IsRtx30From3070(kNv, 0x2503));
-    // RTX 3060 Ti (GA103, GA104), workstation GA102 and a mining GA102.
-    CHECK(!IsRtx30From3070(kNv, 0x2414));
-    CHECK(!IsRtx30From3070(kNv, 0x2486));
-    CHECK(!IsRtx30From3070(kNv, 0x2230));
-    CHECK(!IsRtx30From3070(kNv, 0x220D));
-}
-
-TEST(GpuInfo_EveryRtx3070To3090TiId) {
-    // Desktop, laptop and engineering-sample IDs named RTX 3070/3070 Ti/3080/
-    // 3080 Ti/3090/3090 Ti in pci.ids 2026.09.25.
-    const uint32_t ids[] = {0x2203, 0x2204, 0x2205, 0x2206, 0x2207, 0x2208, 0x220A, 0x2216, 0x222B,
-                            0x222F, 0x2420, 0x2460, 0x2482, 0x2484, 0x2488, 0x248C, 0x248D, 0x249C,
-                            0x249D, 0x24A0, 0x24AF, 0x24BF, 0x24C8, 0x24DC, 0x24DD, 0x24E0};
+// Every GeForce RTX 30 ID counts, not only the RTX 3070 and up: the laptop
+// RTX 3050 Ti (0x25A0, GA107) of the second test machine included.
+TEST(GpuInfo_EveryGeForceRtx30IdIsSm86) {
+    // The RTX 3070 to 3090 Ti IDs (desktop, laptop and engineering samples)
+    // that the old check listed, then RTX 3050 to 3060 Ti desktop and laptop
+    // IDs of GA103, GA104, GA106 and GA107.
+    const uint32_t ids[] = {0x2203, 0x2204, 0x2205, 0x2206, 0x2207, 0x2208, 0x220A, 0x2216, 0x222B, 0x222F,
+                            0x2420, 0x2460, 0x2482, 0x2484, 0x2488, 0x248C, 0x248D, 0x249C, 0x249D, 0x24A0,
+                            0x24AF, 0x24BF, 0x24C8, 0x24DC, 0x24DD, 0x24E0,
+                            0x2414,   // RTX 3060 Ti (GA103)
+                            0x2486,   // RTX 3060 Ti (GA104)
+                            0x2503,   // RTX 3060 (GA106)
+                            0x2507,   // RTX 3050 (GA106)
+                            0x2520,   // RTX 3060 Laptop GPU (GA106)
+                            0x2560,   // RTX 3060 Laptop GPU (GA106)
+                            0x25A0,   // RTX 3050 Ti Laptop GPU (GA107), the Nitro 5 AN515-57
+                            0x25A2,   // RTX 3050 Laptop GPU (GA107)
+                            0x25E0};  // RTX 3050 Ti Laptop GPU (GA107)
     for (uint32_t id : ids) {
-        if (!IsRtx30From3070(kNv, id)) std::printf("  0x%04X not recognised\n", id);
-        CHECK(IsRtx30From3070(kNv, id));
+        if (!IsAmpereSm86(kNv, id)) std::printf("  0x%04X not recognised\n", id);
+        CHECK(IsAmpereSm86(kNv, id));
         CHECK(ArchFromIds(kNv, id) == GpuArch::Ampere);
     }
+}
+
+// The check follows the GA102..GA107 ID ranges: workstation and mining chips
+// of those dies are SM86 too and count; GA100 (SM80) and other architectures
+// do not.
+TEST(GpuInfo_Sm86FollowsTheGa10xRanges) {
+    CHECK(IsAmpereSm86(kNv, 0x2200));   // first GA102 ID
+    CHECK(IsAmpereSm86(kNv, 0x223F));   // last GA102 ID
+    CHECK(IsAmpereSm86(kNv, 0x2230));   // RTX A6000 (GA102)
+    CHECK(IsAmpereSm86(kNv, 0x220D));   // CMP 90HX (GA102)
+    CHECK(IsAmpereSm86(kNv, 0x2414));   // first GA103 ID
+    CHECK(IsAmpereSm86(kNv, 0x25FB));   // last GA107 ID
+    CHECK(!IsAmpereSm86(kNv, 0x20B0));  // A100 (GA100, SM80)
+    CHECK(!IsAmpereSm86(kNv, 0x2080));
+    CHECK(!IsAmpereSm86(kNv, 0x20FF));
+    CHECK(!IsAmpereSm86(kNv, 0x21FF));  // between TU116 and GA102
+    CHECK(!IsAmpereSm86(kNv, 0x2240));  // after GA102
+    CHECK(!IsAmpereSm86(kNv, 0x25FC));  // after GA107
+    CHECK(!IsAmpereSm86(kNv, 0x2684));  // RTX 4090
+    CHECK(!IsAmpereSm86(kNv, 0x1E84));  // RTX 2070 SUPER
+    CHECK(!IsAmpereSm86(kNv, 0x2B85));  // RTX 5090
+    CHECK(!IsAmpereSm86(0x1002, 0x2206));
+    CHECK(!IsAmpereSm86(0x8086, 0x25A0));
 }
 
 TEST(GpuInfo_OtherArchitectures) {
@@ -53,8 +78,6 @@ TEST(GpuInfo_OtherArchitectures) {
     CHECK(ArchFromIds(kNv, 0x2C02) == GpuArch::Blackwell);  // RTX 5080
     CHECK(ArchFromIds(kNv, 0x2F04) == GpuArch::Blackwell);  // RTX 5070 (GB205)
     CHECK(ArchFromIds(kNv, 0x2D83) == GpuArch::Blackwell);  // GB207
-    CHECK(!IsRtx30From3070(kNv, 0x2684));
-    CHECK(!IsRtx30From3070(kNv, 0x1E84));
 }
 
 TEST(GpuInfo_OlderUnknownAndNonNvidia) {
@@ -69,7 +92,6 @@ TEST(GpuInfo_OlderUnknownAndNonNvidia) {
     CHECK(ArchFromIds(0x1002, 0x2206) == GpuArch::NonNvidia);
     CHECK(ArchFromIds(0x8086, 0x56A0) == GpuArch::NonNvidia);
     CHECK(ArchFromIds(0x1414, 0x008C) == GpuArch::NonNvidia);  // Microsoft Basic Render (WARP)
-    CHECK(!IsRtx30From3070(0x1002, 0x2206));
 }
 
 TEST(GpuInfo_ArchNamesAreDistinct) {

@@ -14,9 +14,10 @@ enum class GpuArch { Unknown, NonNvidia, OlderNvidia, Turing, Ampere, Ada, Black
 GpuArch ArchFromIds(uint32_t vendorId, uint32_t deviceId);
 const char* ArchName(GpuArch arch);
 
-// RTX 3070, 3070 Ti, 3080, 3080 Ti, 3090, 3090 Ti (desktop and laptop IDs),
-// the RTX 30 cards the spoof supports.
-bool IsRtx30From3070(uint32_t vendorId, uint32_t deviceId);
+// An SM86 Ampere chip (GA102 to GA107), the architecture dlssg_for_sm86
+// targets: every GeForce RTX 30 ID, desktop and laptop, from the RTX 3050 up,
+// and the workstation and mining IDs of the same dies. GA100 (SM80) is not.
+bool IsAmpereSm86(uint32_t vendorId, uint32_t deviceId);
 
 // The user-mode driver version from IDXGIAdapter::CheckInterfaceSupport as
 // "a.b.c.d"; for NVIDIA also the marketing version, which is the last five
