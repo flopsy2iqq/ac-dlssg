@@ -433,3 +433,6 @@ FodyWeavers.xsd
 
 # CMake build output
 build/
+
+# Output of tools/collect-sysinfo.ps1
+tools/ac-dlssg-sysinfo/
