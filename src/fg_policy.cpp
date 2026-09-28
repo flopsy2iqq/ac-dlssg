@@ -161,8 +161,16 @@ std::string RuntimeAspectRefusal(bool allowStretching, uint32_t outW, uint32_t o
     return buf;
 }
 
-uint32_t GeneratedFrames(uint32_t presentedSinceLastPoll, uint32_t realFrames) {
-    return presentedSinceLastPoll > realFrames ? presentedSinceLastPoll - realFrames : 0;
+uint32_t GeneratedFramesAtPresent(uint32_t numFramesActuallyPresented) {
+    return numFramesActuallyPresented > 1 ? numFramesActuallyPresented - 1 : 0;
 }
+
+void StatusPollClock::Frame() {
+    if (since_ < kFrames) ++since_;
+}
+
+bool StatusPollClock::Due(bool dlssgOn) const { return dlssgOn && since_ >= kFrames; }
+
+void StatusPollClock::Polled() { since_ = 0; }
 
 }  // namespace acdb

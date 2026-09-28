@@ -100,9 +100,12 @@ struct PresenterCreateInfo {
 //    null tags when the previous frame was tagged and this one is not;
 //    SetDlssgOptions only when the mode (or, while on, the size hints)
 //    changes; PlanPresent with the mode and bIsVsyncSupportAvailable;
-//    slDLSSGGetState every 60 frames while on (a failure status keeps DLSS-G
-//    off until the next resize or toggle; generated frames and "fg: DLSS-G
-//    active" come from numFramesActuallyPresented).
+//    slDLSSGGetState (no options) after every Present DLSS-G was on for:
+//    numFramesActuallyPresented - 1 frames were generated ("fg: DLSS-G
+//    active" at the first; the first three raw answers are logged); its
+//    status, or a failed call, is acted on every 60 frames, counted whatever
+//    the mode (StatusPollClock), and keeps DLSS-G off until the next resize
+//    or toggle.
 //  - Resize, SetFullscreenState, ResizeTarget: with DLSS-G on, eOff and null
 //    tags, then the last frame is presented once more with its own token and
 //    the full marker sequence (not a CSP frame); the camera latch restarts.

@@ -174,9 +174,30 @@ std::string DlssgStatusText(uint32_t status);
 std::string RuntimeAspectRefusal(bool allowStretching, uint32_t outW, uint32_t outH, uint32_t chainW,
                                  uint32_t chainH);
 
-// Generated frames in a poll span: numFramesActuallyPresented counts every
-// frame presented since the previous slDLSSGGetState call, and realFrames
-// is the number of frames the bridge presented in that span.
-uint32_t GeneratedFrames(uint32_t presentedSinceLastPoll, uint32_t realFrames);
+// ---------------------------------------------------------------- DLSS-G state
+
+// Frames DLSS-G added at one Present, from slDLSSGGetState called right
+// after it. sl_dlss_g.h describes numFramesActuallyPresented as the frames
+// presented since the last call; the DLSS-G programming guide (13.0) as the
+// frames presented per application frame (2 when one frame is generated).
+// Read after every Present, both readings give the same count (review
+// finding SL-1). 0 and 1 mean none was generated.
+uint32_t GeneratedFramesAtPresent(uint32_t numFramesActuallyPresented);
+
+// When the presenter acts on slDLSSGGetState's status (spec 6.8 "Status":
+// every 60 frames while DLSS-G is on). Frame() counts every frame, whatever
+// the DLSS-G mode, so that DLSS-G going off for single frames cannot put the
+// status check off for good (review findings SL-2 and F4); it is due on the
+// first frame DLSS-G is on once 60 frames have passed since the last check.
+class StatusPollClock {
+public:
+    static constexpr uint32_t kFrames = 60;
+    void Frame();
+    bool Due(bool dlssgOn) const;
+    void Polled();
+
+private:
+    uint32_t since_ = 0;
+};
 
 }  // namespace acdb

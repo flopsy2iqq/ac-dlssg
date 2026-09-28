@@ -322,11 +322,43 @@ TEST(FgText_RuntimeAspectRefusal) {
                             "output is not supported)"));
 }
 
-TEST(FgText_GeneratedFrames) {
-    // numFramesActuallyPresented counts every presented frame since the last
-    // poll; the real frames of that span are subtracted.
-    CHECK_EQ(GeneratedFrames(120, 60), 60u);
-    CHECK_EQ(GeneratedFrames(60, 60), 0u);
-    CHECK_EQ(GeneratedFrames(0, 60), 0u);
-    CHECK_EQ(GeneratedFrames(2, 1), 1u);
+// ---------------------------------------------------------------- DLSS-G state
+
+TEST(FgState_GeneratedFramesAtOnePresent) {
+    // Review finding SL-1: slDLSSGGetState is read right after every Present
+    // DLSS-G was on for. numFramesActuallyPresented is then 2 with 2X
+    // whether it means "per application frame" (the DLSS-G guide, 13.0) or
+    // "since the last call" (sl_dlss_g.h): one generated frame.
+    CHECK_EQ(GeneratedFramesAtPresent(2), 1u);
+    CHECK_EQ(GeneratedFramesAtPresent(4), 3u);  // 4X
+    CHECK_EQ(GeneratedFramesAtPresent(1), 0u);  // the generated frame was dropped
+    CHECK_EQ(GeneratedFramesAtPresent(0), 0u);  // nothing presented yet
+}
+
+TEST(FgState_StatusIsDueEvery60FramesOnAFrameDlssgWasOnFor) {
+    StatusPollClock c;
+    for (int i = 0; i < 59; ++i) c.Frame();
+    CHECK(!c.Due(true));
+    c.Frame();
+    CHECK(c.Due(true));
+    CHECK(!c.Due(false));  // only a frame DLSS-G was on for reads the status
+    c.Polled();
+    CHECK(!c.Due(true));
+}
+
+TEST(FgState_StatusPollSurvivesDlssgTogglingOffForSingleFrames) {
+    // Review findings SL-2 and F4: a per-frame reason turns DLSS-G off for
+    // one frame now and then. The frames still count, so the status is read
+    // on the first frame DLSS-G is on once 60 frames have passed.
+    StatusPollClock c;
+    int polls = 0;
+    for (int frame = 1; frame <= 300; ++frame) {
+        const bool on = frame % 7 != 0;  // off every seventh frame
+        c.Frame();
+        if (c.Due(on)) {
+            ++polls;
+            c.Polled();
+        }
+    }
+    CHECK_EQ(polls, 5);
 }

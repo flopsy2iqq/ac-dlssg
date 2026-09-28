@@ -155,7 +155,7 @@ bool QueryVramMiB(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std
     return true;
 }
 
-constexpr uint32_t kStatePollFrames = 60;  // slDLSSGGetState while DLSS-G is on (spec 6.8)
+constexpr unsigned kStateAnswersLogged = 3;  // the first slDLSSGGetState answers at INFO
 constexpr uint32_t kViewport = 0;
 
 // NgxHook is installed once per process, by the first presenter that asks.
@@ -321,7 +321,8 @@ struct D3D12Presenter::Impl {
     VramGuard vram_guard;
     bool vsync_available = false;  // bIsVsyncSupportAvailable == eTrue
     bool polled_state = false;     // slDLSSGGetState answered at least once while on
-    uint32_t frames_since_state = 0;
+    StatusPollClock status_clock;  // when the answer's status is acted on
+    unsigned state_answers_logged = 0;
     uint32_t last_mvec_w = 0;
     uint32_t last_mvec_h = 0;
     DXGI_FORMAT last_mvec_format = DXGI_FORMAT_UNKNOWN;
@@ -362,7 +363,7 @@ struct D3D12Presenter::Impl {
     VramCheck RunVramCheck();
     bool SetMode(bool on);
     void LogMode(bool on, const std::string& reason, bool perFrame, const std::string& tagPathReason = {});
-    void PollState();
+    void PollState(bool presentedOn);
     void CountFrame(const FrameCapture& cap, bool tagged, bool fg);
     void PresentAgain(D3D12Presenter& self);
     void BeforeChainChange(D3D12Presenter& self);
@@ -815,7 +816,6 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
 VramCheck D3D12Presenter::Impl::RunVramCheck() {
     sl::DLSSGState st;
     const sl::Result r = sl->GetDlssgState(true, Hints(), &st);
-    frames_since_state = 0;
     if (r != sl::Result::eOk)
         return VramCheck{false, std::string("video memory: no DLSS-G estimate (") + SlResultName(r) + ")"};
     vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
@@ -844,7 +844,6 @@ bool D3D12Presenter::Impl::SetMode(bool on) {
     if (mode_known && on == mode_on && (!on || SameHints(h, mode_hints))) return mode_on;
     if (sl->SetDlssgOptions(on, h) == sl::Result::eOk) {
         mode_known = true;
-        if (on && !mode_on) frames_since_state = 0;
         mode_on = on;
         mode_hints = h;
     }
@@ -875,28 +874,42 @@ void D3D12Presenter::Impl::LogMode(bool on, const std::string& reason, bool perF
         LOGW("fg: frame without DLSS-G: %s", warn.c_str());
 }
 
-// Every 60 frames while DLSS-G is on (spec 6.8, 9).
-void D3D12Presenter::Impl::PollState() {
-    if (!sl || !fg_supported || !mode_on || frames_since_state < kStatePollFrames) return;
-    const uint32_t real = frames_since_state;
+// After every Present: presentedOn is whether DLSS-G was on at it. After a
+// DLSS-G Present, slDLSSGGetState without options (only the estimate is
+// expensive, DLSS-G guide 13.0) gives that Present's generated frames
+// (review finding SL-1). Every 60 frames (StatusPollClock) the same answer's
+// status, or a failed call, keeps DLSS-G off until the next resize or toggle
+// (spec 6.8, 9).
+void D3D12Presenter::Impl::PollState(bool presentedOn) {
+    if (!sl || !fg_supported) return;
+    status_clock.Frame();
+    if (!presentedOn) return;
+    const bool statusDue = status_clock.Due(true);
+    if (statusDue) status_clock.Polled();
     sl::DLSSGState st;
     const sl::Result r = sl->GetDlssgState(false, Hints(), &st);
-    frames_since_state = 0;
     if (r != sl::Result::eOk) {
+        if (!statusDue) return;  // the runtime logs the failure, throttled
         state_failure = std::string("query failed: ") + SlResultName(r);
         LOGW("fg: slDLSSGGetState failed (%s); DLSS-G stays off until the next resize or toggle", SlResultName(r));
         return;
     }
     vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
     polled_state = true;
-    const uint32_t generated = GeneratedFrames(st.numFramesActuallyPresented, real);
+    const uint32_t generated = GeneratedFramesAtPresent(st.numFramesActuallyPresented);
     stats_generated += generated;
+    if (state_answers_logged < kStateAnswersLogged) {
+        // The raw value settles in game which reading of it holds.
+        ++state_answers_logged;
+        LOGI("fg: slDLSSGGetState after a DLSS-G Present (frame %u): numFramesActuallyPresented %u, status %s",
+             frame_index, st.numFramesActuallyPresented, DlssgStatusText(static_cast<uint32_t>(st.status)).c_str());
+    }
     if (generated > 0 && !logged_active) {
         logged_active = true;
         LOGI("fg: DLSS-G active");
-        LOGD("fg: %u frames presented for %u real frames", st.numFramesActuallyPresented, real);
         sl->LogLoadedModules();  // spec 6.8: again when DLSS-G first reports active
     }
+    if (!statusDue) return;
     const uint32_t status = static_cast<uint32_t>(st.status);
     if (status != 0) {
         state_failure = DlssgStatusText(status);
@@ -1319,10 +1332,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     have_prev_camera = cap.cameraResult == CameraChannel::ReadResult::Ok;
     if (have_prev_camera) prev_camera = cap.camera;
     CountFrame(cap, tagged, fgThisFrame && SUCCEEDED(presentHr));
-    if (sl) {
-        ++frames_since_state;
-        PollState();
-    }
+    if (sl) PollState(fgThisFrame && SUCCEEDED(presentHr));
 
     if (FAILED(presentHr)) {
         ++stats_failed;
@@ -1470,8 +1480,9 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     if (QueryVramMiB(adapter3.Get(), &vramUsage, &vramBudget, nullptr))
         std::snprintf(vram, sizeof(vram), "%llu/%llu", static_cast<unsigned long long>(vramUsage),
                       static_cast<unsigned long long>(vramBudget));
-    // generated: frames DLSS-G added in this second, from
-    // numFramesActuallyPresented (n/a until slDLSSGGetState answered).
+    // generated: frames DLSS-G added in this second, the sum of
+    // numFramesActuallyPresented - 1 over its Presents (n/a until
+    // slDLSSGGetState answered once).
     char generated[24] = "n/a";
     if (polled_state)
         std::snprintf(generated, sizeof(generated), "%llu", static_cast<unsigned long long>(stats_generated));
