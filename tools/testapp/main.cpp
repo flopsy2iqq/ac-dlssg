@@ -998,6 +998,20 @@ bool RunFrames(App& a) {
 
 // ---- final log checks
 
+// A stats line (d3d12_presenter.cpp) ends with " streamline=on reflex=on
+// pcl_problems=0 vram_mib=<usage>/<budget>", both in MiB, the budget not zero.
+bool StatsTailOk(const std::string& line) {
+    constexpr char kTail[] = " streamline=on reflex=on pcl_problems=0 vram_mib=";
+    const size_t at = line.rfind(kTail);
+    if (at == std::string::npos) return false;
+    const std::string vram = line.substr(at + sizeof(kTail) - 1);
+    const size_t slash = vram.find('/');
+    if (slash == 0 || slash == std::string::npos || slash + 1 == vram.size()) return false;
+    for (size_t i = 0; i < vram.size(); ++i)
+        if (i != slash && (vram[i] < '0' || vram[i] > '9')) return false;
+    return std::strtoull(vram.c_str() + slash + 1, nullptr, 10) > 0;
+}
+
 bool CheckLogAfterRun(App& a) {
     const BridgeLog log = ReadBridgeLog(a.log_path);
     if (!log.found) return Fail("bridge log not found: %s", Narrow(a.log_path).c_str());
@@ -1055,12 +1069,13 @@ bool CheckLogAfterRun(App& a) {
         }
         if (dlssg != a.proxies_created)
             ok = Fail("the bridge log has %d DLSS-G support lines for %d presenters", dlssg, a.proxies_created);
-        constexpr char kStatsEnd[] = " streamline=on reflex=on pcl_problems=0";
-        constexpr size_t kStatsEndLen = sizeof(kStatsEnd) - 1;
         for (const auto& l : log.lines)
-            if (l.find(" stats: base_fps=") != std::string::npos &&
-                (l.size() < kStatsEndLen || l.compare(l.size() - kStatsEndLen, kStatsEndLen, kStatsEnd) != 0))
-                ok = Fail("statistics without streamline=on reflex=on pcl_problems=0: %s", l.c_str());
+            if (l.find(" stats: base_fps=") != std::string::npos && !StatsTailOk(l))
+                ok = Fail("statistics without streamline=on reflex=on pcl_problems=0 vram_mib=<usage>/<budget> at "
+                          "the end: %s",
+                          l.c_str());
+        if (!log.Has(" presenter: VRAM (local) budget "))
+            ok = Fail("the bridge log does not show the presenter's VRAM budget and usage");
         if (a.opt.stall) {
             if (!log.Has("debug stall")) ok = Fail("the bridge log does not show the debug stall");
             if (!log.Has("StallWatchdog: D3D12 progress stuck"))

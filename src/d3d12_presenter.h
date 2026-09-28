@@ -80,6 +80,10 @@ public:
     //     MISC_SHARED | MISC_SHARED_NTHANDLE, BIND_RENDER_TARGET |
     //     BIND_SHADER_RESOURCE, opened with OpenSharedHandle), per-buffer
     //     command allocators and lists, GpuTimer11/12, StallWatchdog started.
+    //  8. Logs the render adapter's local video memory (IDXGIAdapter3::
+    //     QueryVideoMemoryInfo(0, LOCAL)): "presenter: VRAM (local) budget
+    //     <b> MiB, usage <u> MiB". The per-second stats line ends with
+    //     "vram_mib=<usage>/<budget>" (n/a when the adapter cannot tell).
     // Any failure releases everything and returns nullptr with *error set. On
     // the Streamline path, a failure after SetDevice first calls
     // StreamlineRuntime::Shutdown (after the drain, before any release, as in
