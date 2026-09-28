@@ -8,7 +8,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <utility>
 
 #include "gpu_info.h"
 #include "internal_call.h"
@@ -195,20 +194,32 @@ void Run(BootstrapState* s) {
     LOGI("ac-dlssg %s (M2: Streamline proxy chain, Reflex and PCL markers; DLSS-G off)", ACDB_VERSION);
     LOGI("host: %s (pid %lu)", ToUtf8(exe).c_str(), GetCurrentProcessId());
     const HMODULE bridge = g_module.load();
-    LOGI("bridge module: %s", bridge ? ToUtf8(ModuleFileName(bridge)).c_str() : "(not set)");
+    const std::wstring bridgePath = bridge ? ModuleFileName(bridge) : std::wstring();
+    s->mode = BridgeModeFromPath(bridgePath);
+    LOGI("bridge module: %s", bridge ? ToUtf8(bridgePath).c_str() : "(not set)");
+    if (s->mode == BridgeMode::Standalone) {
+        LOGI("mode: standalone: the bridge is the process's dxgi.dll and forwards to System32\\dxgi.dll");
+    } else {
+        const size_t sep = bridgePath.find_last_of(L"\\/");
+        LOGI("mode: proxy: the bridge is loaded as %s, not as dxgi.dll (ReShade's [PROXY] ProxyLibrary)",
+             ToUtf8(sep == std::wstring::npos ? bridgePath : bridgePath.substr(sep + 1)).c_str());
+    }
     LOGI("Windows %s", WindowsBuild().c_str());
     if (const HMODULE version = GetModuleHandleW(L"version.dll"))
         LOGI("version.dll loaded from %s, version %s", ToUtf8(ModuleFileName(version)).c_str(),
              ModuleVersionText(version).c_str());
-    // By full path: System32's dxgi.dll is loaded as well. CSP is dwrite.dll.
-    const std::pair<const wchar_t*, const char*> hosts[] = {{L"dxgi.dll", "ReShade"}, {L"dwrite.dll", "CSP"}};
-    for (const auto& [file, what] : hosts) {
-        const HMODULE mod = s->game_dir.empty() ? nullptr : GetModuleHandleW((s->game_dir + L"\\" + file).c_str());
-        if (mod) {
-            LOGI("%s: %s, version %s", what, ToUtf8(ModuleFileName(mod)).c_str(), ModuleVersionText(mod).c_str());
-        } else {
-            LOGI("%s: %ls is not loaded from the game folder", what, file);
-        }
+    // By full path: System32's dxgi.dll is loaded as well. In standalone mode
+    // the game folder's dxgi.dll is this bridge. CSP is dwrite.dll.
+    const HMODULE gameDxgi = s->game_dir.empty() ? nullptr : GetModuleHandleW((s->game_dir + L"\\dxgi.dll").c_str());
+    LOGI("%s", GameFolderDxgiLine(gameDxgi != nullptr, gameDxgi != nullptr && gameDxgi == bridge,
+                                  gameDxgi ? ToUtf8(ModuleFileName(gameDxgi)) : std::string(),
+                                  gameDxgi ? ModuleVersionText(gameDxgi) : std::string())
+                   .c_str());
+    const HMODULE csp = s->game_dir.empty() ? nullptr : GetModuleHandleW((s->game_dir + L"\\dwrite.dll").c_str());
+    if (csp) {
+        LOGI("CSP: %s, version %s", ToUtf8(ModuleFileName(csp)).c_str(), ModuleVersionText(csp).c_str());
+    } else {
+        LOGI("CSP: dwrite.dll is not loaded from the game folder");
     }
     LOGI("data dir: %s", ToUtf8(s->data_dir).c_str());
     if (keptPrevious) LOGI("the previous log was kept as %s", ToUtf8(prevLogPath).c_str());
@@ -268,6 +279,23 @@ void Run(BootstrapState* s) {
 }
 
 }  // namespace
+
+BridgeMode BridgeModeFromPath(const std::wstring& modulePath) {
+    const size_t sep = modulePath.find_last_of(L"\\/");
+    const std::wstring file = sep == std::wstring::npos ? modulePath : modulePath.substr(sep + 1);
+    constexpr wchar_t kDxgi[] = L"dxgi.dll";
+    return CompareStringOrdinal(file.c_str(), static_cast<int>(file.size()), kDxgi, -1, TRUE) == CSTR_EQUAL
+               ? BridgeMode::Standalone
+               : BridgeMode::Proxy;
+}
+
+const char* BridgeModeName(BridgeMode mode) { return mode == BridgeMode::Standalone ? "standalone" : "proxy"; }
+
+std::string GameFolderDxgiLine(bool loaded, bool isThisBridge, const std::string& path, const std::string& version) {
+    if (isThisBridge) return "dxgi.dll: " + path + " is this bridge (standalone), not ReShade";
+    if (loaded) return "ReShade: " + path + ", version " + version;
+    return "ReShade: dxgi.dll is not loaded from the game folder";
+}
 
 void SetBridgeModule(HMODULE module) { g_module.store(module); }
 

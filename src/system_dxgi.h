@@ -1,6 +1,7 @@
 #pragma once
 // System32\dxgi.dll loaded by absolute path (never by name, which would
-// resolve to ReShade's dxgi.dll in the game folder).
+// resolve to the game folder's dxgi.dll: ReShade, or in standalone mode the
+// bridge itself).
 #include <windows.h>
 #include <dxgi1_6.h>
 

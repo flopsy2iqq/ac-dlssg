@@ -102,6 +102,7 @@ add_executable(acdb_tests
     tests/test_streamline_prefs.cpp
     tests/test_streamline_runtime.cpp
     tests/test_driver_profile.cpp
+    tests/test_bridge_mode.cpp
     tests/test_dxgi_export_coverage.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp

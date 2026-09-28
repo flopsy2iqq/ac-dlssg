@@ -1,7 +1,7 @@
 #pragma once
 // Thread-local guard (spec 6.1): while set, our DXGI exports and factory hooks
 // are pure pass-throughs, because our own DXGI/D3D12 calls can re-enter us
-// through ReShade.
+// through ReShade, or directly when the bridge is the process's dxgi.dll.
 
 namespace acdb {
 
