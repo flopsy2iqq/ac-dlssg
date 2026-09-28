@@ -426,6 +426,60 @@ TEST(NgxHook_QueueOverflowStillDropsUnloadedLayer) {
     NgxHook::Get().Uninstall();
 }
 
+// A hooked module unloads and a different module loads at the same base while
+// the loader events are lost (queue overflow). The stale layer must be
+// recognised by its size and path: the new module gets hooked, and Uninstall
+// never writes the old module's saved bytes into it (ngx review F6).
+TEST(NgxHook_ReusedBaseIsNotTakenForTheOldModule) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx_reuse_a.dll") == nullptr);
+    REQUIRE(GetModuleHandleW(L"fake_nvngx_reuse_b.dll") == nullptr);
+    HMODULE a = LoadLibraryW(FAKE_NVNGX_REUSE_A_PATH);
+    REQUIRE(a != nullptr);
+    const uintptr_t aCreate = reinterpret_cast<uintptr_t>(Create(a));
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    REQUIRE(NgxHook::Get().Install(&sink, &err));
+    REQUIRE(NgxHook::Get().HookedModules() >= 1);
+
+    for (int i = 0; i < 100; ++i) {  // overflow the event queue
+        HMODULE x = LoadLibraryW(FAKE_NVNGX_ALIAS_PATH);
+        if (x) FreeLibrary(x);
+    }
+    FreeLibrary(a);  // its unload event is lost
+    HMODULE b = LoadLibraryW(FAKE_NVNGX_REUSE_B_PATH);
+    REQUIRE(b != nullptr);
+    if (b != a) {
+        std::printf("  the second fake did not load at the first one's base; skipping\n");
+        NgxHook::Get().Uninstall();
+        FreeLibrary(b);
+        return;
+    }
+    // B's bytes where A's CreateFeature was: Uninstall must leave them alone.
+    uint8_t before[16];
+    memcpy(before, reinterpret_cast<const void*>(aCreate), sizeof(before));
+
+    NgxHook::Get().ProcessPendingRescan();
+    CHECK(NgxHook::Get().HookedModules() >= 1);
+    FakeNgxState* sb = State(b);
+    REQUIRE(sb != nullptr);
+    *sb = FakeNgxState{};
+    sb->nextHandle = reinterpret_cast<void*>(0x330000);
+    FakeNgxParam cp = SuperSamplingCreate();
+    void* h = nullptr;
+    CHECK_EQ(Create(b)(nullptr, kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);
+    CHECK_EQ(sb->createCalls, 1L);
+    CHECK_EQ(sink.creates.size(), size_t{1});  // B itself is hooked
+
+    NgxHook::Get().Uninstall();
+    uint8_t after[16];
+    memcpy(after, reinterpret_cast<const void*>(aCreate), sizeof(after));
+    CHECK(memcmp(before, after, sizeof(before)) == 0);
+    CHECK_EQ(Create(b)(nullptr, kNgxFeatureSuperSampling, &cp, &h), kNgxSuccess);  // B still runs
+    CHECK_EQ(sb->createCalls, 2L);
+    FreeLibrary(b);
+}
+
 TEST(NgxHook_UninstallRestores) {
     GpuTestDevices d;
     if (!ImmediateDevices(&d)) return;

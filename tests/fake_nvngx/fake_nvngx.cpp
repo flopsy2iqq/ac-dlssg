@@ -9,7 +9,23 @@ thread_local int t_depth = 0;
 
 extern "C" FakeNgxState* FakeNgxGetState() { return &g_state; }
 
-extern "C" int __cdecl NVSDK_NGX_D3D11_CreateFeature(void*, unsigned int, void*, void** outHandle) {
+#ifdef FAKE_NVNGX_VARIANT_B
+// Variant B (fake_nvngx_reuse_b) has different code from variant A, so the
+// bytes it has at A's entry addresses differ from A's prologues.
+extern "C" __declspec(dllexport) __declspec(noinline) int FakeNgxVariantPadding(int x) {
+    volatile int acc = x;
+    for (int i = 0; i < 64; ++i) acc = acc * 31 + i;
+    return acc;
+}
+#endif
+
+extern "C" int __cdecl NVSDK_NGX_D3D11_CreateFeature(void*, unsigned int featureId, void*, void** outHandle) {
+#ifdef FAKE_NVNGX_VARIANT_B
+    volatile unsigned int salt = featureId * 2654435761u;  // different code, same behaviour
+    (void)salt;
+#else
+    (void)featureId;
+#endif
     InterlockedIncrement(&g_state.createCalls);
     if (outHandle) *outHandle = g_state.nextHandle;
     return g_state.createResult;

@@ -39,8 +39,13 @@ struct LdrNotificationData {
 constexpr ULONG kLdrLoaded = 1;
 constexpr ULONG kLdrUnloaded = 2;
 
+// One hooked module. A base address alone does not identify it: after an
+// unload another module can load at the same base (ngx review F6), so the
+// image size and full path are kept too.
 struct Layer {
     HMODULE mod = nullptr;
+    ULONG sizeOfImage = 0;
+    std::wstring path;
     bool used = false;
     InlineHook create;
     InlineHook eval;
@@ -213,6 +218,25 @@ void* FollowThunk(void* fn) {
     return p;
 }
 
+// SizeOfImage from the PE header at base, or 0 when it cannot be read.
+ULONG ImageSizeAt(const void* base) {
+    IMAGE_DOS_HEADER dos{};
+    if (!ReadBytesSafe(base, reinterpret_cast<uint8_t*>(&dos), sizeof(dos))) return 0;
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew <= 0) return 0;
+    IMAGE_NT_HEADERS64 nt{};
+    if (!ReadBytesSafe(static_cast<const uint8_t*>(base) + dos.e_lfanew, reinterpret_cast<uint8_t*>(&nt),
+                       sizeof(nt)))
+        return 0;
+    if (nt.Signature != IMAGE_NT_SIGNATURE) return 0;
+    return nt.OptionalHeader.SizeOfImage;
+}
+
+std::wstring ModulePath(HMODULE m) {
+    wchar_t path[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameW(m, path, MAX_PATH);
+    return std::wstring(path, n < MAX_PATH ? n : MAX_PATH);
+}
+
 bool EndsWithNoCase(const wchar_t* s, const wchar_t* suffix) {
     const size_t ls = wcslen(s), lf = wcslen(suffix);
     if (lf > ls) return false;
@@ -292,6 +316,10 @@ bool HasDenoiserKeys(const NgxParameter* p) {
     return false;
 }
 
+bool LayerIsLiveLocked(const Layer& L);
+void DetachLayerLocked(Layer& L);
+bool HookModuleLocked(HMODULE m, bool isHostExe);
+
 // Scans loaded modules and hooks any not yet hooked. Caller holds scanLock.
 void ScanLocked() {
     HookState& s = S();
@@ -304,57 +332,81 @@ void ScanLocked() {
 
     for (DWORD i = 0; i < count; ++i) {
         HMODULE m = mods[i];
+        Layer* stale = nullptr;
         bool already = false;
-        for (const Layer& L : s.layers)
+        for (Layer& L : s.layers)
             if (L.used && L.mod == m) {
-                already = true;
+                already = LayerIsLiveLocked(L);
+                if (!already) stale = &L;
                 break;
             }
         if (already) continue;
-
-        void* create = reinterpret_cast<void*>(GetProcAddress(m, "NVSDK_NGX_D3D11_CreateFeature"));
-        void* eval = reinterpret_cast<void*>(GetProcAddress(m, "NVSDK_NGX_D3D11_EvaluateFeature"));
-        void* eval_c = reinterpret_cast<void*>(GetProcAddress(m, "NVSDK_NGX_D3D11_EvaluateFeature_C"));
-        if (!create || (!eval && !eval_c)) continue;
-
-        wchar_t path[MAX_PATH] = {};
-        GetModuleFileNameW(m, path, MAX_PATH);
-        const NgxSkip skip = NgxClassifyModule(path, m == hostExe, create, eval, eval_c);
-        if (skip != NgxSkip::None) {
-            LOGD("ngx: skipping %ls (rule %d)", path, static_cast<int>(skip));
-            continue;
+        if (stale) {
+            // Another module now sits at a hooked module's base (a missed unload):
+            // forget the old layer without writing, then treat m as new (F6).
+            LOGI("ngx: the module at a hooked base changed (was %ls); old hooks dropped", stale->path.c_str());
+            DetachLayerLocked(*stale);
         }
 
-        int slot = -1;
-        for (int k = 0; k < kMaxLayers; ++k)
-            if (!s.layers[k].used) {
-                slot = k;
-                break;
-            }
-        if (slot < 0) {
-            LOGW("ngx: layer table full; %ls not hooked", path);
+        // Pin m while its exports are read and patched, so it cannot unload under us.
+        HMODULE pinned = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(m), &pinned))
+            continue;
+        const bool tableFull = pinned == m && !HookModuleLocked(m, m == hostExe);
+        FreeLibrary(pinned);
+        if (tableFull) break;
+    }
+}
+
+// Hooks one pinned module if it exports the NGX D3D11 entry points and passes
+// the skip rules. Returns false only when the layer table is full. Caller holds
+// scanLock.
+bool HookModuleLocked(HMODULE m, bool isHostExe) {
+    HookState& s = S();
+    void* create = reinterpret_cast<void*>(GetProcAddress(m, "NVSDK_NGX_D3D11_CreateFeature"));
+    void* eval = reinterpret_cast<void*>(GetProcAddress(m, "NVSDK_NGX_D3D11_EvaluateFeature"));
+    void* eval_c = reinterpret_cast<void*>(GetProcAddress(m, "NVSDK_NGX_D3D11_EvaluateFeature_C"));
+    if (!create || (!eval && !eval_c)) return true;
+
+    const std::wstring path = ModulePath(m);
+    const NgxSkip skip = NgxClassifyModule(path.c_str(), isHostExe, create, eval, eval_c);
+    if (skip != NgxSkip::None) {
+        LOGD("ngx: skipping %ls (rule %d)", path.c_str(), static_cast<int>(skip));
+        return true;
+    }
+
+    int slot = -1;
+    for (int k = 0; k < kMaxLayers; ++k)
+        if (!s.layers[k].used) {
+            slot = k;
             break;
         }
-
-        void* createT = FollowThunk(create);
-        void* evalT = eval ? FollowThunk(eval) : nullptr;
-        void* evalCT = eval_c ? FollowThunk(eval_c) : nullptr;
-
-        Layer& L = s.layers[slot];
-        std::string err;
-        if (!L.create.Install(createT, kDetours[slot].create, &err)) {
-            LOGW("ngx: CreateFeature hook failed for %ls: %s", path, err.c_str());
-            L.create.Detach();
-            continue;  // create is mandatory; without it the feature filter is blind
-        }
-        if (evalT && !L.eval.Install(evalT, kDetours[slot].eval, &err))
-            LOGW("ngx: EvaluateFeature hook failed for %ls: %s", path, err.c_str());
-        if (evalCT && !L.eval_c.Install(evalCT, kDetours[slot].eval_c, &err))
-            LOGW("ngx: EvaluateFeature_C hook failed for %ls: %s", path, err.c_str());
-        L.mod = m;
-        L.used = true;
-        LOGI("ngx: hooked %ls (slot %d)", path, slot);
+    if (slot < 0) {
+        LOGW("ngx: layer table full; %ls not hooked", path.c_str());
+        return false;
     }
+
+    void* createT = FollowThunk(create);
+    void* evalT = eval ? FollowThunk(eval) : nullptr;
+    void* evalCT = eval_c ? FollowThunk(eval_c) : nullptr;
+
+    Layer& L = s.layers[slot];
+    std::string err;
+    if (!L.create.Install(createT, kDetours[slot].create, &err)) {
+        LOGW("ngx: CreateFeature hook failed for %ls: %s", path.c_str(), err.c_str());
+        L.create.Detach();
+        return true;  // create is mandatory; without it the feature filter is blind
+    }
+    if (evalT && !L.eval.Install(evalT, kDetours[slot].eval, &err))
+        LOGW("ngx: EvaluateFeature hook failed for %ls: %s", path.c_str(), err.c_str());
+    if (evalCT && !L.eval_c.Install(evalCT, kDetours[slot].eval_c, &err))
+        LOGW("ngx: EvaluateFeature_C hook failed for %ls: %s", path.c_str(), err.c_str());
+    L.mod = m;
+    L.sizeOfImage = ImageSizeAt(m);
+    L.path = path;
+    L.used = true;
+    LOGI("ngx: hooked %ls (slot %d)", path.c_str(), slot);
+    return true;
 }
 
 // Forgets a layer without touching its module's memory. Caller holds scanLock.
@@ -363,6 +415,8 @@ void DetachLayerLocked(Layer& L) {
     L.eval.Detach();
     L.eval_c.Detach();
     L.mod = nullptr;
+    L.sizeOfImage = 0;
+    L.path.clear();
     L.used = false;
 }
 
@@ -374,25 +428,40 @@ void RecountLocked() {
     s.hooked.store(n, std::memory_order_release);
 }
 
-// Drops any layer whose module is no longer loaded. Caller holds scanLock.
-void VerifyUnloadsLocked() {
+// True when the layer's own module is still loaded at its base and still holds
+// our patches: same base, same SizeOfImage, same full path, and every installed
+// jump intact. A module loaded anew at that base (even the same DLL again) never
+// holds our jumps, so it is never taken for the hooked one (ngx review F6).
+// Caller holds scanLock.
+bool LayerIsLiveLocked(const Layer& L) {
+    HMODULE h = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(L.mod), &h) ||
+        h != L.mod)
+        return false;
+    if (ImageSizeAt(L.mod) != L.sizeOfImage) return false;
+    if (_wcsicmp(ModulePath(L.mod).c_str(), L.path.c_str()) != 0) return false;
+    if (!L.create.PatchIntact()) return false;
+    if (L.eval.Active() && !L.eval.PatchIntact()) return false;
+    if (L.eval_c.Active() && !L.eval_c.PatchIntact()) return false;
+    return true;
+}
+
+// Drops every layer that is no longer its own live module. Caller holds scanLock.
+void VerifyLayersLocked() {
     HookState& s = S();
-    for (Layer& L : s.layers) {
-        if (!L.used) continue;
-        HMODULE h = nullptr;
-        const BOOL present = GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(L.mod), &h);
-        if (!present || h != L.mod) DetachLayerLocked(L);
-    }
+    for (Layer& L : s.layers)
+        if (L.used && !LayerIsLiveLocked(L)) DetachLayerLocked(L);
 }
 
 // Applies one unload the callback reported: the layer at that base is dropped
-// without a write to its memory. Caller holds scanLock.
+// without a write to its memory. A layer there that is still live belongs to a
+// module a later scan hooked at the reused base, and stays. Caller holds
+// scanLock.
 void ApplyUnloadLocked(uintptr_t base) {
     HookState& s = S();
     for (Layer& L : s.layers)
-        if (L.used && reinterpret_cast<uintptr_t>(L.mod) == base) DetachLayerLocked(L);
+        if (L.used && reinterpret_cast<uintptr_t>(L.mod) == base && !LayerIsLiveLocked(L)) DetachLayerLocked(L);
 }
 
 // Takes everything the callback queued. Unloads are applied here, before any
@@ -508,7 +577,7 @@ void NgxHook::ProcessPendingRescan() {
     if (!s.workPending.load(std::memory_order_acquire)) return;
     ExclusiveLock scan(&s.scanLock);
     const bool overflow = DrainEventsLocked();  // unloads first, before any rescan
-    if (overflow) VerifyUnloadsLocked();
+    if (overflow) VerifyLayersLocked();
     if (s.pendingRescan.exchange(false, std::memory_order_acq_rel) || overflow) ScanLocked();
     RecountLocked();
 }
@@ -527,11 +596,18 @@ void NgxHook::Uninstall() {
     DrainEventsLocked();
     for (Layer& L : s.layers) {
         if (!L.used) continue;
-        L.create.Remove();
-        L.eval.Remove();
-        L.eval_c.Remove();
-        L.mod = nullptr;
-        L.used = false;
+        // Pin the module so it cannot unload between the identity check and the
+        // restore; restore only into the module that was hooked (F6).
+        HMODULE pinned = nullptr;
+        const bool pin = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                            reinterpret_cast<LPCWSTR>(L.mod), &pinned) != FALSE;
+        if (pin && pinned == L.mod && LayerIsLiveLocked(L)) {
+            L.create.Remove();
+            L.eval.Remove();
+            L.eval_c.Remove();
+        }
+        DetachLayerLocked(L);  // frees whatever Remove did not
+        if (pin) FreeLibrary(pinned);
     }
     RecountLocked();
     {
