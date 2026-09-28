@@ -1,6 +1,6 @@
 # ac-dlssg
 
-**Status: design stage. There is nothing to install yet.**
+**Status: M1 (DirectX 12 presentation without frame generation) verified in game; nothing to install for players yet.**
 
 NVIDIA DLSS Frame Generation (DLSS-G) for Assetto Corsa with Custom Shaders Patch.
 
@@ -26,7 +26,7 @@ GPL-3.0. See [LICENSE](LICENSE).
 
 ## По-русски
 
-**Статус: проектирование, ставить пока нечего.**
+**Статус: M1 (вывод кадра через DirectX 12, без генерации кадров) проверен в игре; игрокам ставить пока нечего.**
 
 Генерация кадров NVIDIA (DLSS-G) для Assetto Corsa с Custom Shaders Patch. Игра рисует в DirectX 11, а генерация NVIDIA работает только в DirectX 12. Мост выводит готовый кадр через DirectX 12 и Streamline. Глубина и векторы движения берутся из DLSS-апскейла CSP.
 

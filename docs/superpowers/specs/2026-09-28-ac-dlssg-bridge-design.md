@@ -1,6 +1,6 @@
 # ac-dlssg: design
 
-Date: 2026-09-28. Status: design approved in conversation; revised after an adversarial source review (39 confirmed findings applied); awaiting the user's review of this document.
+Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done (see section 11).
 
 ## 1. Goal
 
@@ -153,7 +153,8 @@ A complete `IDXGISwapChain4` COM object. It has all 41 vtable slots and its own 
   - **Handles.** `GetFrameLatencyWaitableObject` returns a new `DuplicateHandle` copy on every call, because the caller owns the handle and closes it. The proxy closes its own handle in the final Release.
   - **Releases.** Every non-test Present releases one count on every return path, including failures and frames without DLSS-G. The internal Present of a resize (below) releases none.
   - **Chain without the flag.** If the game's description lacks `FRAME_LATENCY_WAITABLE_OBJECT`, `GetFrameLatencyWaitableObject` returns NULL, and the two latency setters and getters return `DXGI_ERROR_INVALID_CALL`.
-  - **Streamline's pacer.** The D3D12 chain is never created with the waitable flag, so Streamline's pacer is never starved.
+  - **Streamline's pacer.** From M2 on, the D3D12 chain is never created with the waitable flag, so Streamline's pacer is never starved.
+  - **M1 only (no Streamline yet).** When the game's chain has the waitable flag, the D3D12 chain gets it too, follows the game's latency, and the presenter waits on it (500 ms at most) after each D3D12 Present, so CSP keeps its own queue depth. DXGI creates that object with a count of L, which pays for the game's wait before its first frame; since the game's waits are served by the bridge's semaphore, the presenter takes that first count at creation. Without it the bridge queued one frame more than the game's own chain (one refresh of extra latency with VSync). M2 removes this when Reflex and Streamline pace frames.
 - **Resizing.** `ResizeBuffers` first normalizes zero arguments, then:
   1. If DLSS-G is on, it sets `eOff` and null tags, then presents the current frame once more through section 7 steps 4 to 7, with its own frame token and the full marker sequence. The `eOff` only takes effect at a Present, and until then Streamline presents on its own thread. This internal Present is not a CSP frame: it does not release the latency semaphore and is not counted in the statistics.
   2. It flushes the D3D11 context and CPU-waits up to 500 ms until the `progress` fence (6.4) reaches the last submitted value. On timeout it takes the stall path (section 9).
@@ -362,7 +363,7 @@ Bridge frame N. Test presents do not take part (6.3).
    - If DLSS-G is on, CSP asked for sync interval 1, and `bIsVsyncSupportAvailable` is not `eTrue`, present with sync interval 0 and without `ALLOW_TEARING` (DWM keeps a borderless window tear-free). Log this once and show it in the panel.
    - Emit `ePresentEnd`. With DLSS-G on, Streamline presents the interpolated frame N−½, then frame N.
 7. **End of frame.**
-   - `queue->Signal(sharedFence, V')` and `queue->Signal(progress, V')`, then `ctx4->Wait(sharedFence, V')`, and record `pendingWait = V'`.
+   - `queue->Signal(sharedFence, V')` and `queue->Signal(progress, V')`, and record `pendingWait = V'`. The matching `ctx4->Wait(sharedFence, V')` is issued at the start of the next Present, just before the copy into the shared texture: that texture is the only resource the two sides share, so CSP's next frame is not held behind the D3D12 copy (as built in M1).
    - Release one count of the latency semaphore.
    - Frame start for N+1 (step 1).
 
@@ -415,7 +416,7 @@ Bridge frame N. Test presents do not take part (6.3).
 - test presents;
 - `SetMaximumFrameLatency`;
 - `ResizeBuffers`;
-- create, release and re-create of the main swap chain (the second chain must be a pass-through);
+- create, release and re-create of the main swap chain (from M2 on the second chain must be a pass-through, because the first one's release shuts Streamline down; in M1 both chains are proxied);
 - a forced D3D12 stall (the watchdog must release D3D11).
 
 DLSS-G itself is exercised only in-game, by the user.
@@ -428,6 +429,17 @@ DLSS-G itself is exercised only in-game, by the user.
   - F8 and CSP screenshots still save;
   - the bridge costs less than 0.5 ms;
   - one run with `enabled=0` and the spoof present is compared with a run without the spoof.
+
+  **Result (2026-09-28, reference machine): passed.**
+  - The game starts normally, and the picture is unchanged.
+  - The ReShade overlay works.
+  - Alt+Tab and minimize cause no freeze and no black screen.
+  - A resolution change works.
+  - A drive on Shutoko with traffic had no crash and no stutter.
+  - NVIDIA ShadowPlay works over the D3D12 chain.
+  - The bridge log shows the proxy decision for the main window, `bridge_gpu_ms` d3d11 0.025 + d3d12 0.023 ms, no stall and no warning or error, and CSP's `Present(0, 0x200)` passed through with frame latency 2.
+  - With the spoof present and `enabled=0`, the game behaved the same. The user saw about 10 fps more in that configuration than in a session with the bridge enabled and no spoof, so two variables changed at once. A test-app A/B on the same machine with visible windows (GPU-bound, about 98 fps) measured the bridge at under 1% (98.5/98.3 fps without it, 97.8/97.7 with it), so the difference comes from the spoof or from the sessions, not from the bridge. The spoof's effect on CSP (it rewrites the NVAPI architecture for every caller) is to be measured in M3. Hidden-window test-app runs are too noisy for such comparisons (84.9-95.9 fps for the same bridge run).
+  - VSync was not checked, because the user does not use it. The VSync queue depth is covered by the unit test `Presenter_TakesTheGamesFirstLatencyWait`.
 - **M2.** Streamline init, the proxy chain, Reflex, and the full PCL marker sequence, with DLSS-G off. The Streamline log is clean and Reflex is detected.
 - **M3.** NGX capture, the Lua camera app, and DLSS-G 2X on the RTX 3080 through the spoof. A debug overlay shows the motion vectors and the camera handedness. Success criteria 1 and 2 are met, and DLSS-G is off in menus and pause.
 - **M4.** Panel, hotkey, installer, uninstaller, README, CI with attestations, and release v0.1.0.
