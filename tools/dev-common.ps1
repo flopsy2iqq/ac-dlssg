@@ -92,6 +92,35 @@ function Resolve-PathSetting([string]$BaseDir, [string]$Value, [string]$What) {
     return Get-NormalizedPath (Join-Path $BaseDir $Value)
 }
 
+# True when the error, or any exception inside it, is an access-denied
+# failure: writing into a game folder under Program Files without elevation.
+function Test-AccessDenied($ErrorRecord) {
+    if ($ErrorRecord.CategoryInfo -and $ErrorRecord.CategoryInfo.Category -eq 'PermissionDenied') { return $true }
+    $e = $ErrorRecord.Exception
+    while ($e) {
+        if ($e -is [System.UnauthorizedAccessException]) { return $true }
+        if ($e -is [System.IO.IOException] -and ($e.HResult -band 0xFFFF) -eq 5) { return $true }
+        $e = $e.InnerException
+    }
+    return $false
+}
+
+function Write-AccessDeniedHint([string]$GameDir) {
+    Write-Host '  Windows denied access to the game folder. When Assetto Corsa is under C:\Program Files (x86),'
+    Write-Host '  only an elevated PowerShell may change it: open the Start menu, right-click Windows PowerShell,'
+    Write-Host '  choose "Run as administrator", and run the same command again there.'
+    if ($GameDir) { Write-Host "  (game folder: $GameDir)" }
+}
+
+# ReShade's dxgi.dll is recognised by its version resource ProductName.
+function Get-DxgiProductName([string]$Path) {
+    try {
+        $name = (Get-Item -LiteralPath $Path).VersionInfo.ProductName
+        if ($name) { return $name.Trim() }
+    } catch { }
+    return ''
+}
+
 function Get-RunningGame {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($script:AcdbGameExe)
     return @(Get-Process -Name $name -ErrorAction SilentlyContinue)
@@ -100,6 +129,8 @@ function Get-RunningGame {
 # ---------------------------------------------------------------------------
 # Steam discovery
 
+# The Steam folders from the registry, then Steam's default folder
+# (C:\Program Files (x86)\Steam) in case the registry has none.
 function Get-SteamRoots {
     $roots = @()
     foreach ($key in @(
@@ -112,6 +143,11 @@ function Get-SteamRoots {
         } catch {
             continue
         }
+    }
+    $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if ($programFilesX86) {
+        $default = Join-Path $programFilesX86 'Steam'
+        if (-not @($roots | Where-Object { Test-SamePath $_ $default }).Count) { $roots += $default }
     }
     return $roots
 }

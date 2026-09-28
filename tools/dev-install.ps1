@@ -3,26 +3,44 @@
   Developer install of ac-dlssg.dll for the in-game milestone tests.
 
 .DESCRIPTION
-  A stand-in for the real installer (spec section 12) until it exists. It:
+  A stand-in for the real installer (spec section 12) until it exists. It
+  installs the bridge in one of two modes:
+    - ReShade: ReShade is <game>\dxgi.dll and loads the bridge,
+      <game>\ac-dlssg.dll, as its [PROXY] ProxyLibrary;
+    - Standalone: no ReShade; the bridge itself is <game>\dxgi.dll.
+  -Mode Auto (the default) picks ReShade mode when <game>\dxgi.dll is ReShade
+  (version resource ProductName "ReShade"), and Standalone mode when there is
+  no dxgi.dll or it is the bridge a previous standalone install recorded. Any
+  other dxgi.dll is refused in every mode, even with -Force. A mode other than
+  the one recorded by a previous install is refused until dev-uninstall.ps1
+  has undone that install.
+
+  In both modes it:
     - refuses to run while acs.exe is running;
-    - requires ReShade as <game>\dxgi.dll (version resource ProductName
-      "ReShade") and ReShade's ReShade.ini;
+    - requires the six Streamline DLLs in -StreamlineDir, each with a valid
+      Authenticode signature by NVIDIA Corporation;
+    - records the mode and the file hashes (and in ReShade mode the old
+      EnableProxyLibrary/ProxyLibrary lines) in
+      <game>\ac-dlssg\install\dev-manifest.json before changing anything;
+    - copies the Streamline DLLs and the license files next to them into
+      <game>\ac-dlssg\sl, then the bridge DLL, each through a .new file, a
+      hash check and a rename;
+    - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults and
+      log_level=debug when it does not exist.
+  When Windows denies writing into the game folder (a game under Program
+  Files), it says to run it again from an elevated PowerShell.
+
+  ReShade mode also:
+    - requires ReShade's ReShade.ini;
     - resolves ReShade's base path like ReShade 6.8.0 ([INSTALL] BasePath in
       <game>\ReShade.ini, else RESHADE_BASE_PATH_OVERRIDE, else the game
       folder) and edits <base>\ReShade.ini;
     - refuses when [PROXY] ProxyLibrary names another DLL;
-    - requires the six Streamline DLLs in -StreamlineDir, each with a valid
-      Authenticode signature by NVIDIA Corporation;
-    - records the old EnableProxyLibrary/ProxyLibrary lines and the file
-      hashes in <game>\ac-dlssg\install\dev-manifest.json before
-      changing anything;
-    - copies the Streamline DLLs and the license files next to them into
-      <game>\ac-dlssg\sl, then the bridge DLL to <game>\ac-dlssg.dll, each
-      through a .new file, a hash check and a rename;
+    - copies the bridge DLL to <game>\ac-dlssg.dll;
     - sets EnableProxyLibrary=1 and ProxyLibrary in place (adding them under
-      [PROXY] only when missing), keeping every other byte of ReShade.ini;
-    - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults and
-      log_level=debug when it does not exist.
+      [PROXY] only when missing), keeping every other byte of ReShade.ini.
+  Standalone mode copies the bridge DLL to <game>\dxgi.dll and touches no
+  ReShade.ini.
 
   Running it again is an upgrade: the files are replaced, and the values
   recorded by the first run stay the ones dev-uninstall.ps1 restores. A file
@@ -46,16 +64,24 @@
   Default: deps\streamline-2.14.1\bin\x64 in the work tree this script
   belongs to, staged by tools\fetch-deps.ps1.
 
+.PARAMETER Mode
+  Auto (default), ReShade or Standalone; see the description.
+
 .PARAMETER Force
   Replace installed files that were changed outside this script.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-install.ps1
+
+.EXAMPLE
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-install.ps1 -Mode Standalone
 #>
 param(
     [string]$GameDir,
     [string]$Dll,
     [string]$StreamlineDir,
+    [ValidateSet('Auto', 'ReShade', 'Standalone')]
+    [string]$Mode = 'Auto',
     [switch]$Force
 )
 
@@ -222,10 +248,50 @@ function Install-PlannedFile($Plan, [string]$BackupDir, [string]$Stamp) {
     return $drop
 }
 
+# The mode this run installs in, from -Mode, what <game>\dxgi.dll is and the
+# mode a previous install recorded. Refuses every combination that would
+# replace a dxgi.dll that is not ours or mix the two modes.
+function Resolve-InstallMode([string]$Requested, [string]$Dxgi, [string]$RecordedMode, [string]$ManifestPath) {
+    $kind = 'none'
+    $product = ''
+    if (Test-Path -LiteralPath $Dxgi -PathType Leaf) {
+        $product = Get-DxgiProductName $Dxgi
+        if ($product -eq 'ReShade') { $kind = 'reshade' }
+        elseif ($RecordedMode -eq 'standalone') { $kind = 'ours' }
+        else { $kind = 'foreign' }
+    }
+    if ($kind -eq 'foreign') {
+        Stop-Refused ("$Dxgi is not ReShade (version resource ProductName '$product') and was not installed by this " +
+            'script. Neither mode can be installed next to it: remove or rename it first if you no longer use it.')
+    }
+    $why = ''
+    $mode = $Requested.ToLowerInvariant()
+    if ($mode -eq 'auto') {
+        if ($kind -eq 'reshade') { $mode = 'reshade'; $why = "auto: $Dxgi is ReShade" }
+        elseif ($kind -eq 'ours') { $mode = 'standalone'; $why = "auto: $Dxgi is the bridge of the standalone install" }
+        else { $mode = 'standalone'; $why = 'auto: no dxgi.dll in the game folder' }
+    } elseif ($mode -eq 'standalone' -and $kind -eq 'reshade') {
+        Stop-Refused "$Dxgi is ReShade; standalone mode would replace it. Install with -Mode ReShade, or uninstall ReShade first."
+    } elseif ($mode -eq 'reshade' -and $kind -ne 'reshade') {
+        if ($kind -eq 'ours') {
+            Stop-Refused "$Dxgi is the bridge of a standalone install. Run tools\dev-uninstall.ps1 first, then install ReShade and run this again."
+        }
+        Stop-Refused "ReShade is not installed as $Dxgi. Install ReShade with add-on support for DirectX 10/11/12 into the game folder first, or install with -Mode Standalone."
+    } else {
+        $why = "-Mode $Requested"
+    }
+    if ($RecordedMode -and $RecordedMode -ne $mode) {
+        Stop-Refused ("the existing developer install ($ManifestPath) is in $RecordedMode mode, but this run would " +
+            "install in $mode mode ($why). Run tools\dev-uninstall.ps1 first, then run this again.")
+    }
+    return [pscustomobject]@{ Mode = $mode; Why = $why }
+}
+
 $exitCode = 0
 $rollback = @()
 $tempFiles = @()
 $iniCommitted = $false
+$game = $null
 try {
     Say 'ac-dlssg developer install'
 
@@ -258,25 +324,6 @@ try {
     Step "Streamline: $slSourceDir ($($script:AcdbSlDlls.Count) DLLs signed by $($script:AcdbSlSignerCn), $($slSources.Count - $script:AcdbSlDlls.Count) license files)"
 
     $dxgi = Join-Path $game 'dxgi.dll'
-    if (-not (Test-Path -LiteralPath $dxgi -PathType Leaf)) {
-        Stop-Refused "ReShade is not installed as $dxgi. Install ReShade with add-on support for DirectX 10/11/12 into the game folder first."
-    }
-    $vi = (Get-Item -LiteralPath $dxgi).VersionInfo
-    if (-not $vi.ProductName -or $vi.ProductName.Trim() -ne 'ReShade') {
-        Stop-Refused "$dxgi is not ReShade (version resource ProductName '$($vi.ProductName)'). The bridge is loaded by ReShade as its ProxyLibrary."
-    }
-    $reshadeVersion = $vi.ProductVersion
-    Step "ReShade: $dxgi, version $reshadeVersion"
-
-    $base = Resolve-ReShadeBase $game
-    $ini = $base.Ini
-    Step "ReShade base path: $($base.BasePath) (from $($base.Source))"
-    if (-not (Test-Path -LiteralPath $ini -PathType Leaf)) {
-        Stop-Refused "ReShade.ini not found at $ini. Start the game once with ReShade so that it writes ReShade.ini, then run this again."
-    }
-    Step "ReShade.ini: $ini"
-
-    $target = Join-Path $game $script:AcdbDllName
     $dataDir = Join-Path $game $script:AcdbDataDirName
     $installDir = Join-Path $dataDir 'install'
     $manifestPath = Join-Path $installDir 'dev-manifest.json'
@@ -286,13 +333,43 @@ try {
         Stop-Refused "$installDir\manifest.json exists: the release installer manages this game. Use its uninstaller before a developer install."
     }
     $manifest = $null
+    $recordedMode = $null
     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
         $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-        if (-not (Test-SamePath $manifest.reshade.ini $ini)) {
+        # Manifests written before standalone mode existed have no mode.
+        $recordedMode = 'reshade'
+        if ($manifest.PSObject.Properties['mode'] -and $manifest.mode) { $recordedMode = [string]$manifest.mode }
+    }
+    $chosen = Resolve-InstallMode $Mode $dxgi $recordedMode $manifestPath
+    $standalone = $chosen.Mode -eq 'standalone'
+    Step "mode: $($chosen.Mode) ($($chosen.Why))"
+
+    $reshadeVersion = $null
+    $base = $null
+    $ini = $null
+    if ($standalone) {
+        $target = $dxgi
+        $targetRel = 'dxgi.dll'
+    } else {
+        $reshadeVersion = (Get-Item -LiteralPath $dxgi).VersionInfo.ProductVersion
+        Step "ReShade: $dxgi, version $reshadeVersion"
+        $base = Resolve-ReShadeBase $game
+        $ini = $base.Ini
+        Step "ReShade base path: $($base.BasePath) (from $($base.Source))"
+        if (-not (Test-Path -LiteralPath $ini -PathType Leaf)) {
+            Stop-Refused "ReShade.ini not found at $ini. Start the game once with ReShade so that it writes ReShade.ini, then run this again."
+        }
+        Step "ReShade.ini: $ini"
+        $target = Join-Path $game $script:AcdbDllName
+        $targetRel = $script:AcdbDllName
+    }
+
+    if ($manifest) {
+        if (-not $standalone -and -not (Test-SamePath $manifest.reshade.ini $ini)) {
             Stop-Refused "the first install edited $($manifest.reshade.ini), but ReShade now uses $ini. Run dev-uninstall.ps1 first."
         }
         Step "existing developer install found (since $($manifest.installedUtc)); this run is an upgrade"
-    } elseif (Test-Path -LiteralPath $target) {
+    } elseif (-not $standalone -and (Test-Path -LiteralPath $target)) {
         Stop-Refused "$target exists but there is no $manifestPath. Remove the DLL, or set EnableProxyLibrary=0 in ReShade.ini and delete the DLL, then run this again."
     }
 
@@ -316,7 +393,7 @@ try {
     }
     $dllRecorded = $null
     if ($manifest) { $dllRecorded = [string]$manifest.dll.sha256 }
-    $dllPlan = New-FilePlan $source $target $script:AcdbDllName $dllRecorded
+    $dllPlan = New-FilePlan $source $target $targetRel $dllRecorded
     $plans = @($slPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
     $foreign = @($plans | Where-Object { $_.Foreign })
@@ -328,32 +405,46 @@ try {
         Stop-Refused (($what -join '; ') + ". Run again with -Force to replace it; a copy is kept in $installDir\backup.")
     }
 
-    $iniBytes = [System.IO.File]::ReadAllBytes($ini)
-    $iniHashBefore = Get-Sha256OfBytes $iniBytes
-    $doc = ConvertFrom-IniBytes $iniBytes
-    foreach ($value in @((Get-ProxyKeyValues $doc).Proxy)) {
-        if ($value.Trim() -ne '' -and -not (Test-NamesOurDll $value)) {
-            Stop-Refused "[PROXY] ProxyLibrary=$value in $($ini): another DLL is already chained behind ReShade. The bridge cannot be installed next to it; remove that DLL from ReShade.ini first if you no longer use it."
+    $edit = $null
+    $newIniBytes = $null
+    $iniHashBefore = $null
+    $iniHashAfter = $null
+    $proxyValue = $null
+    if (-not $standalone) {
+        $iniBytes = [System.IO.File]::ReadAllBytes($ini)
+        $iniHashBefore = Get-Sha256OfBytes $iniBytes
+        $doc = ConvertFrom-IniBytes $iniBytes
+        foreach ($value in @((Get-ProxyKeyValues $doc).Proxy)) {
+            if ($value.Trim() -ne '' -and -not (Test-NamesOurDll $value)) {
+                Stop-Refused "[PROXY] ProxyLibrary=$value in $($ini): another DLL is already chained behind ReShade. The bridge cannot be installed next to it; remove that DLL from ReShade.ini first if you no longer use it."
+            }
         }
-    }
 
-    $proxyValue = $script:AcdbDllName
-    if (-not (Test-SamePath $base.BasePath $game)) { $proxyValue = $target }
-    if ($proxyValue.Contains(',')) {
-        Stop-Refused "the DLL path '$proxyValue' contains a comma, which ReShade's ini parser splits on."
+        $proxyValue = $script:AcdbDllName
+        if (-not (Test-SamePath $base.BasePath $game)) { $proxyValue = $target }
+        if ($proxyValue.Contains(',')) {
+            Stop-Refused "the DLL path '$proxyValue' contains a comma, which ReShade's ini parser splits on."
+        }
+        $values = [ordered]@{ EnableProxyLibrary = '1'; ProxyLibrary = $proxyValue }
+        $edit = Set-ProxyKeys $doc $values
+        $newIniBytes = ConvertTo-IniBytes $doc
+        $iniHashAfter = Get-Sha256OfBytes $newIniBytes
     }
-    $values = [ordered]@{ EnableProxyLibrary = '1'; ProxyLibrary = $proxyValue }
-    $edit = Set-ProxyKeys $doc $values
-    $newIniBytes = ConvertTo-IniBytes $doc
-    $iniHashAfter = Get-Sha256OfBytes $newIniBytes
 
     $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     $configExisted = Test-Path -LiteralPath $config -PathType Leaf
     if ($manifest) {
         $installedUtc = $manifest.installedUtc
-        $reshadeRecord = $manifest.reshade
-        $reshadeRecord.iniSha256After = $iniHashAfter
+        $reshadeRecord = $null
+        if (-not $standalone) {
+            $reshadeRecord = $manifest.reshade
+            $reshadeRecord.iniSha256After = $iniHashAfter
+        }
         $configCreated = [bool]$manifest.config.created
+    } elseif ($standalone) {
+        $installedUtc = $now
+        $reshadeRecord = $null
+        $configCreated = -not $configExisted
     } else {
         $installedUtc = $now
         $reshadeRecord = [ordered]@{
@@ -376,16 +467,18 @@ try {
     foreach ($f in $slOldFiles) {
         if (-not ($slPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $slFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
     }
+    # Schema 2 adds mode; dev-uninstall.ps1 reads a schema 1 manifest as reshade.
     $newManifest = [ordered]@{
-        schema       = 1
+        schema       = 2
         tool         = 'tools\dev-install.ps1'
+        mode         = $chosen.Mode
         state        = 'installing'
         installedUtc = $installedUtc
         updatedUtc   = $now
         gameDir      = $game
         reshade      = $reshadeRecord
         streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
-        dll          = [ordered]@{ path = $script:AcdbDllName; source = $source; sha256 = $sourceHash }
+        dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }
     }
 
@@ -416,14 +509,16 @@ try {
         Step "wrote $config (defaults, log_level=debug)"
     }
 
-    foreach ($action in $edit.Actions) { Step "ReShade.ini $action" }
-    if ($iniHashAfter -eq $iniHashBefore) {
-        Step 'ReShade.ini already loads the bridge; not rewritten'
-    } else {
-        $tempFiles += "$ini.new"
-        [void](Write-BytesViaTemp $ini $newIniBytes)
-        $iniCommitted = $true
-        Step "wrote $ini (hash verified)"
+    if (-not $standalone) {
+        foreach ($action in $edit.Actions) { Step "ReShade.ini $action" }
+        if ($iniHashAfter -eq $iniHashBefore) {
+            Step 'ReShade.ini already loads the bridge; not rewritten'
+        } else {
+            $tempFiles += "$ini.new"
+            [void](Write-BytesViaTemp $ini $newIniBytes)
+            $iniCommitted = $true
+            Step "wrote $ini (hash verified)"
+        }
     }
 
     $newManifest.state = 'installed'
@@ -433,7 +528,11 @@ try {
     if ($backupsToDrop.Count -gt 0 -and @(Get-ChildItem -LiteralPath $backupDir -Force).Count -eq 0) {
         Remove-Item -LiteralPath $backupDir -Force
     }
-    Say "done. ReShade now loads $proxyValue. Undo with tools\dev-uninstall.ps1."
+    if ($standalone) {
+        Say "done. The bridge is $target (standalone mode, no ReShade). Undo with tools\dev-uninstall.ps1."
+    } else {
+        Say "done. ReShade now loads $proxyValue. Undo with tools\dev-uninstall.ps1."
+    }
 } catch {
     $exitCode = 1
     if (Test-IsRefusal $_) {
@@ -441,6 +540,7 @@ try {
     } else {
         Say "FAILED: $($_.Exception.Message)"
         Write-Host "  at $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)"
+        if (Test-AccessDenied $_) { Write-AccessDeniedHint $game }
     }
     foreach ($temp in @($tempFiles)) {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }

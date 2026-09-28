@@ -16,8 +16,8 @@ SystemDxgi Load() {
     const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return d;
     const std::wstring path = std::wstring(sys, n) + L"\\dxgi.dll";
-    // Absolute path: loading by name would find ReShade's dxgi.dll, which
-    // is already in the process under that name.
+    // Absolute path: loading by name would find the dxgi.dll that is already
+    // in the process under that name, ReShade's or (standalone) this bridge.
     d.module = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!d.module) return d;
 
