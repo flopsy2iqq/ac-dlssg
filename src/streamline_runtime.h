@@ -137,7 +137,9 @@ public:
     // live in sl.common and work while DLSS-G is unsupported.
     sl::Result SetTagsForFrame(const sl::FrameToken& token, uint32_t viewport, ID3D12Resource* depth,
                                ID3D12Resource* mvec, const sl::Extent& extent, ID3D12GraphicsCommandList* cmdList);
-    // Both tags with a null resource (Streamline drops its references).
+    // Both tags with a null resource: clears this token's entries. Streamline
+    // keeps its references to earlier frames' resources until it recycles
+    // them in a later tag call (frames older than its present frame - 2).
     sl::Result SetNullTags(const sl::FrameToken& token, uint32_t viewport);
     // slSetConstants(constants, token, viewport).
     sl::Result SetConstants(const sl::Constants& constants, const sl::FrameToken& token, uint32_t viewport);

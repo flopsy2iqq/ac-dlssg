@@ -1279,7 +1279,13 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
                 LOGI("fg: first tags and constants set (frame %u)", frame_index);
             }
         }
-        // Streamline drops its references to the slots with null tags.
+        // Null tags clear this token's entries (tags set before SetConstants
+        // failed) so that DLSS-G never reads them. They do not release the
+        // slots at once: with frame-based tagging Streamline holds a
+        // reference per tagged frame and recycles only frames older than its
+        // present frame - 2, inside a later tag call, so the last two tagged
+        // frames' slots stay referenced until the next tag call or
+        // slShutdown (review finding SL-5; bounded, accepted).
         if (!tagged && (prev_tagged || tagsSet) && token) sl->SetNullTags(*token, kViewport);
         std::string reason = dec.reason;
         bool perFrame = dec.perFrame;
