@@ -278,6 +278,52 @@ TEST(Coordinator_NullResourcesGiveNoCaptureAndKeepTheSlot) {
     CHECK_EQ(r.markers, 5);
 }
 
+// Review finding F5: "the last evaluate wins" only for an evaluate that
+// reaches the slot. A later counted evaluate of the same frame that is
+// refused first (null depth or motion vectors, a slot still in use) keeps
+// the frame's earlier capture and its parameters.
+TEST(Coordinator_ARefusedLaterEvaluateKeepsTheFramesCapture) {
+    Rig r;
+    if (!r.Create()) return;
+    CspSources s = MakeSources(r.d.device11.Get(), 64, 36);
+    CspSources other = MakeSources(r.d.device11.Get(), 96, 54);
+    REQUIRE(s.depth && s.mvec && other.depth && other.mvec);
+
+    NgxEvaluateInputs noDepth = r.Inputs(s);
+    noDepth.depth = nullptr;
+    noDepth.jitterX = 0.5f;
+    NgxEvaluateInputs noMvec = r.Inputs(s);
+    noMvec.mvec = nullptr;
+    for (int i = 0; i < 3; ++i) {  // every slot exists: the frames below are not forced off
+        r.coord->OnEvaluate(r.Inputs(s));
+        REQUIRE(r.coord->EndFrame().captured);
+    }
+    for (const NgxEvaluateInputs& refused : {noDepth, noMvec}) {
+        r.coord->OnEvaluate(r.Inputs(s));
+        r.coord->OnEvaluate(refused);
+        const FrameCapture f = r.coord->EndFrame();
+        CHECK_EQ(f.evaluates, 2u);
+        CHECK(f.captured);
+        CHECK(!f.forcedOff);
+        CHECK(f.params.jitterX == 0.25f);  // the captured evaluate's
+        CHECK_EQ(f.params.renderW, 64u);
+    }
+
+    // A later evaluate whose sources need a slot the GPU may still read.
+    for (int i = 0; i < 3; ++i) {
+        r.coord->OnEvaluate(r.Inputs(s));
+        const FrameCapture f = r.coord->EndFrame();
+        REQUIRE(f.captured);
+        r.coord->NoteTagged(f.slot, 1000);  // progress never gets there
+    }
+    r.coord->OnEvaluate(r.Inputs(s));
+    r.coord->OnEvaluate(r.Inputs(other));
+    const FrameCapture f = r.coord->EndFrame();
+    CHECK(f.captured);
+    CHECK_EQ(f.params.renderW, 64u);
+    CHECK(r.slots->Matches(f.slot, s.depth.Get(), s.mvec.Get()));
+}
+
 TEST(Coordinator_DeferredContextAndOtherDeviceAreNotCsp) {
     Rig r;
     if (!r.Create()) return;

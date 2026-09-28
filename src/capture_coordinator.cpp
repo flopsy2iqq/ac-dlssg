@@ -123,24 +123,27 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
     }
 }
 
-// Caller holds mu_. The last evaluate of the frame wins.
+// Caller holds mu_. The last evaluate of the frame that reaches the slot
+// wins. One refused before that (null resources, an unknown render size, a
+// slot the GPU may still read) keeps an earlier capture of the frame and its
+// parameters (review finding F5); Reset is OR-ed over every counted evaluate.
 void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
     const uint32_t slot = static_cast<uint32_t>(frame_index_ % CaptureSlots::kSlots);
     frame_.slot = slot;
-    frame_.captured = false;
     const bool reset = frame_.params.ngxReset || in.reset;
-    frame_.params = CaptureParams();
-    frame_.params.jitterX = in.jitterX;
-    frame_.params.jitterY = in.jitterY;
-    frame_.params.mvScaleX = in.mvScaleX;
-    frame_.params.mvScaleY = in.mvScaleY;
-    frame_.params.createFlags = in.createFlags;
     frame_.params.ngxReset = reset;
-    frame_.mvScaleMissing = in.mvScaleX == 0.0f || in.mvScaleY == 0.0f;
+    // Why this evaluate is not captured; an earlier capture keeps its reason.
+    const auto refuse = [this](std::string why) {
+        if (!frame_.captured) frame_.reason = std::move(why);
+    };
 
     const auto create = creates_.find(in.featureKey);
-    frame_.outWidth = create != creates_.end() ? create->second.outWidth : 0;
-    frame_.outHeight = create != creates_.end() ? create->second.outHeight : 0;
+    const uint32_t outWidth = create != creates_.end() ? create->second.outWidth : 0;
+    const uint32_t outHeight = create != creates_.end() ? create->second.outHeight : 0;
+    if (!frame_.captured) {
+        frame_.outWidth = outWidth;
+        frame_.outHeight = outHeight;
+    }
 
     D3D11_TEXTURE2D_DESC dd{};
     D3D11_TEXTURE2D_DESC md{};
@@ -158,11 +161,11 @@ void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
     // Phase-1 mismatch list: null resources are no capture, before Matches,
     // so that one bad evaluate neither destroys a slot nor costs a GPU wait.
     if (!in.depth) {
-        frame_.reason = "no capture: NGX reported no depth";
+        refuse("no capture: NGX reported no depth");
         return;
     }
     if (!in.mvec) {
-        frame_.reason = "no capture: NGX reported no motion vectors";
+        refuse("no capture: NGX reported no motion vectors");
         return;
     }
 
@@ -179,16 +182,14 @@ void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
         }
     }
     if (w == 0 || h == 0) {
-        frame_.reason = "no capture: the render size is unknown";
+        refuse("no capture: the render size is unknown");
         return;
     }
-    frame_.params.renderW = w;
-    frame_.params.renderH = h;
 
     CaptureSlots* slots = deps_.slots;
     FencePair* fences = deps_.fences;
     if (!slots || !fences) {
-        frame_.reason = "no capture: no capture slots";
+        refuse("no capture: no capture slots");
         return;
     }
     const bool matches = slots->Matches(slot, in.depth, in.mvec);
@@ -197,9 +198,24 @@ void CaptureCoordinator::Capture(const NgxEvaluateInputs& in) {
     if (action == SlotAction::Skip) {
         char buf[96];
         std::snprintf(buf, sizeof(buf), "no capture: capture slot %u is still in use by the GPU", slot);
-        frame_.reason = buf;
+        refuse(buf);
         return;
     }
+
+    // From here on the slot changes: this evaluate replaces an earlier capture.
+    frame_.captured = false;
+    frame_.params = CaptureParams();
+    frame_.params.jitterX = in.jitterX;
+    frame_.params.jitterY = in.jitterY;
+    frame_.params.mvScaleX = in.mvScaleX;
+    frame_.params.mvScaleY = in.mvScaleY;
+    frame_.params.createFlags = in.createFlags;
+    frame_.params.ngxReset = reset;
+    frame_.params.renderW = w;
+    frame_.params.renderH = h;
+    frame_.mvScaleMissing = in.mvScaleX == 0.0f || in.mvScaleY == 0.0f;
+    frame_.outWidth = outWidth;
+    frame_.outHeight = outHeight;
     std::string err;
     if (action == SlotAction::Recreate) {
         force_[slot] = false;
