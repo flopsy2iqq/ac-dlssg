@@ -26,6 +26,8 @@ add_library(acdb_core STATIC
     src/internal_call.cpp
     src/system_dxgi.cpp
     src/vtable_patch.cpp
+    src/factory_hook.cpp
+    src/hidden_chain.cpp
     src/fence_pair.cpp
     src/stall_watchdog.cpp
     src/gpu_timers.cpp
@@ -42,6 +44,7 @@ add_executable(acdb_tests
     tests/test_present_flags.cpp
     tests/test_latency_semaphore.cpp
     tests/test_vtable_patch.cpp
+    tests/test_hidden_chain.cpp
     tests/test_fence_pair.cpp
     tests/test_stall_watchdog.cpp
     tests/test_presenter.cpp
