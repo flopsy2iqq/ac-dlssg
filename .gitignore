@@ -427,3 +427,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local work area: scratch builds, notes and test output. Never committed.
+.work/
