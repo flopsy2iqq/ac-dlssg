@@ -184,6 +184,48 @@ Mat ViewToView(const Camera& from, const Camera& to) {
 
 sl::Boolean Bool(bool v) { return v ? sl::Boolean::eTrue : sl::Boolean::eFalse; }
 
+// A float Streamline can use: finite, and not sl::INVALID_FLOAT (FLT_MAX),
+// which it reads as "not provided".
+bool Usable(float v) { return std::isfinite(v) && v != sl::INVALID_FLOAT; }
+
+// Finite but extreme input (a subnormal near plane or FOV, an extreme aspect,
+// FLT_MAX anywhere) passes the input checks and still overflows a float in
+// the result. Names the first field that is not usable.
+const char* FirstUnusableField(const sl::Constants& c) {
+    const struct {
+        const char* name;
+        const sl::float4x4* m;
+    } matrices[] = {{"cameraViewToClip", &c.cameraViewToClip},
+                    {"clipToCameraView", &c.clipToCameraView},
+                    {"clipToPrevClip", &c.clipToPrevClip},
+                    {"prevClipToClip", &c.prevClipToClip}};
+    for (const auto& [name, m] : matrices)
+        for (uint32_t i = 0; i < 4; ++i)
+            if (!Usable((*m)[i].x) || !Usable((*m)[i].y) || !Usable((*m)[i].z) || !Usable((*m)[i].w)) return name;
+    const struct {
+        const char* name;
+        const sl::float2* v;
+    } pairs[] = {{"jitterOffset", &c.jitterOffset}, {"mvecScale", &c.mvecScale}};
+    for (const auto& [name, v] : pairs)
+        if (!Usable(v->x) || !Usable(v->y)) return name;
+    const struct {
+        const char* name;
+        const sl::float3* v;
+    } vectors[] = {{"cameraPos", &c.cameraPos},
+                   {"cameraUp", &c.cameraUp},
+                   {"cameraRight", &c.cameraRight},
+                   {"cameraFwd", &c.cameraFwd}};
+    for (const auto& [name, v] : vectors)
+        if (!Usable(v->x) || !Usable(v->y) || !Usable(v->z)) return name;
+    const std::pair<const char*, float> scalars[] = {{"cameraNear", c.cameraNear},
+                                                     {"cameraFar", c.cameraFar},
+                                                     {"cameraFOV", c.cameraFOV},
+                                                     {"cameraAspectRatio", c.cameraAspectRatio}};
+    for (const auto& [name, v] : scalars)
+        if (!Usable(v)) return name;
+    return nullptr;
+}
+
 }  // namespace
 
 bool BuildFrameConstants(const ConstantsInput& in, sl::Constants* out, std::string* why) {
@@ -236,6 +278,8 @@ bool BuildFrameConstants(const ConstantsInput& in, sl::Constants* out, std::stri
     c.motionVectorsDilated = sl::Boolean::eFalse;
     c.motionVectorsJittered = Bool((cap.createFlags & dlss_create_flags::kMVJittered) != 0);
 
+    if (const char* field = FirstUnusableField(c))
+        return Fail(why, std::string("result: ") + field + " overflows a float or equals sl::INVALID_FLOAT");
     *out = c;
     return true;
 }

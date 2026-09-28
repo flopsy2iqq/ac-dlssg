@@ -708,6 +708,39 @@ TEST(FC_RefusesADegenerateBasis) {
     CHECK(Refuses(Input(&cam, &badPrev), "prev"));
 }
 
+// Finite inputs whose results overflow a float, or land exactly on
+// sl::INVALID_FLOAT (FLT_MAX), which Streamline reads as "not provided".
+TEST(FC_RefusesInputWhoseResultIsNotAValidFloat) {
+    const CameraLayout cam = AxisCamera({0, 0, 0}, 60, 0.1f, 1000, 1920, 1080);
+    const auto withCur = [&](auto&& edit) {
+        CameraLayout bad = cam;
+        edit(bad);
+        return Refuses(Input(&bad, &cam), "result");
+    };
+    CHECK(withCur([](CameraLayout& c) { c.clipNear = 1e-39f; }));  // 1/near overflows
+    CHECK(withCur([](CameraLayout& c) { c.fovVDeg = 1e-38f; }));   // 1/tan(fov/2) overflows
+    CHECK(withCur([](CameraLayout& c) {                             // aspect 1e-60
+        c.renderW = 1e-30f;
+        c.renderH = 1e30f;
+    }));
+    CHECK(withCur([](CameraLayout& c) { c.clipFar = std::numeric_limits<float>::max(); }));  // cameraFar
+    CHECK(withCur([](CameraLayout& c) { c.pos[0] = std::numeric_limits<float>::max(); }));   // cameraPos
+
+    // 6e38 between the two positions overflows viewToViewPrev.
+    CameraLayout farCur = cam, farPrev = cam;
+    farCur.pos[0] = 3e38f;
+    farPrev.pos[0] = -3e38f;
+    CHECK(Refuses(Input(&farCur, &farPrev), "result"));
+
+    ConstantsInput in = Input(&cam, &cam);
+    in.capture.mvScaleX = std::numeric_limits<float>::max();
+    in.capture.renderW = 1;
+    CHECK(Refuses(in, "result"));
+    in = Input(&cam, &cam);
+    in.capture.jitterY = std::numeric_limits<float>::max();
+    CHECK(Refuses(in, "result"));
+}
+
 TEST(FC_FormatConstantsForLog) {
     const CameraLayout cam = AxisCamera({1.5, 2, -3}, 90, 1, 101, 200, 100);
     ConstantsInput in = Input(&cam, &cam);

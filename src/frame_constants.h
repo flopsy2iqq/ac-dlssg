@@ -96,7 +96,9 @@ struct ConstantsInput {
 // cur or out; a non-finite value; a render size <= 0; clipNear <= 0 or
 // clipNear >= clipFar; fovVDeg outside (0, 180); a zero or non-finite MV
 // scale; a degenerate basis (a zero vector, up parallel to fwd, or side in
-// the fwd/up plane). A non-null prev is checked the same way.
+// the fwd/up plane). A non-null prev is checked the same way. Finite but
+// extreme input whose result overflows a float, or lands on
+// sl::INVALID_FLOAT (Streamline's "not provided"), is refused too.
 bool BuildFrameConstants(const ConstantsInput& in, sl::Constants* out, std::string* why);
 
 // One log line with the camera fields, the flags and the four matrices, for
