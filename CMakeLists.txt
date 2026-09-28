@@ -141,6 +141,7 @@ add_executable(acdb_tests
     tests/test_vtable_patch.cpp
     tests/test_inline_hook.cpp
     tests/test_ngx_hook.cpp
+    tests/test_testapp_fakes.cpp
     tests/test_factory_hook.cpp
     tests/test_hidden_chain.cpp
     tests/test_fence_pair.cpp

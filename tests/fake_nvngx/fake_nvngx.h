@@ -25,6 +25,10 @@ struct FakeNgxState {
     // saw the reentry).
     volatile long maxReentryObserved = 0;
     volatile long reentryCounter = 0;
+    // Parameter blocks handed out by NVSDK_NGX_D3D11_AllocateParameters and
+    // taken back by NVSDK_NGX_D3D11_DestroyParameters.
+    volatile long allocatedParams = 0;
+    volatile long destroyedParams = 0;
 };
 
 extern "C" {
@@ -36,6 +40,13 @@ __declspec(dllexport) int __cdecl NVSDK_NGX_D3D11_EvaluateFeature(void* ctx, con
                                                                   const void* params, void* callback);
 __declspec(dllexport) int __cdecl NVSDK_NGX_D3D11_EvaluateFeature_C(void* ctx, const void* handle,
                                                                     const void* params, void* callback);
+// A new, empty FakeNgxParam (below) owned by this module, as NGX hands out its
+// own NVSDK_NGX_Parameter blocks; for callers that cannot build one
+// themselves, such as the test app's --fake-ngx mode. The block goes back
+// through DestroyParameters. Both answer NVSDK_NGX_Result_FAIL_InvalidParameter
+// for a null pointer.
+__declspec(dllexport) int __cdecl NVSDK_NGX_D3D11_AllocateParameters(acdb::NgxParameter** outParams);
+__declspec(dllexport) int __cdecl NVSDK_NGX_D3D11_DestroyParameters(acdb::NgxParameter* params);
 }
 
 // Header-only fake NVSDK_NGX_Parameter. Values are stored with the type they were
