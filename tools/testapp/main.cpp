@@ -1039,10 +1039,8 @@ bool RecreateChain(App& a) {
     if (wasProxy) {
         // The proxy's final Release runs synchronously inside Release.
         const BridgeLog log = ReadBridgeLog(a.log_path);
-        const int released = log.Count("ProxySwapChain released");
-        if (released != a.proxies_released)
-            return Fail("after releasing the proxy the bridge log shows %d releases, expected %d", released,
-                        a.proxies_released);
+        const std::vector<std::string> problems = testapp::ReleaseProblems(log.lines, a.proxies_released);
+        if (!problems.empty()) return Fail("after releasing the proxy: %s", problems.front().c_str());
     }
     return CreateChain(a);
 }
@@ -1361,12 +1359,7 @@ bool CheckLogAfterRun(App& a) {
             ok = Fail("the bridge log calls a dxgi.dll ReShade in standalone mode");
     }
 
-    const int released = log.Count("ProxySwapChain released");
-    const int presentersReleased = log.Count("presenter released");
-    if (released != a.proxies_released)
-        ok = Fail("the bridge log shows %d proxy releases, expected %d", released, a.proxies_released);
-    if (presentersReleased != a.proxies_released)
-        ok = Fail("the bridge log shows %d presenter releases, expected %d", presentersReleased, a.proxies_released);
+    for (const auto& p : testapp::ReleaseProblems(log.lines, a.proxies_released)) ok = Fail("%s", p.c_str());
     if (log.Has("presenter stopped")) ok = Fail("the presenter stopped");
 
     if (a.proxies_created > 0) {

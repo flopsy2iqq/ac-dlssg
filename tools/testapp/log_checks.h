@@ -100,6 +100,50 @@ inline std::string StatsProblem(const Stats& s) {
     return {};
 }
 
+// ------------------------------------------------------------------ releases
+
+// The release lines of proxy_swapchain.cpp and d3d12_presenter.cpp, and the
+// failed creation of factory_hook.cpp.
+inline constexpr char kProxyReleased[] = "ProxySwapChain released";
+inline constexpr char kPresenterReleased[] = "presenter released";
+inline constexpr char kProxyCreationFailed[] = "proxy swap chain creation failed";
+
+inline int CountContaining(const std::vector<std::string>& lines, const char* needle) {
+    int n = 0;
+    for (const auto& l : lines) n += l.find(needle) != std::string::npos ? 1 : 0;
+    return n;
+}
+
+// Problems with the release lines, given the proxies the test app released.
+// A proxy whose creation failed (from M3: a presenter refused because
+// Streamline does not support DLSS-G) is released inside that creation,
+// together with its presenter when one was built: each failed creation adds
+// exactly one proxy release and at most one presenter release.
+inline std::vector<std::string> ReleaseProblems(const std::vector<std::string>& lines, int proxiesReleased) {
+    std::vector<std::string> problems;
+    const int failed = CountContaining(lines, kProxyCreationFailed);
+    const int proxies = CountContaining(lines, kProxyReleased);
+    const int presenters = CountContaining(lines, kPresenterReleased);
+    char buf[160];
+    if (proxies != proxiesReleased + failed) {
+        std::snprintf(buf, sizeof(buf), "the bridge log shows %d proxy releases, expected %d (%d failed creation(s))",
+                      proxies, proxiesReleased + failed, failed);
+        problems.push_back(buf);
+    }
+    if (presenters < proxiesReleased || presenters > proxiesReleased + failed) {
+        if (failed == 0) {
+            std::snprintf(buf, sizeof(buf), "the bridge log shows %d presenter releases, expected %d", presenters,
+                          proxiesReleased);
+        } else {
+            std::snprintf(buf, sizeof(buf),
+                          "the bridge log shows %d presenter releases, expected %d to %d (%d failed creation(s))",
+                          presenters, proxiesReleased, proxiesReleased + failed, failed);
+        }
+        problems.push_back(buf);
+    }
+    return problems;
+}
+
 // ------------------------------------------------------------------ timestamps
 
 // Milliseconds since midnight of a log line; -1 without a timestamp.

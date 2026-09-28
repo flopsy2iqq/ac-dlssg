@@ -311,3 +311,28 @@ TEST(TestappLogs_FgNoCameraProblems) {
     CHECK(HasProblem(CheckFgLines(Replaced(fresh, "captures=318 camera_fresh=0", "captures=318 camera_fresh=5"), e),
                      "fresh camera or tags"));
 }
+
+// The release lines: the proxies the test app released, plus what a failed
+// proxy creation releases inside itself (the presenter refused for an
+// unsupported adapter, fg-unsupported-passthrough).
+TEST(TestappLogs_ReleaseCounts) {
+    const std::string proxy = "22:26:06.193 [1] INFO ProxySwapChain released";
+    const std::string presenter = "22:26:06.192 [1] INFO presenter released";
+    const std::string failed =
+        "22:26:06.193 [1] ERROR proxy swap chain creation failed (0x80004005): DLSS-G is not supported on this "
+        "adapter (x); passing through";
+    CHECK(ReleaseProblems({}, 0).empty());
+    CHECK(ReleaseProblems({presenter, proxy, presenter, proxy}, 2).empty());
+    // A missing or an extra release of each kind.
+    CHECK_EQ(ReleaseProblems({presenter, proxy}, 2).size(), 2u);
+    CHECK_EQ(ReleaseProblems({presenter, proxy}, 0).size(), 2u);
+    CHECK_EQ(ReleaseProblems({presenter, proxy, proxy}, 2).size(), 1u);
+    // A failed creation releases its proxy, and its presenter when one was built.
+    CHECK(ReleaseProblems({presenter, proxy, failed}, 0).empty());
+    CHECK(ReleaseProblems({proxy, failed}, 0).empty());
+    CHECK_EQ(ReleaseProblems({failed}, 0).size(), 1u);
+    CHECK_EQ(ReleaseProblems({presenter, presenter, proxy, failed}, 0).size(), 1u);
+    // One proxy the test app released and one failed creation.
+    CHECK(ReleaseProblems({presenter, proxy, failed, presenter, proxy}, 1).empty());
+    CHECK_EQ(ReleaseProblems({presenter, proxy, failed, presenter, proxy}, 0).size(), 2u);
+}
