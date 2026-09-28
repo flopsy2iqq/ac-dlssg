@@ -43,6 +43,43 @@ foreach(required ${ACDB_REQUIRED_HEADERS})
     endif()
 endforeach()
 
+# Shaders are compiled at build time with fxc from the Windows SDK into headers
+# (fxc /Fh), so the bridge needs no shader compiler at runtime. fxc is looked
+# up in the SDK version this build targets first, then in the newest SDK
+# present, then on PATH.
+set(ACDB_PF86 "ProgramFiles(x86)")
+set(ACDB_KITS_BIN "$ENV{${ACDB_PF86}}/Windows Kits/10/bin")
+set(ACDB_FXC_HINTS)
+if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+    list(APPEND ACDB_FXC_HINTS "${ACDB_KITS_BIN}/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
+endif()
+file(GLOB ACDB_KITS_VERSIONS LIST_DIRECTORIES true "${ACDB_KITS_BIN}/10.*")
+list(SORT ACDB_KITS_VERSIONS COMPARE NATURAL ORDER DESCENDING)
+foreach(v ${ACDB_KITS_VERSIONS})
+    list(APPEND ACDB_FXC_HINTS "${v}/x64")
+endforeach()
+find_program(ACDB_FXC fxc HINTS ${ACDB_FXC_HINTS})
+if(NOT ACDB_FXC)
+    message(FATAL_ERROR "fxc.exe not found. Install the Windows 10/11 SDK, or set ACDB_FXC to its path.")
+endif()
+set(ACDB_SHADER_OUT "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# acdb_compile_cs(<name> <source.hlsl> <array name>): cs_5_0, entry point main,
+# into ${ACDB_SHADER_OUT}/<name>.h as "const BYTE <array name>[]".
+function(acdb_compile_cs name source var)
+    set(out "${ACDB_SHADER_OUT}/${name}.h")
+    add_custom_command(
+        OUTPUT "${out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${ACDB_SHADER_OUT}"
+        COMMAND "${ACDB_FXC}" /nologo /T cs_5_0 /E main /O3 /WX /Qstrip_reflect /Qstrip_debug
+                /Vn ${var} /Fh "${out}" "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+        COMMENT "fxc cs_5_0 ${source}"
+        VERBATIM)
+    set(ACDB_SHADER_HEADERS ${ACDB_SHADER_HEADERS} "${out}" PARENT_SCOPE)
+endfunction()
+set(ACDB_SHADER_HEADERS)
+acdb_compile_cs(depth_blit_cs shaders/depth_blit.hlsl kDepthBlitCs)
+
 # Everything except the DLL entry points lives in a static library so that the
 # tests can link it directly. It must not import d3d11/d3d12/dxgi: those are
 # resolved at runtime (spec 6.1).
@@ -75,8 +112,12 @@ add_library(acdb_core STATIC
     src/camera_channel.cpp
     src/camera_layout.h
     src/frame_constants.cpp
+    src/capture_slots.cpp
+    ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
+# The generated shader headers; the tests include them too.
+target_include_directories(acdb_core PUBLIC "${ACDB_SHADER_OUT}")
 # Streamline types appear in streamline_runtime.h; NVAPI stays inside driver_profile.cpp.
 target_include_directories(acdb_core SYSTEM PUBLIC "${ACDB_SL_INCLUDE_DIR}")
 target_include_directories(acdb_core SYSTEM PRIVATE "${ACDB_NVAPI_INCLUDE_DIR}")
@@ -113,6 +154,7 @@ add_executable(acdb_tests
     tests/test_driver_profile.cpp
     tests/test_camera_channel.cpp
     tests/test_frame_constants.cpp
+    tests/test_capture_slots.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
