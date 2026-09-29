@@ -1,10 +1,14 @@
-<p align="center"><img src="docs/logo/ac-dlssg-banner.png" alt="ac-dlssg" width="640"></p>
+<div align="center">
 
-[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Install](https://img.shields.io/badge/-Install-brightgreen)](docs/INSTALL.md) [![Support](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
+<img src="docs/logo/ac-dlssg-banner.png" alt="ac-dlssg: DLSS Frame Generation for Assetto Corsa" width="100%">
 
-# ac-dlssg
+[![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Install](https://img.shields.io/badge/Install-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.md) [![Support on Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
+
+[![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X and 4X) for **Assetto Corsa** with **Custom Shaders Patch**.
+
+</div>
 
 **Version 1.0.0. Frame generation works in game.** On the test PC the frame rate doubles with no ghosting and no blur. The pictures are in [Screenshots](#screenshots).
 
@@ -48,12 +52,16 @@ A friend's Acer Nitro 5 AN515-57: GeForce RTX 3050 Ti Laptop GPU (4 GB, driver 6
 ![DLSS-G 2X on an RTX 3050 Ti laptop: 31 real fps, 60 fps on screen](docs/screenshots/fg2x-laptop-1.jpg)
 ![DLSS-G 2X on an RTX 3050 Ti laptop in a tunnel: 30 real fps, 57 fps on screen](docs/screenshots/fg2x-laptop-2.jpg)
 
+The same laptop at **4X**: 23 real fps become 89 on screen, and the 4 GB card had enough video memory for it.
+
+![DLSS-G 4X on an RTX 3050 Ti laptop: 23 real fps, 89 fps on screen](docs/screenshots/fg4x-laptop-1.jpg)
+
 On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg_vram_headroom_mib=auto`, see [Use](#use)): it keeps no extra memory free on such a card and turns frame generation on when it falls only a little short, and the window then says "video memory is tight". If the game stutters, lower CSP's texture or shadow quality.
 
 ## Requirements
 
 - **Assetto Corsa** from Steam with a **Custom Shaders Patch preview build** (0.3.0-preview or newer). It was tested with preview622 and preview634. CSP preview builds are available from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
-- **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it.
+- **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it. With DLAA, also turn off MSAA and FXAA in the game's video settings (Content Manager: Settings, Assetto Corsa, Video: MSAA Off, FXAA unticked, post-processing kept on), or moving things ghost.
 - **An NVIDIA RTX GPU:**
   - RTX 40 and RTX 50 support DLSS-G themselves.
   - RTX 30, including laptop GPUs such as the RTX 3050 Ti, needs the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). You do not install it yourself: on an RTX 30 the installer downloads the pinned release 0.3.5 from the author's repository, checks its hashes and puts it next to `acs.exe`. See [RTX 30 and dlssg_for_sm86](#rtx-30-and-dlssg_for_sm86). It needs NVIDIA driver R580 or newer.
@@ -68,7 +76,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 1. Close Assetto Corsa and Content Manager's game session.
 2. Download `ac-dlssg-<version>.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `docs`, `files`, `scripts` and `tools`.
 3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30 dlssg_for_sm86), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. At the end the window waits for Enter.
-4. Start the game as usual and make sure DLSS is the upscaler in CSP's graphics settings.
+4. Before you start the game, turn on DLSS in CSP: in Content Manager, Settings, Custom Shaders Patch, ADJUSTMENTS (under Graphics), Upscaling: tick Active and set Method to NVIDIA DLSS (EXTRA FX must be active too). With DLAA (Quality: DLAA (100%)), also set MSAA to Off and untick FXAA in Settings, Assetto Corsa, Video, and keep post-processing on, or moving things ghost. Then start the game as usual.
 5. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.
 
 **Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`.

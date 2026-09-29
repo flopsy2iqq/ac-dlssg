@@ -1,10 +1,14 @@
-<p align="center"><img src="docs/logo/ac-dlssg-banner.png" alt="ac-dlssg" width="640"></p>
+<div align="center">
 
-[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Установка](https://img.shields.io/badge/-Установка-brightgreen)](docs/INSTALL.ru.md) [![Поддержать](https://img.shields.io/badge/Поддержать-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
+<img src="docs/logo/ac-dlssg-banner.png" alt="ac-dlssg: генерация кадров DLSS для Assetto Corsa" width="100%">
 
-# ac-dlssg
+[![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Установка](https://img.shields.io/badge/Установка-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.ru.md) [![Поддержать на Ko-fi](https://img.shields.io/badge/Поддержать-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
+
+[![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 Генерация кадров NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X и 4X) для **Assetto Corsa** с **Custom Shaders Patch**.
+
+</div>
 
 **Версия 1.0.0, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Картинки в разделе [Скриншоты](#скриншоты).
 
@@ -48,12 +52,16 @@ DLSS-G 2X в Assetto Corsa с CSP:
 ![DLSS-G 2X на ноутбуке с RTX 3050 Ti: 31 настоящий fps, 60 fps на экране](docs/screenshots/fg2x-laptop-1.jpg)
 ![DLSS-G 2X на ноутбуке с RTX 3050 Ti в тоннеле: 30 настоящих fps, 57 fps на экране](docs/screenshots/fg2x-laptop-2.jpg)
 
+Тот же ноутбук на **4X**: 23 настоящих кадра превращаются в 89 на экране, и видеопамяти 4 ГБ на это хватило.
+
+![DLSS-G 4X на ноутбуке с RTX 3050 Ti: 23 настоящих, 89 на экране](docs/screenshots/fg4x-laptop-1.jpg)
+
 На карте с 4 ГБ видеопамяти мало. Мост подстраивается под это сам (`fg_vram_headroom_mib=auto`, см. [Как пользоваться](#как-пользоваться)): на такой карте он не держит лишнего запаса памяти и включает генерацию, даже если памяти немного не хватает, а окно тогда пишет "video memory is tight". Если игра подтормаживает, снизьте в CSP качество текстур или теней.
 
 ## Что нужно
 
 - **Assetto Corsa** из Steam с **preview-версией Custom Shaders Patch** (0.3.0-preview или новее). Проверено на preview622 и preview634. Preview-версии CSP можно получить у автора CSP на [Patreon](https://www.patreon.com/c/x4fab/home).
-- **DLSS-апскейл в CSP включён**, в любом режиме, включая DLAA. Генерация берёт из него глубину и векторы движения.
+- **DLSS-апскейл в CSP включён**, в любом режиме, включая DLAA. Генерация берёт из него глубину и векторы движения. С DLAA выключите ещё MSAA и FXAA в видеонастройках игры (Content Manager: Настройки, Assetto Corsa, Графика: Сглаживание «Выкл.», галочка «Быстрое сглаживание (FXAA)» снята, постобработка включена), иначе за движущимися объектами будет шлейф.
 - **Видеокарта NVIDIA RTX:**
   - RTX 40 и RTX 50 поддерживают DLSS-G сами.
   - RTX 30, в том числе ноутбучные вроде 3050 Ti, требует сторонний [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). Ставить его руками не нужно: на RTX 30 установщик сам скачивает закреплённую версию 0.3.5 из репозитория автора, проверяет её хеши и кладёт рядом с `acs.exe`. См. [Про dlssg_for_sm86](#про-dlssg_for_sm86). Нужен драйвер NVIDIA R580 или новее.
@@ -68,7 +76,7 @@ DLSS-G 2X в Assetto Corsa с CSP:
 1. Закройте Assetto Corsa и игровую сессию Content Manager.
 2. Скачайте `ac-dlssg-<версия>.zip` из [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) и распакуйте в любую папку. В ней лежит `install.bat` и папки `docs`, `files`, `scripts` и `tools`.
 3. Дважды щёлкните `install.bat`. Это всё: установщик ничего не спрашивает. Он сам найдёт игру через Steam, скачает Streamline (на RTX 30 и dlssg_for_sm86), напишет, где лежат файлы лицензий NVIDIA (установка означает согласие с ними), и всё поставит. Если игра стоит в `C:\Program Files (x86)`, Windows спросит разрешение от имени администратора: подтвердите, и установка продолжится в новом окне. В конце окно ждёт Enter.
-4. Запустите игру как обычно. В графических настройках CSP апскейлером должен быть DLSS.
+4. Перед запуском игры включите DLSS в CSP: в Content Manager Настройки, Custom Shaders Patch, ADJUSTMENTS (группа Graphics), блок Upscaling: галочка Active, Method: NVIDIA DLSS (EXTRA FX тоже должен быть включён). С DLAA (Quality: DLAA (100%)) поставьте ещё Сглаживание (MSAA) на «Выкл.» и снимите галочку «Быстрое сглаживание (FXAA)» в Настройки, Assetto Corsa, Графика, а постобработку оставьте включённой, иначе за движущимися объектами будет шлейф. Затем запустите игру как обычно.
 5. Выезжайте. Генерация включается сама, как только заработает DLSS в CSP. В паузе и в меню она выключена.
 
 **Обновление:** запустите `install.bat` новой сборки поверх старой. Он сам заменит файлы старой сборки, уберёт те, что новой больше не нужны, и сам переключится между режимом с ReShade и без него, если ReShade с тех пор поставили или убрали. Остановится он только на файлах, которые явно не от этого проекта, например на `dxgi.dll` другого мода.

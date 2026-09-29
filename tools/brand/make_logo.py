@@ -9,6 +9,7 @@ only, in a 512 x 512 unit box, and every output is drawn from it:
   docs/logo/ac-dlssg-mark-512.png   the mark, 512 x 512, transparent
   docs/logo/ac-dlssg-banner.png     1280 x 320, dark, for the README header
   docs/logo/social-preview.png      1280 x 640, dark, GitHub's social preview
+  docs/logo/steam-cover.png         1024 x 1024, dark, the Steam guide's preview
   apps/lua/AcDlssg/icon.png         64 x 64, transparent, the CSP app icon
   apps/lua/AcDlssg/logo.png         96 x 96, transparent, the window header
 
@@ -38,6 +39,7 @@ GREY = (0x9C, 0x9C, 0xA6)
 WORDMARK = 'ac-dlssg'
 BANNER_LINE = 'DLSS Frame Generation for Assetto Corsa'
 SOCIAL_LINE = 'DLSS-G 2X / 3X / 4X for Assetto Corsa + CSP'
+SQUARE_LINE = 'DLSS-G 4X for Assetto Corsa'
 
 
 def mark_shapes():
@@ -139,6 +141,30 @@ def lockup(width, height, mark_size, word_size, line, line_size, stacked_line_ga
     return downscale(img, width, height).convert('RGB')
 
 
+def stacked(size, mark_side, word_size, line, line_size, gap, line_gap):
+    """Square, dark: the mark on top, the wordmark and the line centred under
+    it. Steam shows a guide's preview image as a square."""
+    S = size * SS
+    img = Image.new('RGBA', (S, S), INK + (255,))
+    fw = font(word_size * SS, b'Bold')
+    fl = font(line_size * SS, b'Regular')
+    wb = text_box(fw, WORDMARK)
+    lb = text_box(fl, line)
+    word_w, word_h = wb[2] - wb[0], wb[3] - wb[1]
+    line_w, line_h = lb[2] - lb[0], lb[3] - lb[1]
+    box = mark_side * SS
+    ink_h = 344.0 / 512.0 * box
+    group_h = ink_h + gap * SS + word_h + line_gap * SS + line_h
+    gy = (S - group_h) / 2.0
+    draw_mark(img, (S - box) / 2.0, gy - 84.0 / 512.0 * box, box)
+    d = ImageDraw.Draw(img)
+    wy = gy + ink_h + gap * SS
+    d.text(((S - word_w) / 2.0 - wb[0], wy - wb[1]), WORDMARK, font=fw, fill=WHITE + (255,))
+    ly = wy + word_h + line_gap * SS
+    d.text(((S - line_w) / 2.0 - lb[0], ly - lb[1]), line, font=fl, fill=GREY + (255,))
+    return downscale(img, size, size).convert('RGB')
+
+
 def svg():
     parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">',
              '  <title>ac-dlssg</title>']
@@ -158,6 +184,7 @@ def main():
     save(transparent_mark(512), 'docs', 'logo', 'ac-dlssg-mark-512.png')
     save(lockup(1280, 320, 0, 112, BANNER_LINE, 34, 18, 44), 'docs', 'logo', 'ac-dlssg-banner.png')
     save(lockup(1280, 640, 0, 150, SOCIAL_LINE, 40, 24, 60), 'docs', 'logo', 'social-preview.png')
+    save(stacked(1024, 600, 150, SQUARE_LINE, 50, 36, 26), 'docs', 'logo', 'steam-cover.png')
     # The app icon and the header logo keep a small margin, since CSP draws
     # the icon edge to edge in its taskbar.
     save(transparent_mark(64, 0.02), 'apps', 'lua', 'AcDlssg', 'icon.png')
