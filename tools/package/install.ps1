@@ -23,11 +23,19 @@
      Windows UAC prompt is the only question. It refuses when Windows Smart
      App Control is on, because that blocks the unsigned bridge DLL (in
      evaluation mode it only warns).
-  2. Without -StreamlineDir it gets NVIDIA Streamline 2.14.1 with
-     scripts\fetch-deps.ps1 into files\deps\: downloaded from NVIDIA's GitHub
-     release only when not already there, SHA-256 and NVIDIA signatures
-     verified. It prints where NVIDIA's license files are; installing means
-     accepting them.
+  2. Without -StreamlineDir it gets NVIDIA Streamline 2.14.1. An earlier
+     install's copy in <game>\ac-dlssg\sl is used again when each file the
+     install copies is there with its pinned SHA-256 and each DLL carries
+     NVIDIA's signature (the checks a download gets; the pins are in
+     scripts\dev-common.ps1): the files are copied into
+     files\deps\streamline-2.14.1-installed, checked again there, installed
+     from there (they are already this version, so nothing in the game
+     folder is rewritten), and that copy is deleted afterwards; it says
+     "Streamline 2.14.1 is already installed and verified; not downloaded
+     again". Otherwise scripts\fetch-deps.ps1 gets it into files\deps\:
+     downloaded from NVIDIA's GitHub release only when not already there,
+     SHA-256 and NVIDIA signatures verified. It prints where NVIDIA's license
+     files are; installing means accepting them.
   3. dlssg_for_sm86 (spec 10), unless -NoSpoof is given. It reads every
      display adapter (the PNPDeviceID of each Win32_VideoController) and
      looks only at the NVIDIA ones:
@@ -38,7 +46,10 @@
          (version.dll also its size and SHA-256), and has dev-install.ps1 put
          them next to acs.exe. A pinned 0.3.5 file that is already in the game
          folder is not downloaded again; it is recorded as found, and
-         uninstall.ps1 leaves it. Any other version.dll (another mod, another
+         uninstall.ps1 leaves it (one an earlier install put there stays
+         recorded as installed). A version.dll that an earlier install put
+         there and that no longer matches the pins is downloaded again and
+         replaced. Any other version.dll (another mod, another
          dlssg_for_sm86 version) is left untouched with a warning, and the
          spoof is not installed. A download that fails its checks is deleted
          and stops the install with nothing changed.
@@ -132,6 +143,45 @@ function Wait-BeforeClose {
 # The uninstaller and the log collector that the install puts into the game folder.
 function Get-InstalledTool([string]$Game, [string]$Name) { return Join-Path (Join-Path $Game $script:AcdbDataDirName) $Name }
 
+# The installed Streamline of an earlier install, copied into $To and
+# checked there with the checks a download gets: the folder to install
+# from, or the reason it cannot be used (then $To is gone again). The copy
+# keeps dev-install.ps1 from reading and writing the same files.
+function Copy-InstalledStreamline([string]$Game, [string]$To) {
+    if (Test-Path -LiteralPath $To) { Remove-Item -LiteralPath $To -Recurse -Force }
+    $data = Join-Path $Game $script:AcdbDataDirName
+    $from = Join-Path $data $script:AcdbSlDirName
+    $problem = ''
+    if (-not (Test-Path -LiteralPath (Join-Path $data 'install\dev-manifest.json') -PathType Leaf)) { $problem = 'there is no install to take them from' }
+    if (-not $problem) { $problem = Get-StreamlineRuntimeProblem $from }
+    if (-not $problem) {
+        New-Item -ItemType Directory -Path $To -Force | Out-Null
+        foreach ($name in $script:AcdbSlRuntimeSha256.Keys) { Copy-Item -LiteralPath (Join-Path $from $name) -Destination (Join-Path $To $name) }
+        $problem = Get-StreamlineRuntimeProblem $To
+        if ($problem) { $problem = "their copy in $To`: $problem" }
+    }
+    if ($problem) {
+        if (Test-Path -LiteralPath $To) { Remove-Item -LiteralPath $To -Recurse -Force }
+        return [pscustomobject]@{ Dir = $null; From = $from; Problem = $problem }
+    }
+    return [pscustomobject]@{ Dir = $To; From = $from; Problem = '' }
+}
+
+# The dlssg_for_sm86 files that the manifest of an earlier install records
+# as installed (names in lower case); none without a readable manifest.
+function Get-SpoofInstalledNames([string]$Game) {
+    $names = @{}
+    $path = Join-Path $Game "$($script:AcdbDataDirName)\install\dev-manifest.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $names }
+    try {
+        $m = Read-Manifest $path
+        if ($m.PSObject.Properties['spoof'] -and $m.spoof) {
+            foreach ($f in @($m.spoof.files)) { if ([string]$f.origin -eq 'installed') { $names[([string]$f.path).ToLowerInvariant()] = $true } }
+        }
+    } catch { }
+    return $names
+}
+
 function Get-GpuArchText($Adapter) {
     switch ($Adapter.Arch) {
         'Ampere' { if ($Adapter.Sm86) { return 'RTX 30, Ampere SM86' } else { return 'Ampere SM80 (A100)' } }
@@ -209,6 +259,16 @@ function Get-SpoofInstallArgs([string]$Game) {
         else { $state[$n] = 'other' }
     }
     $versionDll = Join-Path $Game 'version.dll'
+    # A version.dll an earlier install put there is ours: when it no longer
+    # matches the pins it is fetched again and replaced (dev-install.ps1
+    # -AutoUpgrade keeps a copy of it in install\backup).
+    $ours = Get-SpoofInstalledNames $Game
+    if ($state['version.dll'] -eq 'other' -and $ours.ContainsKey('version.dll')) {
+        Say ("note: $versionDll is the dlssg_for_sm86 file an earlier install put there, but it no longer matches $what " +
+            "(SHA-256 $(Get-Sha256OfFile $versionDll)); it is downloaded again and replaced (a copy stays in " +
+            "$(Get-InstalledTool $Game 'install\backup')).")
+        $state['version.dll'] = 'absent'
+    }
     if ($state['version.dll'] -eq 'other') {
         Say ("WARNING: $versionDll is not $what (SHA-256 $(Get-Sha256OfFile $versionDll)); it is another mod's " +
             'version.dll or another dlssg_for_sm86 version. It was left untouched, and dlssg_for_sm86 was not installed. ' +
@@ -248,6 +308,7 @@ function Get-SpoofInstallArgs([string]$Game) {
 }
 
 $code = 1
+$reusedSl = $null
 try {
     Say "ac-dlssg from $packageRoot"
     $running = @(Get-RunningGame)
@@ -290,12 +351,24 @@ try {
     $licenses = @()
     if (-not $StreamlineDir) {
         $deps = $depsDir
-        Say "NVIDIA Streamline 2.14.1 goes to $deps (a download of about 276 MB from github.com/NVIDIA-RTX/Streamline the first time; this can take several minutes without progress output)"
-        & (Join-Path $scripts 'fetch-deps.ps1') -Only Streamline -DepsDir $deps
-        if ($LASTEXITCODE -ne 0) { Stop-Refused 'getting Streamline failed (see above). Nothing was installed.' }
-        $slRoot = Join-Path $deps 'streamline-2.14.1'
-        $StreamlineDir = Join-Path $slRoot 'bin\x64'
-        $licenses = @(foreach ($license in @('license.txt', 'bin\x64\nvngx_dlss.license.txt', 'bin\x64\reflex.license.txt')) { Join-Path $slRoot $license })
+        $v = $script:AcdbSlVersion
+        $reuse = Copy-InstalledStreamline $game (Join-Path $deps "streamline-$v-installed")
+        if ($reuse.Dir) {
+            $reusedSl = $reuse.Dir
+            $StreamlineDir = $reuse.Dir
+            Say "Streamline $v is already installed and verified; not downloaded again ($($reuse.From))."
+            $licenses = @($script:AcdbSlRuntimeSha256.Keys | Where-Object { $_ -like '*license*' } | Sort-Object | ForEach-Object { Join-Path $reuse.From $_ })
+        } else {
+            if (Test-Path -LiteralPath $reuse.From -PathType Container) {
+                Say "the Streamline $v files in $($reuse.From) cannot be used again ($($reuse.Problem)); Streamline is downloaded again."
+            }
+            Say "NVIDIA Streamline $v goes to $deps (a download of about 276 MB from github.com/NVIDIA-RTX/Streamline the first time; this can take several minutes without progress output)"
+            & (Join-Path $scripts 'fetch-deps.ps1') -Only Streamline -DepsDir $deps
+            if ($LASTEXITCODE -ne 0) { Stop-Refused 'getting Streamline failed (see above). Nothing was installed.' }
+            $slRoot = Join-Path $deps "streamline-$v"
+            $StreamlineDir = Join-Path $slRoot 'bin\x64'
+            $licenses = @(foreach ($license in @('license.txt', 'bin\x64\nvngx_dlss.license.txt', 'bin\x64\reflex.license.txt')) { Join-Path $slRoot $license })
+        }
     } elseif (Test-Path -LiteralPath $StreamlineDir -PathType Container) {
         $licenses = @(Get-ChildItem -LiteralPath $StreamlineDir -File -Filter '*license*' | Sort-Object Name | ForEach-Object { $_.FullName })
     }
@@ -332,6 +405,14 @@ try {
     } else {
         Say "FAILED: $($_.Exception.Message)"
         if (Test-AccessDenied $_) { Write-AccessDeniedHint $null }
+    }
+} finally {
+    # The copy of the installed Streamline was only the source of this run.
+    if ($reusedSl -and (Test-Path -LiteralPath $reusedSl)) {
+        Remove-Item -LiteralPath $reusedSl -Recurse -Force -ErrorAction SilentlyContinue
+        if ((Test-Path -LiteralPath $depsDir) -and @(Get-ChildItem -LiteralPath $depsDir -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $depsDir -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 Wait-BeforeClose

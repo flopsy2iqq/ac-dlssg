@@ -165,6 +165,15 @@ function Assert-PackageArguments([string]$Script, [string[]]$Arguments) {
     if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoSpoof' -and $Arguments -notcontains '-SpoofSourceDir') {
         throw "refusing to run $Script without -NoSpoof or -SpoofSourceDir; it could download dlssg_for_sm86"
     }
+    # Without -StreamlineDir the install gets Streamline with fetch-deps.ps1:
+    # only with the stand-in for the download staged in <package>\files\deps.
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-StreamlineDir') {
+        $pkgRoot = Split-Path -Parent $Script
+        if ($leaf -eq 'install.ps1') { $pkgRoot = Split-Path -Parent $pkgRoot }
+        if (-not (Test-Path -LiteralPath (Join-Path $pkgRoot 'files\deps\streamline-2.14.1.sha256') -PathType Leaf)) {
+            throw "refusing to run $Script without -StreamlineDir or a staged files\deps\streamline-2.14.1; it could download Streamline"
+        }
+    }
     # -FakeElevation (uninstall.ps1 only) starts the second run without UAC.
     if (@('install.ps1', 'install.bat', 'uninstall.ps1', 'uninstall.bat') -contains $leaf -and $Arguments -notcontains '-NoElevate' -and
         $Arguments -notcontains '-FakeElevation') {
@@ -2440,7 +2449,9 @@ Invoke-Case 'UP5: files that are clearly not ours still stop the package install
 
 # ---------------------------------------------------------------------------
 # 1.1.0: after the install the unpacked package can be deleted. The
-# uninstaller and the log collector live in <game>\ac-dlssg.
+# uninstaller and the log collector live in <game>\ac-dlssg, and an upgrade
+# downloads neither Streamline nor dlssg_for_sm86 again while the installed
+# copies are intact.
 
 # The unpacked folder the tester deletes after the install (New-PackageCopy
 # puts each copy into a folder of its own).
@@ -2448,6 +2459,25 @@ function Remove-PackageFolder([string]$Pkg) {
     $unpacked = Split-Path -Parent $Pkg
     Remove-Item -LiteralPath $unpacked -Recurse -Force
     return -not (Test-Path -LiteralPath $unpacked)
+}
+
+# The stand-in for the Streamline download: the SDK as fetch-deps.ps1 stages
+# it, copied into <package>\files\deps, where fetch-deps.ps1 finds it
+# "present and verified" instead of downloading.
+$slSdkRoot = Split-Path -Parent (Split-Path -Parent $slReal)
+function Add-PackageDeps([string]$Pkg) {
+    if (-not (Test-Path -LiteralPath "$slSdkRoot.sha256" -PathType Leaf)) { throw "$slSdkRoot.sha256 is missing; stage deps with tools\fetch-deps.ps1" }
+    $deps = Join-Path $Pkg 'files\deps'
+    New-Item -ItemType Directory -Path $deps -Force | Out-Null
+    Copy-Item -LiteralPath $slSdkRoot -Destination (Join-Path $deps 'streamline-2.14.1') -Recurse
+    Copy-Item -LiteralPath "$slSdkRoot.sha256" -Destination (Join-Path $deps 'streamline-2.14.1.sha256')
+    return $deps
+}
+
+# The package install without -StreamlineDir (Assert-PackageArguments makes
+# sure that files\deps holds the stand-in).
+function Invoke-PackageInstallFromDeps([string]$Pkg, [string]$Game, [string[]]$Extra) {
+    return Invoke-Tool (Join-Path $Pkg 'scripts\install.ps1') (@('-GameDir', $Game, '-NoPause', '-NoElevate') + @($Extra))
 }
 
 function Invoke-InstalledUninstall([string]$Game, [string[]]$Arguments) {
@@ -2649,6 +2679,97 @@ Invoke-Case 'IT6: the installed uninstall.bat: a refusal keeps it, another -Game
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'the second run removes everything, <game>\ac-dlssg with uninstall.bat included'
 }
 
+Invoke-Case 'SLP: the pinned Streamline runtime hashes are those of the pinned SDK zip (static)' {
+    $lines = @(Get-Content -LiteralPath "$slSdkRoot.sha256")
+    Check ($lines[0] -eq "# zip $($script:AcdbSlZipSha256)") 'deps\streamline-2.14.1.sha256 was written from the pinned zip ($script:AcdbSlZipSha256 in dev-common.ps1)'
+    $inSdk = @{}
+    foreach ($line in @($lines | Select-Object -Skip 1)) {
+        if ($line -match '^([0-9a-f]{64})  bin\\x64\\([^\\]+)$') { $inSdk[$Matches[2].ToLowerInvariant()] = $Matches[1] }
+    }
+    $pins = $script:AcdbSlRuntimeSha256
+    Check ((@($pins.Keys | Sort-Object) -join '|') -eq ($slRealFiles -join '|')) "a pin for each file the install copies into ac-dlssg\sl ($(@($pins.Keys) -join ', '))"
+    $wrong = @($pins.Keys | Where-Object { $inSdk[$_.ToLowerInvariant()] -ne $pins[$_] })
+    Check ($wrong.Count -eq 0) "each pin is the SHA-256 of that file in the SDK zip, as deps\streamline-2.14.1.sha256 lists it (wrong: $($wrong -join ', '))"
+    Check ((Get-StreamlineRuntimeProblem $slReal) -eq '') 'the staged SDK''s bin\x64 passes the check an installed copy must pass'
+    Check ((Get-StreamlineRuntimeProblem $slTampered) -match 'sl\.common\.dll has SHA-256') 'a changed DLL fails it'
+    Check ((Get-StreamlineRuntimeProblem $slMissing) -match 'sl\.interposer\.dll is missing') 'a missing DLL fails it'
+}
+
+Invoke-Case 'IT7: an upgrade from a new package uses the installed Streamline and downloads nothing' {
+    $pkg = New-PackageCopy 'IT7'
+    [void](Add-PackageDeps $pkg)
+    $game = New-FakeGame 'IT7' -NoDxgi
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -match 'fetch-deps:' -and (Test-SlMatches $game $slReal)) 'the first install gets Streamline with fetch-deps.ps1 (the stand-in in files\deps)'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    $pkg = New-PackageCopy 'IT7b'
+    $deps = Add-PackageDeps $pkg
+    $depsBefore = Get-TreeState $deps
+    $slBefore = Get-TreeState (Get-SlDir $game)
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the upgrade exits 0'
+    Check ($r.Text -match 'Streamline 2\.14\.1 is already installed and verified; not downloaded again') 'it says Streamline 2.14.1 is already installed and verified, not downloaded again'
+    Check ($r.Text -notmatch 'fetch-deps:') 'fetch-deps.ps1 does not run: nothing is downloaded, and the stand-in is not used'
+    Check ((Get-TreeState $deps) -eq $depsBefore) 'files\deps is as before: no staging copy is left'
+    Check ((Get-TreeState (Get-SlDir $game)) -eq $slBefore -and (Test-SlMatches $game $slReal)) 'ac-dlssg\sl is unchanged'
+    foreach ($lic in @('nvngx_dlss.license.txt', 'reflex.license.txt')) {
+        # The notice lists each license file on a line of its own.
+        Check ($r.Text -match ('(?m)^\s+' + [regex]::Escape((Join-Path (Get-SlDir $game) $lic)) + '\r?$')) "the license notice names <game>\ac-dlssg\sl\$lic"
+    }
+    Check ($r.Text -match '(?i)means you accept') 'and says that installing means accepting them'
+    $m = Get-Manifest $game
+    Check (@($slRealFiles | Where-Object { (Get-SlRecordedHash $m $_) -eq (Get-Sha (Join-Path $slReal $_)) }).Count -eq $slRealFiles.Count) 'the manifest records the Streamline files as before'
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -match 'not downloaded again' -and $r.Text -notmatch 'fetch-deps:') 'a re-run from the same package folder does the same'
+}
+
+Invoke-Case 'IT8: a changed or missing installed Streamline file means a download as before' {
+    $pkg = New-PackageCopy 'IT8'
+    [void](Add-PackageDeps $pkg)
+    $game = New-FakeGame 'IT8' -NoDxgi
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and (Test-SlMatches $game $slReal)) 'the first install exits 0'
+    $changes = @(
+        @('changed', { $f = Join-Path (Get-SlDir $game) 'sl.common.dll'; $b = [IO.File]::ReadAllBytes($f); $b[0x1000] = $b[0x1000] -bxor 0xFF; [IO.File]::WriteAllBytes($f, $b) }),
+        @('missing', { Remove-Item -LiteralPath (Join-Path (Get-SlDir $game) 'reflex.license.txt') }))
+    foreach ($c in $changes) {
+        & $c[1]
+        $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+        Check ($r.Code -eq 0) "$($c[0]): the install exits 0"
+        Check ($r.Text -match 'cannot be used again' -and $r.Text -notmatch 'not downloaded again') "$($c[0]): it says the installed copy cannot be used again"
+        Check ($r.Text -match 'fetch-deps:') "$($c[0]): fetch-deps.ps1 gets Streamline as before (the stand-in for the download)"
+        Check (Test-SlMatches $game $slReal) "$($c[0]): ac-dlssg\sl holds the right files again"
+    }
+}
+
+Invoke-Case 'IT9: dlssg_for_sm86 already installed: no download; changed or missing: downloaded again' {
+    $pkg = New-PackageCopy 'IT9'
+    $game = New-FakeGame 'IT9' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'the first install puts dlssg_for_sm86 next to acs.exe'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    $pkg = New-PackageCopy 'IT9b'
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'already in the game folder as the pinned version; not downloaded' -and $r.Text -notmatch 'fetch-deps:') 'an upgrade from a new package downloads neither file again, and says so'
+    $m = Get-Manifest $game
+    Check ((Test-SpoofInstalled $game) -and @($spoofNames | Where-Object { (Get-SpoofRecord $m $_).origin -eq 'installed' }).Count -eq 2) 'both stay recorded as installed'
+
+    $vd = Join-Path $game 'version.dll'
+    [IO.File]::WriteAllBytes($vd, [byte[]]((Read-Bytes $vd) + [byte[]]@(1, 2, 3)))
+    $changed = Get-Sha $vd
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'downloaded again and replaced' -and $r.Text -match 'copying .*version\.dll \(-SpoofSourceDir') 'a changed version.dll that the install put there is fetched again'
+    Check (Test-SpoofInstalled $game) 'and replaced'
+    $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Sha $_.FullName })
+    Check ($backups -contains $changed) 'a copy of the changed one stays in ac-dlssg\install\backup'
+    Check ((Get-SpoofRecord (Get-Manifest $game) 'version.dll').origin -eq 'installed') 'it stays recorded as installed'
+
+    Remove-Item -LiteralPath (Join-Path $game 'dlssg_sm86.ini')
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'copying .*dlssg_sm86\.ini \(-SpoofSourceDir' -and $r.Text -notmatch 'copying .*version\.dll') 'a missing dlssg_sm86.ini is fetched again, version.dll is not'
+    Check (Test-SpoofInstalled $game) 'both are in place again'
+}
+
 # ---------------------------------------------------------------------------
 # Administrator rights and the .bat launchers.
 
@@ -2713,7 +2834,7 @@ Invoke-Case 'BAT: install.bat, uninstall.bat and collect-logs.bat from a folder 
     Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath (Join-Path $dest 'tools') -Filter 'ac-dlssg-logs-*.zip').Count -eq 1) 'collect-logs.bat writes its zip into tools\'
     $r = Invoke-Bat (Join-Path $dest 'tools\uninstall.bat') @('-GameDir', $game, '-RemoveData', '-NoPause', '-NoElevate')
     Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'uninstall.bat leaves only acs.exe'
-    $r = Invoke-Bat (Join-Path $dest 'install.bat') @('-GameDir', (Join-Path $FakeRoot 'games\BAT none'), '-NoSpoof', '-NoPause', '-NoElevate')
+    $r = Invoke-Bat (Join-Path $dest 'install.bat') @('-GameDir', (Join-Path $FakeRoot 'games\BAT none'), '-StreamlineDir', $slReal, '-NoSpoof', '-NoPause', '-NoElevate')
     Check ($r.Code -ne 0 -and $r.Text -match 'REFUSED') 'install.bat passes the exit code of a refusal on'
 }
 
