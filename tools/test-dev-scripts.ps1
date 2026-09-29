@@ -487,7 +487,7 @@ function New-FakeGame([string]$Case, [switch]$NoDxgi) {
 }
 
 function Get-ManifestPath([string]$Game) { return Join-Path $Game 'ac-dlssg\install\dev-manifest.json' }
-function Get-Manifest([string]$Game) { return Get-Content -Raw -LiteralPath (Get-ManifestPath $Game) | ConvertFrom-Json }
+function Get-Manifest([string]$Game) { return Read-Manifest (Get-ManifestPath $Game) }
 
 function Test-NoLeftovers([string[]]$Dirs) {
     foreach ($d in $Dirs) {
@@ -566,6 +566,23 @@ Invoke-Case 'A: realistic ReShade.ini, EnableProxyLibrary=0, CRLF, upgrade, full
     Check (Test-Path -LiteralPath $log) 'uninstall keeps logs'
     Check (Test-Path -LiteralPath $cfg) 'uninstall keeps the config'
     Check (-not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'uninstall removes the manifest'
+}
+
+Invoke-Case 'CY: ReShade mode in a game folder with Cyrillic letters: the upgrade and the uninstall read the manifest back' {
+    # The manifest is UTF-8 and records the ReShade.ini path; Windows
+    # PowerShell's Get-Content would read it in the ANSI code page.
+    $game = New-FakeGame ('CY ' + (-join [char[]](0x0418, 0x0433, 0x0440, 0x0430)))
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
+    Write-Bytes $ini $original
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check ([IO.Path]::GetFullPath((Get-Manifest $game).reshade.ini) -eq [IO.Path]::GetFullPath($ini)) 'the manifest records the Cyrillic ReShade.ini path'
+    $r = Install $game $dllV2
+    Check ($r.Code -eq 0 -and $r.Text -match 'this run is an upgrade') 'the upgrade exits 0'
+    $r = Uninstall $game
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $ini) $original)) 'the uninstall exits 0 and restores a byte-identical ReShade.ini'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'the uninstall deletes the DLL'
 }
 
 # ---------------------------------------------------------------------------

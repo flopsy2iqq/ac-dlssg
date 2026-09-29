@@ -90,7 +90,7 @@ try {
         if (Test-Path -LiteralPath $target) { $hint = " $target exists but was not installed by dev-install.ps1; remove it by hand after setting EnableProxyLibrary=0 in ReShade.ini." }
         Stop-Refused "no $manifestPath, so there is no developer install to undo.$hint"
     }
-    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    $manifest = Read-Manifest $manifestPath
     $mode = 'reshade'
     if ($manifest.PSObject.Properties['mode'] -and $manifest.mode) { $mode = [string]$manifest.mode }
     Step "manifest: $manifestPath (installed $($manifest.installedUtc), state $($manifest.state), mode $mode)"

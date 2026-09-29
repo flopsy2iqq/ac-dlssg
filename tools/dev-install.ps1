@@ -492,7 +492,7 @@ try {
     $manifest = $null
     $recordedMode = $null
     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
-        $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        $manifest = Read-Manifest $manifestPath
         # Manifests written before standalone mode existed have no mode.
         $recordedMode = 'reshade'
         if ($manifest.PSObject.Properties['mode'] -and $manifest.mode) { $recordedMode = [string]$manifest.mode }

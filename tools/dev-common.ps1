@@ -668,6 +668,13 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, $script:Utf8NoBom)
 }
 
+# The install manifest, which Write-Utf8NoBom writes: read as UTF-8, not as
+# Get-Content does in Windows PowerShell 5.1 (the ANSI code page), which
+# garbles a game folder path with Cyrillic or other non-ASCII letters.
+function Read-Manifest([string]$Path) {
+    return [System.IO.File]::ReadAllText($Path, $script:Utf8NoBom) | ConvertFrom-Json
+}
+
 # The id git gives a file's content: SHA-1 over "blob <size>\0" + bytes.
 function Get-GitBlobSha1([string]$Path) {
     $bytes = [System.IO.File]::ReadAllBytes($Path)
