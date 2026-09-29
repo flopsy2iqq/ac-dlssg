@@ -4,11 +4,16 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <map>
 #include <regex>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -409,6 +414,192 @@ TEST(LuaApp_BlockKeywordsBalance) {
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "end"), 1u);
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "do"), 0u);
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "function"), 0u);
+}
+
+namespace {
+
+// The locals the main chunk declares at its top level: LuaJIT refuses a
+// function with more than 200 active locals ("too many local variables"),
+// and every top-level local of the app stays active to the end of the file.
+size_t TopLevelLocals(const std::string& code) {
+    // Names, numbers and single symbols; a field or method name (a.b, a:b)
+    // becomes "#", since it is never a keyword.
+    const std::regex token(R"([A-Za-z_][A-Za-z0-9_]*|[0-9][0-9A-Za-z_.]*|\S)");
+    std::vector<std::string> words;
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), token); it != std::sregex_iterator(); ++it) {
+        const size_t at = static_cast<size_t>(it->position());
+        const char before = at > 0 ? code[at - 1] : ' ';
+        words.push_back(before == '.' || before == ':' ? std::string("#") : it->str());
+    }
+    size_t count = 0;
+    int depth = 0;
+    for (size_t i = 0; i < words.size(); ++i) {
+        const std::string& w = words[i];
+        if (w == "function" || w == "if" || w == "do" || w == "repeat") {
+            ++depth;
+        } else if (w == "end" || w == "until") {
+            --depth;
+        } else if (w == "local" && depth == 0) {
+            if (i + 1 < words.size() && words[i + 1] == "function") {
+                ++count;
+                continue;
+            }
+            // local a, b, c: each name, as long as a comma follows the one before.
+            for (size_t j = i + 1; j < words.size(); j += 2) {
+                ++count;
+                if (j + 1 >= words.size() || words[j + 1] != ",") break;
+            }
+        }
+    }
+    return count;
+}
+
+}  // namespace
+
+// The window's constants and animation state live in tables for this.
+TEST(LuaApp_TheMainChunkStaysUnderLuaJitsLocalLimit) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const size_t locals = TopLevelLocals(acdb_test::LuaCodeOnly(lua));
+    std::printf("  %zu top-level locals\n", locals);
+    CHECK(locals > 100);  // the counting finds them
+    CHECK(locals <= 185);  // LuaJIT's limit is 200; keep some room
+    // The counting itself.
+    CHECK_EQ(TopLevelLocals("local a, b = 1, 2\nlocal function f() local x end\nif a then local y end\nlocal t = {x = 1}\n"),
+             4u);
+    CHECK_EQ(TopLevelLocals("function s.w(dt) local q = 1 end\nlocal c\n"), 1u);
+}
+
+namespace {
+
+// lib.lua of CSP's Lua SDK for apps (<game>\extension\internal\lua-sdk\ac_apps),
+// or an empty path. The environment variable ACDB_CSP_LUA_SDK names the
+// lua-sdk folder; else the game is looked for in Steam's default folder and in
+// a SteamLibrary folder at the root of every fixed drive.
+std::filesystem::path CspAppsLib() {
+    namespace fs = std::filesystem;
+    const fs::path rel = fs::path("extension") / "internal" / "lua-sdk" / "ac_apps" / "lib.lua";
+    std::vector<fs::path> candidates;
+    wchar_t env[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"ACDB_CSP_LUA_SDK", env, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) candidates.push_back(fs::path(env) / "ac_apps" / "lib.lua");
+    candidates.push_back(fs::path(L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\assettocorsa") / rel);
+    const DWORD drives = GetLogicalDrives();
+    for (int d = 2; d < 26; ++d) {  // C: to Z:
+        if (!(drives & (1u << d))) continue;
+        const std::wstring root = std::wstring(1, static_cast<wchar_t>(L'A' + d)) + L":\\";
+        if (GetDriveTypeW(root.c_str()) != DRIVE_FIXED) continue;
+        candidates.push_back(fs::path(root) / "SteamLibrary" / "steamapps" / "common" / "assettocorsa" / rel);
+    }
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (fs::is_regular_file(c, ec)) return c;
+    }
+    return {};
+}
+
+bool IsIdentChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+std::string IdentAt(const std::string& s, size_t at) {
+    size_t e = at;
+    while (e < s.size() && IsIdentChar(s[e])) ++e;
+    return s.substr(at, e - at);
+}
+
+// What lib.lua declares under ui: functions ("function ui.name(" and
+// "ui.name = function ..."), and enums ("ui.Name = {" with one member per line).
+struct SdkUi {
+    std::set<std::string> functions;
+    std::map<std::string, std::set<std::string>> enums;
+};
+
+SdkUi ParseSdkUi(const std::string& lib) {
+    SdkUi out;
+    std::istringstream in(lib);
+    std::string line;
+    std::string openEnum;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!openEnum.empty()) {
+            if (line.rfind('}', 0) == 0) {
+                openEnum.clear();
+                continue;
+            }
+            const size_t b = line.find_first_not_of(" \t");
+            if (b != std::string::npos && line.compare(b, 2, "--") != 0) {
+                const std::string member = IdentAt(line, b);
+                if (!member.empty()) out.enums[openEnum].insert(member);
+            }
+            continue;
+        }
+        if (line.rfind("function ui.", 0) == 0) {
+            const std::string name = IdentAt(line, 12);
+            if (!name.empty() && line.size() > 12 + name.size() && line[12 + name.size()] == '(') out.functions.insert(name);
+        } else if (line.rfind("ui.", 0) == 0) {
+            const std::string name = IdentAt(line, 3);
+            size_t at = line.find_first_not_of(' ', 3 + name.size());
+            if (name.empty() || at == std::string::npos || line[at] != '=') continue;
+            at = line.find_first_not_of(' ', at + 1);
+            if (at != std::string::npos && line[at] == '{') {
+                if (line.find('}', at) == std::string::npos) openEnum = name;
+                out.enums[name];
+            } else {
+                out.functions.insert(name);
+            }
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+// The app runs only inside CSP, so a ui function that CSP does not have
+// fails only in game. Every ui.name( the app calls must be declared in the
+// SDK's lib.lua of the installed CSP, and every ui.Enum.Member it uses must be
+// a member there. Skips when no CSP SDK is found (see CspAppsLib).
+TEST(LuaApp_EveryUiFunctionAndEnumTheAppUsesIsInTheCspSdk) {
+    const std::filesystem::path libPath = CspAppsLib();
+    if (libPath.empty()) {
+        std::printf("  SKIP: CSP's lua-sdk\\ac_apps\\lib.lua not found (set ACDB_CSP_LUA_SDK to the lua-sdk folder)\n");
+        return;
+    }
+    std::printf("  %s\n", libPath.string().c_str());
+    const SdkUi sdk = ParseSdkUi(acdb_test::ReadAll(libPath));
+    REQUIRE(sdk.functions.count("drawRectFilled") == 1 && sdk.functions.count("DWriteFont") == 1);
+    REQUIRE(sdk.enums.count("StyleColor") == 1 && sdk.enums.at("StyleColor").count("CheckMark") == 1);
+
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string code = acdb_test::LuaCodeOnly(lua);
+    std::set<std::string> called;
+    const std::regex call(R"((?:^|[^A-Za-z0-9_.:])ui\.([A-Za-z_][A-Za-z0-9_]*)\s*\()");
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), call); it != std::sregex_iterator(); ++it)
+        called.insert((*it)[1]);
+    CHECK(called.size() >= 20);  // the window draws with many
+    for (const auto& name : called) {
+        if (sdk.functions.count(name) == 0) std::printf("  ui.%s is not in the SDK\n", name.c_str());
+        CHECK(sdk.functions.count(name) == 1);
+    }
+    const std::regex member(R"((?:^|[^A-Za-z0-9_.:])ui\.([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*))");
+    size_t members = 0;
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), member); it != std::sregex_iterator(); ++it) {
+        ++members;
+        const std::string e = (*it)[1];
+        const std::string m = (*it)[2];
+        const auto found = sdk.enums.find(e);
+        const bool ok = found != sdk.enums.end() && found->second.count(m) == 1;
+        if (!ok) std::printf("  ui.%s.%s is not in the SDK\n", e.c_str(), m.c_str());
+        CHECK(ok);
+    }
+    CHECK(members >= 10);
+
+    // The parsing itself.
+    const SdkUi sample = ParseSdkUi(
+        "function ui.text(text) end\r\nui.Font = {\r\n  Small = 1, ---@type ui.Font\r\n}\r\n"
+        "ui.DWriteFont = function (name, dir) end\r\nfunction ui.DWriteFont.Weight(x) end\r\n--ui.nope = 1\r\n");
+    CHECK(sample.functions.count("text") == 1 && sample.functions.count("DWriteFont") == 1);
+    CHECK(sample.functions.count("nope") == 0 && sample.functions.size() == 2);
+    CHECK(sample.enums.count("Font") == 1 && sample.enums.at("Font").count("Small") == 1);
 }
 
 // One visible CSP app window titled "AC DLSS-G"; LAZY = NONE keeps the
