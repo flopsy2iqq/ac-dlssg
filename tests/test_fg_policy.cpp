@@ -839,6 +839,38 @@ TEST(VramAuto_TheGuardReportsATightChangeOnce) {
     CHECK(!g.Tight());
 }
 
+// The presenter's loop: a check whenever CheckDue, decided and recorded. A
+// tight pass is a pass, so once DLSS-G is on (and its resources make the
+// budget tighter still) it is not checked again every 60 frames and cannot
+// go off and on with the budget; only a new wanted multiplier checks again.
+// A refusal is still checked every 60 frames.
+TEST(VramAuto_ATightPassIsNotCheckedAgainEvery60Frames) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const auto run = [&](uint64_t usageMib, uint64_t frames, int* checks) {
+        VramGuard g;
+        *checks = 0;
+        for (uint64_t f = 0; f < frames; ++f) {
+            if (!g.CheckDue(f, 2)) continue;
+            ++*checks;
+            const VramCheck at2 = CheckVideoMemory(3500 * MiB, usageMib * MiB, 380 * MiB, AutoVramHeadroomMib(3500 * MiB));
+            const VramMultiplierDecision d = DecideVramMultiplier(2, at2, nullptr, true);
+            g.Record(f, d.check, 2, d.multiplier, d.tight);
+            // DLSS-G on: its resources are in the usage from now on.
+            if (g.Passed()) usageMib += 380;
+        }
+        return g;
+    };
+    int checks = 0;
+    VramGuard tight = run(3154, 600, &checks);  // 346 MiB free for 380 MiB: tight
+    CHECK(tight.Passed());
+    CHECK(tight.Tight());
+    CHECK_EQ(checks, 1);
+    CHECK(tight.CheckDue(10000, 3));  // a new multiplier is checked again
+    VramGuard refused = run(3400, 600, &checks);  // 100 MiB free: not enough
+    CHECK(!refused.Passed());
+    CHECK_EQ(checks, 10);
+}
+
 // ---------------------------------------------------------------- the multiplier on the present thread
 
 TEST(FgMultTracker_StartsWithTheConfiguredRequestAndNoMax) {
