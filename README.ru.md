@@ -30,6 +30,15 @@ DLSS-G 2X в Assetto Corsa с CSP:
 ![DLSS-G 2X, вид спереди: 55 настоящих fps, 108 fps на экране](docs/screenshots/fg2x-6.jpg)
 ![DLSS-G 2X, ночь со статистикой рендера CSP: 59 настоящих fps, 119 fps на экране](docs/screenshots/fg2x-7.jpg)
 
+### DLSS-G 4X
+
+Тот же ПК с кнопкой **4X** в окне: примерно 40 настоящих кадров превращаются примерно в 160 на экране, без гостинга и статтеров.
+
+![DLSS-G 4X, вид сзади под дождём: 41 настоящий кадр, 160 на экране](docs/screenshots/fg4x-1.jpg)
+![DLSS-G 4X, тоннель: 40 настоящих, 159 на экране](docs/screenshots/fg4x-2.jpg)
+![DLSS-G 4X, дождь на закате: 40 настоящих, 169 на экране](docs/screenshots/fg4x-3.jpg)
+![DLSS-G 4X, из кокпита под дождём: 40 настоящих, 159 на экране](docs/screenshots/fg4x-4.jpg)
+
 ### Тест на ноутбуке
 
 Ноутбук друга Acer Nitro 5 AN515-57: GeForce RTX 3050 Ti Laptop GPU (4 ГБ, драйвер 610.88), Core i5-11400H, 32 ГБ ОЗУ, Windows 11 25H2, Optimus (экран подключён к встроенной графике Intel), без ReShade (режим без ReShade), CSP preview634. 31 настоящий fps превращается в 60 на экране.

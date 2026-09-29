@@ -30,6 +30,15 @@ Test PC: Intel Core i9-9900 (8 cores, 16 threads), GeForce RTX 3080 10 GB (drive
 ![DLSS-G 2X, front view: 55 real fps, 108 fps on screen](docs/screenshots/fg2x-6.jpg)
 ![DLSS-G 2X, night with CSP's render stats: 59 real fps, 119 fps on screen](docs/screenshots/fg2x-7.jpg)
 
+### DLSS-G 4X
+
+The same PC with the window's **4X** button: about 40 real fps become about 160 on screen, with no ghosting and no stutter.
+
+![DLSS-G 4X, chase view in the rain: 41 real fps, 160 fps on screen](docs/screenshots/fg4x-1.jpg)
+![DLSS-G 4X, tunnel: 40 real fps, 159 fps on screen](docs/screenshots/fg4x-2.jpg)
+![DLSS-G 4X, rain at sunset: 40 real fps, 169 fps on screen](docs/screenshots/fg4x-3.jpg)
+![DLSS-G 4X, cockpit in the rain: 40 real fps, 159 fps on screen](docs/screenshots/fg4x-4.jpg)
+
 ### Tested on a laptop
 
 A friend's Acer Nitro 5 AN515-57: GeForce RTX 3050 Ti Laptop GPU (4 GB, driver 610.88), Core i5-11400H, 32 GB RAM, Windows 11 25H2, Optimus (the Intel iGPU drives the panel), no ReShade (standalone mode), CSP preview634. 31 real fps become 60 on screen.
