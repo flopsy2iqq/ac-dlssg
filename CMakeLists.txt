@@ -115,6 +115,9 @@ add_library(acdb_core STATIC
     src/capture_slots.cpp
     src/fg_policy.cpp
     src/capture_coordinator.cpp
+    src/panel_status.cpp
+    src/panel_status.h
+    src/panel_control.cpp
     ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
@@ -158,6 +161,7 @@ add_executable(acdb_tests
     tests/test_streamline_runtime.cpp
     tests/test_driver_profile.cpp
     tests/test_camera_channel.cpp
+    tests/test_panel.cpp
     tests/test_frame_constants.cpp
     tests/test_capture_slots.cpp
     tests/test_fg_policy.cpp

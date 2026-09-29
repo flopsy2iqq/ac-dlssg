@@ -16,7 +16,8 @@ namespace acdb {
 // What the presenter knows about one frame when it decides whether the frame
 // is presented with DLSS-G (spec 7 step 5.4).
 struct FgGateInputs {
-    bool userOn = false;       // start_with_fg, then the hotkey
+    bool userOn = false;       // start_with_fg, then the hotkey and the panel
+    std::string userSource;    // what set userOn last: "start_with_fg", "hotkey" or "panel" (empty: unknown)
     bool supported = false;    // slIsFeatureSupported and the DLSS-G functions resolved
     std::string stateFailure;  // non-empty: slDLSSGGetState reported this failure status
     bool stalled = false;      // stalled mode (spec 6.4)
@@ -48,7 +49,7 @@ struct FgGateResult {
 
 // The first failing condition, in this order:
 //  1. !supported       "not supported on this adapter"
-//  2. !userOn          "off by the user (start_with_fg or the hotkey)"
+//  2. !userOn          UserOffReason(userSource)
 //  3. stateFailure     "DLSS-G status <stateFailure>"
 //  4. stalled          "D3D12 stall"                            (per frame)
 //  5. windowMinimized  "game window minimized"                  (per frame)
@@ -65,6 +66,10 @@ struct FgGateResult {
 // 16. vramRefusal      vramRefusal
 // kCamReplay and kCamJumped never turn DLSS-G off (a jump only sets reset).
 FgGateResult DecideFg(const FgGateInputs& in);
+
+// "off by the user (<source>)"; "off by the user (start_with_fg, the hotkey
+// or the panel)" for an empty source.
+std::string UserOffReason(const std::string& source);
 
 // Whether this frame gets depth and motion-vector tags and constants: always
 // when DLSS-G is on; with tag_without_fg also while it is off or unsupported,
