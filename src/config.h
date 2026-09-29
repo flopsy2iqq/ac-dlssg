@@ -41,6 +41,12 @@ struct Config {
     // bootstrap loads the game folder's version.dll itself only if it is the
     // pinned dlssg_for_sm86 release; 1 loads any version.dll there.
     bool spoof_load_any = false;  // spoof_load_any=0|1
+    // Multi frame generation (spec 3, 6.8): the multiplier asked of DLSS-G,
+    // numFramesToGenerate = fg_multiplier - 1. Streamline's
+    // numFramesToGenerateMax and the video memory guard may lower it
+    // (ChooseFgMultiplier, DecideVramMultiplier); SetFgMultiplier changes it
+    // at runtime.
+    unsigned fg_multiplier = 2;  // fg_multiplier=2|3|4
     std::vector<std::string> warnings;    // human-readable parse problems
 };
 

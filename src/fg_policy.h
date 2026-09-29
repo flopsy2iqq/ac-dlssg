@@ -101,6 +101,8 @@ SlotAction DecideSlot(bool matches, bool forceRecreate, bool hasTextures, uint64
 struct VramCheck {
     bool ok = true;
     std::string reason;  // "video memory: need <x> MiB, free <y> MiB" when refused
+    uint64_t needMib = 0;  // what had to fit, rounded up (0 when no check was made)
+    uint64_t freeMib = 0;  // what was free, rounded down
 };
 
 // Spec 6.11: DLSS-G stays off when budget - usage < estimate + headroom.
@@ -116,32 +118,133 @@ struct VramInputs {
     uint64_t budgetBytes = 0;
     uint64_t usageBytes = 0;
     unsigned headroomMib = 0;     // fg_vram_headroom_mib
+    // The estimate of the resources DLSS-G already holds: eRetainResourcesWhenOff
+    // keeps those of its last eOn, and the usage above contains them. 0 before
+    // the first eOn.
+    uint64_t heldBytes = 0;
 };
 
 // The guard's decision: CheckVideoMemory when the budget is known, else ok.
 // A failed estimate query counts as an estimate of 0, so that only the
 // headroom is checked instead of keeping DLSS-G off for good (review
-// findings SL-6 and F2).
+// findings SL-6 and F2). With resources held, only the growth
+// (estimate - heldBytes) plus the headroom has to fit, and no growth always
+// fits: a lower or the same multiplier allocates nothing new.
 VramCheck DecideVram(const VramInputs& in);
 
-// When the guard runs: before DLSS-G is first enabled, then every 60 frames
-// while it refuses; once it passed, never again.
+// Multi frame generation (spec 6.11): the check at the wanted multiplier
+// decides; when it refuses and the wanted multiplier is above 2X, the 2X
+// check (at2x, null when it was not made) may allow DLSS-G at 2X instead.
+struct VramMultiplierDecision {
+    VramCheck check;          // ok, or the refusal DLSS-G stays off with (2X's when both were made)
+    unsigned multiplier = 2;  // the multiplier the guard allows
+    // "video memory: <m>X needs <n> MiB, free <f> MiB; falling back to 2X",
+    // empty without a fallback.
+    std::string fallback;
+};
+VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x);
+
+// When the guard runs: before DLSS-G is first enabled, whenever the wanted
+// multiplier is not the one it last checked, and every 60 frames while it
+// refuses; once a check for the wanted multiplier passed (a fallback to 2X
+// included), not again until the multiplier changes.
 class VramGuard {
 public:
     static constexpr uint64_t kRecheckFrames = 60;
-    bool CheckDue(uint64_t frame) const;
-    // True for the first result and whenever it changes between ok and
-    // refused: the presenter logs only those at INFO.
-    bool Record(uint64_t frame, const VramCheck& result);
+    bool CheckDue(uint64_t frame, unsigned wanted = 2) const;
+    // result is the outcome for `wanted`, granted the multiplier it allows.
+    // True for the first result, whenever it changes between ok and refused,
+    // for a new wanted multiplier and for a new granted one: the presenter
+    // logs only those at INFO.
+    bool Record(uint64_t frame, const VramCheck& result, unsigned wanted = 2, unsigned granted = 2);
     bool Passed() const { return passed_; }
+    unsigned Wanted() const { return wanted_; }
+    unsigned Granted() const { return granted_; }
     const std::string& Refusal() const { return refusal_; }
 
 private:
     bool passed_ = false;
     bool checked_ = false;
     uint64_t last_ = 0;
+    unsigned wanted_ = 2;
+    unsigned granted_ = 2;
     std::string refusal_;
 };
+
+// ---------------------------------------------------------------- multi frame generation
+
+// fg_multiplier and SetFgMultiplier accept 2, 3 and 4.
+bool ValidFgMultiplier(int multiplier);
+
+// DLSSGOptions::numFramesToGenerate for a multiplier: multiplier - 1, and
+// never below 1 (sl.dlss_g refuses 0).
+uint32_t FramesToGenerate(unsigned multiplier);
+
+struct FgMultiplierChoice {
+    unsigned multiplier = 2;           // the multiplier DLSS-G is asked for
+    uint32_t numFramesToGenerate = 1;  // FramesToGenerate(multiplier)
+    // "<n>X requested, Streamline allows up to <m>X; using <m>X" when the
+    // request was lowered, else empty.
+    std::string note;
+};
+
+// Spec 6.8: the requested multiplier (anything but 2..4 counts as 2X)
+// clamped to what Streamline allows, DLSSGState::numFramesToGenerateMax + 1
+// (sl.dlss_g 2.14.1 sets it from NGX's DLSSG.MultiFrameCountMax, capped at
+// 5, and to 1 when NGX does not report it); a max of 0 or 1 allows 2X only.
+FgMultiplierChoice ChooseFgMultiplier(unsigned requested, uint32_t numFramesToGenerateMax);
+
+// The status reason of a lowered multiplier: the clamp note and the video
+// memory fallback, joined by "; " when both exist.
+std::string FgMultiplierNote(const std::string& clampNote, const std::string& vramFallback);
+
+// Spec 6.8: slDLSSGSetOptions only when something Streamline has would
+// change. known: options were sent before, with lastOn and lastFrames
+// (numFramesToGenerate). Always when nothing was sent; for a new mode; while
+// on (and staying on), for new size hints (sameHints false) or a new
+// numFramesToGenerate. While off nothing else is sent: the next eOn carries
+// the hints and the count.
+bool DlssgOptionsDue(bool known, bool lastOn, uint32_t lastFrames, bool sameHints, bool on, uint32_t frames);
+
+// The multiplier on the presenting thread (spec 6.8): the request
+// (fg_multiplier, then SetFgMultiplier) and what Streamline allows. The
+// presenter queries slDLSSGGetState before options carry a count while
+// QueryDue() holds: before the first options, and again after every new
+// request.
+class FgMultiplierTracker {
+public:
+    explicit FgMultiplierTracker(unsigned requested = 2);  // anything but 2..4 counts as 2
+    // A new request; false (nothing changes) when it is not 2..4 or is the
+    // current one. True makes the max due again and lets the note of this
+    // request be logged once more.
+    bool Request(unsigned multiplier);
+    unsigned Requested() const { return requested_; }
+    bool QueryDue() const { return query_due_; }
+    // Streamline's DLSSGState::numFramesToGenerateMax (0 when the query
+    // failed). Returns the clamp note when it is to be logged: non-empty and
+    // not yet logged for this request.
+    std::string OnFramesMax(uint32_t numFramesToGenerateMax);
+    bool MaxKnown() const { return max_known_; }
+    uint32_t FramesMax() const { return max_; }
+    // ChooseFgMultiplier(request, last known max); the request itself before
+    // Streamline answered once. The video memory guard is asked about it.
+    unsigned Wanted() const { return choice_.multiplier; }
+    const std::string& ClampNote() const { return choice_.note; }
+
+private:
+    void Choose();
+    unsigned requested_ = 2;
+    bool query_due_ = true;
+    bool max_known_ = false;
+    uint32_t max_ = 0;
+    FgMultiplierChoice choice_;
+    std::string logged_;
+};
+
+// The multiplier the DLSS-G options carry: the video memory guard's grant
+// (the wanted multiplier, or 2X after a fallback) when its last passed check
+// was for the wanted multiplier, else the wanted multiplier itself.
+unsigned UsedFgMultiplier(unsigned wanted, bool guardPassed, unsigned guardWanted, unsigned guardGranted);
 
 // ---------------------------------------------------------------- hotkey
 

@@ -343,6 +343,17 @@ struct D3D12Presenter::Impl {
     unsigned stats_double = 0;
     uint64_t stats_generated = 0;
 
+    // Multi frame generation (spec 6.8, 6.11).
+    std::atomic<int> pending_multiplier{0};  // SetFgMultiplier, applied at the next frame; 0: none
+    FgMultiplierTracker mult;                 // the request and Streamline's numFramesToGenerateMax
+    uint32_t mode_frames = 0;                 // numFramesToGenerate of the options Streamline has (mode_known)
+    uint32_t on_frames = 0;                   // numFramesToGenerate of the last eOn; 0 before the first
+    std::string vram_fallback;                // the guard's fallback note for vram_guard.Wanted()
+    uint64_t vram_estimate[5] = {};           // the last DLSS-G estimate per multiplier (2..4)
+    bool vram_estimate_ok[5] = {};
+    uint64_t held_estimate = 0;     // the estimate of what DLSS-G holds since its last eOn (eRetainResourcesWhenOff)
+    bool log_first_present = false;  // the next DLSS-G Present is the first at a new numFramesToGenerate
+
     struct FrameDecision {
         bool fg = false;   // the gate allows DLSS-G for this Present
         bool tag = false;  // tags and constants are set
@@ -361,8 +372,12 @@ struct D3D12Presenter::Impl {
     void PollHotkey();
     DlssgSizeHints Hints() const;
     FrameDecision Decide(const FrameCapture& cap);
-    void RunVramCheck();  // records the result in vram_guard
+    void RunVramCheck(unsigned wanted);  // records the result in vram_guard
     bool SetMode(bool on);
+    void ApplyPendingMultiplier();
+    void QueryFramesMax();
+    unsigned UsedMultiplier() const;
+    std::string MultiplierNote() const;
     void LogMode(bool on, const std::string& reason, bool perFrame, const std::string& tagPathReason = {});
     void PollState(bool presentedOn);
     void CountFrame(const FrameCapture& cap, bool tagged, bool fg);
@@ -415,6 +430,7 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     width = gd.Width;
     height = gd.Height;
     config = info.config;
+    mult = FgMultiplierTracker(config.fg_multiplier);
     env = info.env;
     fg_user_on = config.start_with_fg;
     device11->GetImmediateContext(&ctx11);
@@ -798,14 +814,23 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
         }
     }
     FgGateResult gate = DecideFg(g);
-    if (gate.on && !vram_guard.Passed()) {
-        if (vram_guard.CheckDue(frame_index)) RunVramCheck();
+    if (gate.on) {
+        // Spec 6.8 and 6.11: Streamline's maximum before the first eOn and
+        // after a new request, then the video memory for the wanted
+        // multiplier whenever it changes.
+        QueryFramesMax();
+        const unsigned wanted = mult.Wanted();
+        if (vram_guard.CheckDue(frame_index, wanted)) RunVramCheck(wanted);
         if (!vram_guard.Passed()) {
             g.vramRefusal = vram_guard.Refusal();
             gate = DecideFg(g);
         }
     }
     if (!token) gate = FgGateResult{false, "no Streamline frame token", true};
+    // A new numFramesToGenerate while DLSS-G is on starts a new history, as
+    // a toggle does (spec 8).
+    if (gate.on && g.constantsOk && mode_known && mode_on && FramesToGenerate(UsedMultiplier()) != mode_frames)
+        d.constants.reset = sl::Boolean::eTrue;
     d.fg = gate.on;
     d.tag = token && ShouldTag(g, gate, config.tag_without_fg);
     d.reason = gate.reason;
@@ -814,57 +839,151 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     return d;
 }
 
-// Spec 6.11: the estimate for the current sizes against the free budget.
-// A failed estimate checks the headroom only (DecideVram, review findings
-// SL-6 and F2). The check is logged at INFO when its outcome changes and
-// at DEBUG otherwise, so a lasting refusal is not logged every 60 frames.
-void D3D12Presenter::Impl::RunVramCheck() {
-    VramInputs in;
-    in.headroomMib = config.fg_vram_headroom_mib;
-    sl::DLSSGState st;
-    const sl::Result r = sl->GetDlssgState(true, Hints(), &st);
-    in.estimateOk = r == sl::Result::eOk;
-    if (in.estimateOk) {
-        in.estimateBytes = st.estimatedVRAMUsageInBytes;
-        vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
-    } else if (!logged_no_estimate) {
-        logged_no_estimate = true;
-        LOGW("fg: no DLSS-G video memory estimate (%s); the video memory check uses the headroom only (logged once)",
-             SlResultName(r));
-    }
+// Spec 6.11: the estimate for the current sizes and the wanted multiplier
+// against the free budget; when it does not fit and the multiplier is above
+// 2X, the 2X estimate too (DecideVramMultiplier). Only the growth over what
+// DLSS-G already holds has to fit (DecideVram). A failed estimate checks the
+// headroom only (review findings SL-6 and F2). The checks are logged at INFO
+// when the outcome changes and at DEBUG otherwise, so a lasting refusal is
+// not logged every 60 frames.
+void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
     std::string why;
-    in.budgetKnown = QueryVramBytes(adapter3.Get(), &in.usageBytes, &in.budgetBytes, &why);
-    const VramCheck c = DecideVram(in);
-    const bool changed = vram_guard.Record(frame_index, c);
-    char estimate[32] = "n/a";
-    if (in.estimateOk)
-        std::snprintf(estimate, sizeof(estimate), "%llu MiB",
-                      static_cast<unsigned long long>(in.estimateBytes / (1024 * 1024)));
+    uint64_t usage = 0;
+    uint64_t budget = 0;
+    const bool budgetKnown = QueryVramBytes(adapter3.Get(), &usage, &budget, &why);
+    struct Checked {
+        unsigned multiplier = 2;
+        VramInputs in;
+        VramCheck check;
+    };
+    const auto checkAt = [&](unsigned m) {
+        Checked c;
+        c.multiplier = m;
+        c.in.headroomMib = config.fg_vram_headroom_mib;
+        c.in.budgetKnown = budgetKnown;
+        c.in.budgetBytes = budget;
+        c.in.usageBytes = usage;
+        c.in.heldBytes = held_estimate;
+        sl::DLSSGState st;
+        const sl::Result r = sl->GetDlssgState(true, FramesToGenerate(m), Hints(), &st);
+        c.in.estimateOk = r == sl::Result::eOk;
+        const unsigned slot = m < 5 ? m : 4;
+        vram_estimate_ok[slot] = c.in.estimateOk;
+        if (c.in.estimateOk) {
+            c.in.estimateBytes = st.estimatedVRAMUsageInBytes;
+            vram_estimate[slot] = c.in.estimateBytes;
+            vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
+        } else if (!logged_no_estimate) {
+            logged_no_estimate = true;
+            LOGW("fg: no DLSS-G video memory estimate (%s); the video memory check uses the headroom only (logged "
+                 "once)",
+                 SlResultName(r));
+        }
+        c.check = DecideVram(c.in);
+        return c;
+    };
+    const Checked atWanted = checkAt(wanted);
+    Checked at2x;
+    const bool asked2x = !atWanted.check.ok && wanted > 2;
+    if (asked2x) at2x = checkAt(2);
+    const VramMultiplierDecision d = DecideVramMultiplier(wanted, atWanted.check, asked2x ? &at2x.check : nullptr);
+    const bool changed = vram_guard.Record(frame_index, d.check, wanted, d.multiplier);
+    vram_fallback = d.fallback;
     const LogLevel level = changed ? LogLevel::Info : LogLevel::Debug;
-    if (!in.budgetKnown) {
-        LogWrite(level, "fg: video memory check skipped (%s); DLSS-G estimate %s", why.c_str(), estimate);
-        return;
-    }
-    LogWrite(level,
-             "fg: video memory check: DLSS-G estimate %s + headroom %u MiB, budget %llu MiB, usage %llu MiB: %s; "
-             "VSync with DLSS-G %s",
-             estimate, in.headroomMib, static_cast<unsigned long long>(in.budgetBytes / (1024 * 1024)),
-             static_cast<unsigned long long>(in.usageBytes / (1024 * 1024)), c.ok ? "ok" : c.reason.c_str(),
-             vsync_available ? "available" : "not available");
+    const auto logCheck = [&](const Checked& c) {
+        char estimate[32] = "n/a";
+        if (c.in.estimateOk)
+            std::snprintf(estimate, sizeof(estimate), "%llu MiB",
+                          static_cast<unsigned long long>(c.in.estimateBytes / (1024 * 1024)));
+        if (!budgetKnown) {
+            LogWrite(level, "fg: video memory check skipped (%s); DLSS-G estimate %s at %uX", why.c_str(), estimate,
+                     c.multiplier);
+            return;
+        }
+        char held[48] = "";
+        if (c.in.heldBytes)
+            std::snprintf(held, sizeof(held), " (%llu MiB already held)",
+                          static_cast<unsigned long long>(c.in.heldBytes / (1024 * 1024)));
+        LogWrite(level,
+                 "fg: video memory check at %uX: DLSS-G estimate %s%s + headroom %u MiB, budget %llu MiB, usage %llu "
+                 "MiB: %s; VSync with DLSS-G %s",
+                 c.multiplier, estimate, held, c.in.headroomMib, static_cast<unsigned long long>(budget / (1024 * 1024)),
+                 static_cast<unsigned long long>(usage / (1024 * 1024)), c.check.ok ? "ok" : c.check.reason.c_str(),
+                 vsync_available ? "available" : "not available");
+    };
+    logCheck(atWanted);
+    if (asked2x) logCheck(at2x);
+    if (!d.fallback.empty()) LogWrite(level, "fg: %s", d.fallback.c_str());
 }
 
-// slDLSSGSetOptions only when the mode, or while on the size hints, change
-// (spec 6.8). Returns the mode Streamline has afterwards.
+// slDLSSGSetOptions only when the mode, or while on the size hints or the
+// number of frames to generate, change (spec 6.8, DlssgOptionsDue). Returns
+// the mode Streamline has afterwards.
 bool D3D12Presenter::Impl::SetMode(bool on) {
     if (!sl || !fg_supported) return false;
     const DlssgSizeHints h = Hints();
-    if (mode_known && on == mode_on && (!on || SameHints(h, mode_hints))) return mode_on;
-    if (sl->SetDlssgOptions(on, h) == sl::Result::eOk) {
+    uint32_t count = FramesToGenerate(UsedMultiplier());
+    if (!DlssgOptionsDue(mode_known, mode_on, mode_frames, SameHints(h, mode_hints), on, count)) return mode_on;
+    // A count only once numFramesToGenerateMax is known: sl.dlss_g refuses a
+    // larger one. eOff keeps the count Streamline has.
+    QueryFramesMax();
+    count = !on && mode_known ? mode_frames : FramesToGenerate(UsedMultiplier());
+    if (sl->SetDlssgOptions(on, count, h) == sl::Result::eOk) {
         mode_known = true;
         mode_on = on;
         mode_hints = h;
+        mode_frames = count;
+        if (on && count != on_frames) {
+            on_frames = count;
+            const unsigned m = count + 1;
+            // From now on DLSS-G holds this multiplier's resources.
+            held_estimate = m < 5 && vram_estimate_ok[m] ? vram_estimate[m] : 0;
+            log_first_present = true;
+            LOGI("fg: DLSS-G options: %uX (numFramesToGenerate %u)", m, count);
+        }
     }
     return mode_on;
+}
+
+// Multi frame generation (spec 6.8): the last SetFgMultiplier request, on
+// the presenting thread, with the rules of a toggle.
+void D3D12Presenter::Impl::ApplyPendingMultiplier() {
+    const int requested = pending_multiplier.exchange(0);
+    if (requested == 0) return;
+    const unsigned before = mult.Requested();
+    if (!mult.Request(static_cast<unsigned>(requested))) return;
+    LOGI("fg: multiplier %uX -> %uX requested", before, mult.Requested());
+    prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
+    state_failure.clear();    // spec 9: a failure status is retried
+}
+
+// Spec 6.8: numFramesToGenerateMax before options carry a count, and again
+// after a new request. sl.dlss_g 2.14.1 sets it at plugin startup from NGX's
+// DLSSG.MultiFrameCountMax (capped at 5, and 1 when NGX does not report it)
+// and refuses a larger numFramesToGenerate in slDLSSGSetOptions.
+void D3D12Presenter::Impl::QueryFramesMax() {
+    if (!sl || !fg_supported || !mult.QueryDue()) return;
+    sl::DLSSGState st;
+    const sl::Result r = sl->GetDlssgState(false, 1, Hints(), &st);
+    uint32_t max = 0;
+    if (r == sl::Result::eOk)
+        max = st.numFramesToGenerateMax;
+    else
+        LOGW("fg: slDLSSGGetState failed (%s); numFramesToGenerateMax unknown, 2X only", SlResultName(r));
+    if (!mult.MaxKnown() || max != mult.FramesMax())
+        LOGI("fg: Streamline allows up to %uX (numFramesToGenerateMax %u)", max > 1 ? max + 1 : 2u, max);
+    const std::string note = mult.OnFramesMax(max);
+    if (!note.empty()) LOGI("fg: %s", note.c_str());
+}
+
+unsigned D3D12Presenter::Impl::UsedMultiplier() const {
+    return UsedFgMultiplier(mult.Wanted(), vram_guard.Passed(), vram_guard.Wanted(), vram_guard.Granted());
+}
+
+std::string D3D12Presenter::Impl::MultiplierNote() const {
+    const bool fellBack =
+        vram_guard.Passed() && vram_guard.Wanted() == mult.Wanted() && vram_guard.Granted() < mult.Wanted();
+    return FgMultiplierNote(mult.ClampNote(), fellBack ? vram_fallback : std::string());
 }
 
 // "fg: DLSS-G on" / "fg: DLSS-G off (<reason>)" on every mode change, and
@@ -904,7 +1023,7 @@ void D3D12Presenter::Impl::PollState(bool presentedOn) {
     const bool statusDue = status_clock.Due(true);
     if (statusDue) status_clock.Polled();
     sl::DLSSGState st;
-    const sl::Result r = sl->GetDlssgState(false, Hints(), &st);
+    const sl::Result r = sl->GetDlssgState(false, 1, Hints(), &st);
     if (r != sl::Result::eOk) {
         if (!statusDue) return;  // the runtime logs the failure, throttled
         state_failure = std::string("query failed: ") + SlResultName(r);
@@ -915,6 +1034,12 @@ void D3D12Presenter::Impl::PollState(bool presentedOn) {
     polled_state = true;
     const uint32_t generated = GeneratedFramesAtPresent(st.numFramesActuallyPresented);
     stats_generated += generated;
+    if (log_first_present) {
+        // The raw value at every new multiplier settles its reading in game.
+        log_first_present = false;
+        LOGI("fg: first DLSS-G Present at %uX (frame %u): numFramesActuallyPresented %u, status %s", mode_frames + 1,
+             frame_index, st.numFramesActuallyPresented, DlssgStatusText(static_cast<uint32_t>(st.status)).c_str());
+    }
     if (state_answers_logged < kStateAnswersLogged) {
         // The raw value settles in game which reading of it holds.
         ++state_answers_logged;
@@ -1174,6 +1299,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
         last_mvec_format = cap.mvecFormat;
     }
     if (sl) PollHotkey();
+    ApplyPendingMultiplier();
     // A frame that is not delivered breaks the history (spec 6.7 reset).
     struct NotDelivered {
         Impl& impl;
@@ -1475,6 +1601,26 @@ bool D3D12Presenter::DlssgSupported() const { return impl_ && impl_->fg_supporte
 
 D3D12Presenter::FgTotals D3D12Presenter::Totals() const { return impl_ ? impl_->totals : FgTotals(); }
 
+bool D3D12Presenter::SetFgMultiplier(int multiplier) {
+    if (!ValidFgMultiplier(multiplier)) {
+        LOGW("fg: SetFgMultiplier(%d) ignored (expected 2, 3 or 4)", multiplier);
+        return false;
+    }
+    if (!impl_) return false;
+    impl_->pending_multiplier.store(multiplier);
+    return true;
+}
+
+D3D12Presenter::FgMultiplierStatus D3D12Presenter::FgMultiplier() const {
+    FgMultiplierStatus s;
+    if (!impl_) return s;
+    s.requested = impl_->mult.Requested();
+    s.used = impl_->UsedMultiplier();
+    s.framesMax = impl_->mult.FramesMax();
+    s.note = impl_->MultiplierNote();
+    return s;
+}
+
 bool D3D12Presenter::Impl::SourceMatches(ID3D11Texture2D* source) {
     if (!source || !shared11) return false;
     D3D11_TEXTURE2D_DESC sd{};
@@ -1523,17 +1669,18 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     }
     // base: CSP frames; presented: frames the D3D12 chain accepted (occluded
     // ones included). fg: the DLSS-G mode Streamline has; its off reason is
-    // logged when it changes. The M3 fields sit before vram_mib; vram_mib:
-    // local video memory usage/budget of the render adapter, last so that
-    // parsers of the fields before it keep working.
+    // logged when it changes. The M3 fields sit before vram_mib, and so does
+    // fg_mult, the multiplier the DLSS-G options carry (or will carry at the
+    // next eOn); vram_mib: local video memory usage/budget of the render
+    // adapter, last so that parsers of the fields before it keep working.
     LOGI("stats: base_fps=%.1f presented_fps=%.1f skipped=%u failed=%u occluded=%u uncopied=%u max_frame_ms=%.1f "
          "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=%s stalls=%u streamline=%s reflex=%s "
          "pcl_problems=%u captures=%u camera_fresh=%u tagged=%u fg_frames=%u generated=%s double_evaluates=%u "
-         "vram_mib=%s",
+         "fg_mult=%u vram_mib=%s",
          stats_presents / seconds, stats_delivered / seconds, stats_skipped, stats_failed, stats_occluded,
          stats_uncopied, max_frame_ms, max_present_ms, a11, a12, mode_on ? "on" : "off", stalls, sl ? "on" : "off",
          reflex_on ? "on" : "off", pclProblems, stats_captures, stats_camera_fresh, stats_tagged, stats_fg_frames,
-         generated, stats_double, vram);
+         generated, stats_double, UsedMultiplier(), vram);
     stats_captures = stats_camera_fresh = stats_tagged = stats_fg_frames = stats_double = 0;
     stats_generated = 0;
     stats_start = now;

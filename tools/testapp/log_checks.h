@@ -1,7 +1,7 @@
 #pragma once
 // Parsers for the bridge log lines the test app checks: the statistics line
-// of d3d12_presenter.cpp (the M2 fields, then the M3 fields appended before
-// vram_mib), the line timestamps of log.cpp ("HH:MM:SS.mmm [tid] LEVEL ..."),
+// of d3d12_presenter.cpp (the M2 fields, then the M3 fields and fg_mult
+// appended before vram_mib), the line timestamps of log.cpp ("HH:MM:SS.mmm [tid] LEVEL ..."),
 // and the once-only and throttled lines of the M3 log line contract.
 // Header-only, so that tests/test_testapp_logs.cpp pins them on lines in
 // those formats.
@@ -57,12 +57,13 @@ inline Stats ParseStats(const std::string& line) {
 }
 
 // The M2 fields in order; the M3 contract keeps them and appends its six
-// fields, all or none, before vram_mib, which stays last.
+// fields and multi frame generation's fg_mult, all or none, before vram_mib,
+// which stays last.
 inline constexpr const char* kStatsM2Keys[] = {
     "base_fps", "presented_fps", "skipped", "failed", "occluded",   "uncopied", "max_frame_ms", "max_present_ms",
     "d3d11",    "d3d12",         "fg",      "stalls", "streamline", "reflex",   "pcl_problems"};
-inline constexpr const char* kStatsM3Keys[] = {"captures",  "camera_fresh", "tagged",
-                                               "fg_frames", "generated",    "double_evaluates"};
+inline constexpr const char* kStatsM3Keys[] = {"captures",  "camera_fresh", "tagged",           "fg_frames",
+                                               "generated", "double_evaluates", "fg_mult"};
 
 inline bool IsCount(const std::string& v) {
     if (v.empty()) return false;
@@ -74,8 +75,9 @@ inline bool IsCount(const std::string& v) {
 inline bool HasM3Stats(const Stats& s) { return s.Get(kStatsM3Keys[0]) != nullptr; }
 
 // Empty when the line has that layout, fg on or off, Streamline and Reflex
-// on, no PCL problem, counts in the M3 fields (generated may be n/a) and a
-// non-zero video memory budget; otherwise what is wrong.
+// on, no PCL problem, counts in the M3 fields (generated may be n/a), an
+// fg_mult of 2, 3 or 4 and a non-zero video memory budget; otherwise what is
+// wrong.
 inline std::string StatsProblem(const Stats& s) {
     std::vector<std::string> expected(std::begin(kStatsM2Keys), std::end(kStatsM2Keys));
     if (HasM3Stats(s)) expected.insert(expected.end(), std::begin(kStatsM3Keys), std::end(kStatsM3Keys));
@@ -91,6 +93,8 @@ inline std::string StatsProblem(const Stats& s) {
         for (const char* k : kStatsM3Keys)
             if (!IsCount(*s.Get(k)) && !(std::strcmp(k, "generated") == 0 && *s.Get(k) == "n/a"))
                 return std::string(k) + " is not a count";
+        const double mult = s.Num("fg_mult");
+        if (mult != 2 && mult != 3 && mult != 4) return "fg_mult is not 2, 3 or 4";
     }
     const std::string& vram = *s.Get("vram_mib");
     const size_t slash = vram.find('/');
@@ -242,7 +246,15 @@ struct FgExpectation {
     float fovVDeg = 0, clipNear = 0, clipFar = 0;
     double minShare = 0.9;                   // of base_fps, per statistics line after the first
     double reasonPeriodMs = 10000.0 - 50.0;  // the throttle, less the timestamps' jitter
+    // --expect-fg-mult: fg_mult of every statistics line, which may only be
+    // lower when the log explains it (Streamline's maximum or the video
+    // memory fallback); 0 checks nothing.
+    unsigned multiplier = 0;
 };
+
+// The lines of d3d12_presenter.cpp that explain a multiplier below the request.
+inline constexpr char kFgMultClamped[] = "X requested, Streamline allows up to ";
+inline constexpr char kFgMultFellBack[] = "; falling back to 2X";
 
 struct FgCheckResult {
     std::vector<std::string> problems;
@@ -376,6 +388,22 @@ inline FgCheckResult CheckFgLines(const std::vector<std::string>& lines, const F
             problem("the proxy did not deliver every frame (skipped, failed): " + l);
     }
     if (counted == 0) problem("no statistics line after the first one; the run is too short for --expect-fg");
+
+    if (e.multiplier) {
+        const std::string* explained = nullptr;
+        for (const auto& l : lines)
+            if (l.find(kFgMultClamped) != std::string::npos || l.find(kFgMultFellBack) != std::string::npos)
+                explained = &l;
+        if (explained) r.evidence.push_back(*explained);
+        for (const auto& l : lines) {
+            if (l.find(" stats: base_fps=") == std::string::npos) continue;
+            const double mult = ParseStats(l).Num("fg_mult");
+            if (mult == static_cast<double>(e.multiplier) || (mult >= 2 && mult < e.multiplier && explained)) continue;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "fg_mult=%.0f, expected %u: ", mult, e.multiplier);
+            problem(buf + l);
+        }
+    }
     return r;
 }
 

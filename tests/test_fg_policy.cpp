@@ -398,3 +398,336 @@ TEST(FgState_StatusPollSurvivesDlssgTogglingOffForSingleFrames) {
     }
     CHECK_EQ(polls, 5);
 }
+
+// ---------------------------------------------------------------- multi frame generation
+
+TEST(FgMult_ValidMultipliersAre2To4) {
+    CHECK(!ValidFgMultiplier(0));
+    CHECK(!ValidFgMultiplier(1));
+    CHECK(ValidFgMultiplier(2));
+    CHECK(ValidFgMultiplier(3));
+    CHECK(ValidFgMultiplier(4));
+    CHECK(!ValidFgMultiplier(5));
+    CHECK(!ValidFgMultiplier(-3));
+}
+
+TEST(FgMult_FramesToGenerateIsTheMultiplierMinusOne) {
+    CHECK_EQ(FramesToGenerate(2), 1u);
+    CHECK_EQ(FramesToGenerate(3), 2u);
+    CHECK_EQ(FramesToGenerate(4), 3u);
+    // Never 0: sl.dlss_g 2.14.1 refuses numFramesToGenerate 0 in slDLSSGSetOptions.
+    CHECK_EQ(FramesToGenerate(1), 1u);
+    CHECK_EQ(FramesToGenerate(0), 1u);
+}
+
+TEST(FgMult_ARequestWithinStreamlinesMaxIsUsed) {
+    // numFramesToGenerateMax 3: up to 4X (RTX 50, or dlssg_for_sm86's Blackwell report).
+    for (unsigned m : {2u, 3u, 4u}) {
+        const FgMultiplierChoice c = ChooseFgMultiplier(m, 3);
+        CHECK_EQ(c.multiplier, m);
+        CHECK_EQ(c.numFramesToGenerate, m - 1);
+        CHECK(c.note.empty());
+    }
+    // sl.dlss_g caps its max at 5 (6X); a higher max changes nothing here.
+    CHECK_EQ(ChooseFgMultiplier(4, 5).multiplier, 4u);
+    CHECK(ChooseFgMultiplier(4, 5).note.empty());
+    CHECK_EQ(ChooseFgMultiplier(4, 0xFFFFFFFFu).multiplier, 4u);  // no overflow
+}
+
+TEST(FgMult_ARequestAboveTheMaxUsesTheMaxAndSaysSo) {
+    FgMultiplierChoice c = ChooseFgMultiplier(4, 2);
+    CHECK_EQ(c.multiplier, 3u);
+    CHECK_EQ(c.numFramesToGenerate, 2u);
+    CHECK_EQ(c.note, std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    c = ChooseFgMultiplier(3, 2);
+    CHECK_EQ(c.multiplier, 3u);
+    CHECK(c.note.empty());
+}
+
+TEST(FgMult_AMaxOf0Or1Means2X) {
+    // 1 is what sl.dlss_g reports without NGX's DLSSG.MultiFrameCountMax
+    // (RTX 40); 0 is a state that does not report it.
+    for (uint32_t max : {0u, 1u}) {
+        for (unsigned m : {2u, 3u, 4u}) {
+            const FgMultiplierChoice c = ChooseFgMultiplier(m, max);
+            CHECK_EQ(c.multiplier, 2u);
+            CHECK_EQ(c.numFramesToGenerate, 1u);
+            CHECK_EQ(c.note.empty(), m == 2);
+        }
+    }
+    CHECK_EQ(ChooseFgMultiplier(3, 0).note, std::string("3X requested, Streamline allows up to 2X; using 2X"));
+    CHECK_EQ(ChooseFgMultiplier(4, 1).note, std::string("4X requested, Streamline allows up to 2X; using 2X"));
+}
+
+TEST(FgMult_AnInvalidRequestCountsAs2X) {
+    for (unsigned m : {0u, 1u, 5u, 7u}) {
+        const FgMultiplierChoice c = ChooseFgMultiplier(m, 3);
+        CHECK_EQ(c.multiplier, 2u);
+        CHECK_EQ(c.numFramesToGenerate, 1u);
+        CHECK(c.note.empty());
+    }
+}
+
+TEST(FgMult_TheStatusNoteJoinsTheClampAndTheFallback) {
+    CHECK(FgMultiplierNote("", "").empty());
+    CHECK_EQ(FgMultiplierNote("4X requested, Streamline allows up to 3X; using 3X", ""),
+             std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    CHECK_EQ(FgMultiplierNote("", "video memory: 4X needs 700 MiB, free 500 MiB; falling back to 2X"),
+             std::string("video memory: 4X needs 700 MiB, free 500 MiB; falling back to 2X"));
+    CHECK_EQ(FgMultiplierNote("4X requested, Streamline allows up to 3X; using 3X",
+                              "video memory: 3X needs 500 MiB, free 400 MiB; falling back to 2X"),
+             std::string("4X requested, Streamline allows up to 3X; using 3X; video memory: 3X needs 500 MiB, free "
+                         "400 MiB; falling back to 2X"));
+}
+
+TEST(FgOptions_SentOnlyWhenStreamlineWouldSeeAChange) {
+    // Nothing sent yet: always.
+    CHECK(DlssgOptionsDue(false, false, 0, true, false, 1));
+    CHECK(DlssgOptionsDue(false, false, 0, true, true, 3));
+    // The same mode and count: never.
+    CHECK(!DlssgOptionsDue(true, true, 1, true, true, 1));
+    CHECK(!DlssgOptionsDue(true, false, 1, true, false, 1));
+    // The mode.
+    CHECK(DlssgOptionsDue(true, false, 1, true, true, 1));
+    CHECK(DlssgOptionsDue(true, true, 1, true, false, 1));
+    // While on, new size hints; while off they wait for the next eOn.
+    CHECK(DlssgOptionsDue(true, true, 1, false, true, 1));
+    CHECK(!DlssgOptionsDue(true, false, 1, false, false, 1));
+    // A new multiplier while on is sent at once; while off, the next eOn
+    // carries it (no eOff with a new count).
+    CHECK(DlssgOptionsDue(true, true, 1, true, true, 3));
+    CHECK(DlssgOptionsDue(true, true, 3, true, true, 1));
+    CHECK(!DlssgOptionsDue(true, false, 1, true, false, 3));
+}
+
+TEST(FgState_GeneratedFramesAt3XAnd4X) {
+    // numFramesActuallyPresented - 1 per real frame, whatever the multiplier.
+    CHECK_EQ(GeneratedFramesAtPresent(3), 2u);
+    CHECK_EQ(GeneratedFramesAtPresent(4), 3u);
+}
+
+// ---------------------------------------------------------------- video memory with MFG
+
+TEST(VramGuard_CheckGivesTheNumbersInMiB) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck r = CheckVideoMemory(4000 * MiB, 3500 * MiB, 300 * MiB + 1, 512);
+    CHECK(!r.ok);
+    CHECK_EQ(r.needMib, 813u);  // rounded up
+    CHECK_EQ(r.freeMib, 500u);
+    const VramCheck ok = CheckVideoMemory(4000 * MiB, 1000 * MiB + 1, 300 * MiB, 0);
+    CHECK(ok.ok);
+    CHECK_EQ(ok.needMib, 300u);
+    CHECK_EQ(ok.freeMib, 2999u);  // rounded down
+}
+
+TEST(VramGuard_OnlyTheGrowthOverWhatDlssgHoldsMustFit) {
+    // eRetainResourcesWhenOff keeps the resources of DLSS-G's last eOn, and
+    // the process's usage already contains them: the 4 GB laptop at 2X
+    // (283 MiB held) with 60 MiB free asks for 3X.
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    VramInputs in;
+    in.estimateOk = true;
+    in.estimateBytes = 350 * MiB;
+    in.budgetKnown = true;
+    in.budgetBytes = 4000 * MiB;
+    in.usageBytes = 3940 * MiB;
+    in.headroomMib = 0;
+    in.heldBytes = 283 * MiB;
+    VramCheck c = DecideVram(in);
+    CHECK(!c.ok);
+    CHECK_EQ(c.reason, std::string("video memory: need 67 MiB, free 60 MiB"));
+    in.estimateBytes = 330 * MiB;
+    CHECK(DecideVram(in).ok);  // 47 MiB more
+    in.headroomMib = 16;
+    CHECK(!DecideVram(in).ok);  // 47 + 16 > 60
+    // Without resources held the whole estimate counts.
+    in.headroomMib = 0;
+    in.heldBytes = 0;
+    c = DecideVram(in);
+    CHECK(!c.ok);
+    CHECK_EQ(c.reason, std::string("video memory: need 330 MiB, free 60 MiB"));
+}
+
+TEST(VramGuard_NoGrowthAlwaysFits) {
+    // 4X back to 2X: nothing new is allocated, even when the headroom no
+    // longer fits.
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    VramInputs in;
+    in.estimateOk = true;
+    in.estimateBytes = 283 * MiB;
+    in.budgetKnown = true;
+    in.budgetBytes = 4000 * MiB;
+    in.usageBytes = 3990 * MiB;
+    in.headroomMib = 512;
+    in.heldBytes = 400 * MiB;
+    CHECK(DecideVram(in).ok);
+    in.estimateBytes = 400 * MiB;  // the same multiplier again
+    CHECK(DecideVram(in).ok);
+    // A failed estimate still checks the headroom only (review findings SL-6 and F2).
+    in.estimateOk = false;
+    const VramCheck c = DecideVram(in);
+    CHECK(!c.ok);
+    CHECK_EQ(c.reason, std::string("video memory: need 512 MiB, free 10 MiB"));
+}
+
+TEST(VramFallback_AHigherMultiplierThatDoesNotFitFallsBackTo2X) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck at4 = CheckVideoMemory(4000 * MiB, 3500 * MiB, 700 * MiB, 0);
+    const VramCheck at2 = CheckVideoMemory(4000 * MiB, 3500 * MiB, 300 * MiB, 0);
+    REQUIRE(!at4.ok);
+    REQUIRE(at2.ok);
+    const VramMultiplierDecision d = DecideVramMultiplier(4, at4, &at2);
+    CHECK(d.check.ok);
+    CHECK_EQ(d.multiplier, 2u);
+    CHECK_EQ(d.fallback, std::string("video memory: 4X needs 700 MiB, free 500 MiB; falling back to 2X"));
+}
+
+TEST(VramFallback_AMultiplierThatFitsIsKept) {
+    const VramMultiplierDecision d = DecideVramMultiplier(3, VramCheck{}, nullptr);
+    CHECK(d.check.ok);
+    CHECK_EQ(d.multiplier, 3u);
+    CHECK(d.fallback.empty());
+}
+
+TEST(VramFallback_WhenNeither2XNorTheHigherOneFitsDlssgStaysOff) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck at4 = CheckVideoMemory(4000 * MiB, 3900 * MiB, 700 * MiB, 0);
+    const VramCheck at2 = CheckVideoMemory(4000 * MiB, 3900 * MiB, 300 * MiB, 0);
+    const VramMultiplierDecision d = DecideVramMultiplier(4, at4, &at2);
+    CHECK(!d.check.ok);
+    // The smallest need is the one to report.
+    CHECK_EQ(d.check.reason, std::string("video memory: need 300 MiB, free 100 MiB"));
+    CHECK(d.fallback.empty());
+    // 2X has nothing to fall back to; nor has a higher multiplier whose 2X
+    // check was not made.
+    const VramMultiplierDecision two = DecideVramMultiplier(2, at2, nullptr);
+    CHECK(!two.check.ok);
+    CHECK_EQ(two.multiplier, 2u);
+    CHECK_EQ(two.check.reason, at2.reason);
+    const VramMultiplierDecision three = DecideVramMultiplier(3, at4, nullptr);
+    CHECK(!three.check.ok);
+    CHECK_EQ(three.check.reason, at4.reason);
+}
+
+TEST(VramGuard_RechecksWhenTheWantedMultiplierChanges) {
+    VramGuard g;
+    CHECK(g.CheckDue(10, 2));
+    g.Record(10, VramCheck{}, 2, 2);
+    CHECK(g.Passed());
+    CHECK_EQ(g.Wanted(), 2u);
+    CHECK_EQ(g.Granted(), 2u);
+    CHECK(!g.CheckDue(11, 2));
+    CHECK(!g.CheckDue(5000, 2));
+    // A new multiplier is checked at once, not 60 frames later.
+    CHECK(g.CheckDue(12, 4));
+    g.Record(12, VramCheck{}, 4, 2);  // 4X did not fit, 2X did
+    CHECK(g.Passed());
+    CHECK_EQ(g.Wanted(), 4u);
+    CHECK_EQ(g.Granted(), 2u);
+    // Not checked again while 4X stays wanted (a fallback is not retried).
+    CHECK(!g.CheckDue(500, 4));
+    CHECK(g.CheckDue(501, 2));
+    // A refusal is rechecked every 60 frames, and a new multiplier at once.
+    g.Record(501, VramCheck{false, "video memory: need 1 MiB, free 0 MiB"}, 3, 2);
+    CHECK(!g.Passed());
+    CHECK_EQ(g.Refusal(), std::string("video memory: need 1 MiB, free 0 MiB"));
+    CHECK(!g.CheckDue(502, 3));
+    CHECK(g.CheckDue(561, 3));
+    CHECK(g.CheckDue(502, 2));
+}
+
+TEST(VramGuard_ANewOrFallenBackMultiplierIsAChange) {
+    VramGuard g;
+    CHECK(g.Record(10, VramCheck{}, 2, 2));
+    CHECK(g.Record(20, VramCheck{}, 3, 3));   // a new multiplier
+    CHECK(!g.Record(30, VramCheck{}, 3, 3));  // the same outcome
+    CHECK(g.Record(40, VramCheck{}, 3, 2));   // now a fallback
+}
+
+// ---------------------------------------------------------------- the multiplier on the present thread
+
+TEST(FgMultTracker_StartsWithTheConfiguredRequestAndNoMax) {
+    const FgMultiplierTracker t(3);
+    CHECK_EQ(t.Requested(), 3u);
+    CHECK(t.QueryDue());
+    CHECK(!t.MaxKnown());
+    CHECK_EQ(t.FramesMax(), 0u);
+    // Nothing lowers the request before Streamline answered.
+    CHECK_EQ(t.Wanted(), 3u);
+    CHECK(t.ClampNote().empty());
+    // An invalid configuration counts as 2X.
+    CHECK_EQ(FgMultiplierTracker(7).Requested(), 2u);
+    CHECK_EQ(FgMultiplierTracker(1).Wanted(), 2u);
+}
+
+TEST(FgMultTracker_TheMaxClampsTheRequestAndTheNoteIsLoggedOnce) {
+    FgMultiplierTracker t(4);
+    CHECK_EQ(t.OnFramesMax(2), std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    CHECK(!t.QueryDue());
+    CHECK(t.MaxKnown());
+    CHECK_EQ(t.FramesMax(), 2u);
+    CHECK_EQ(t.Wanted(), 3u);
+    CHECK_EQ(t.ClampNote(), std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    // The same answer again: nothing new to log, the status keeps the note.
+    CHECK(t.OnFramesMax(2).empty());
+    CHECK_EQ(t.ClampNote(), std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    // A request within the max: no note.
+    FgMultiplierTracker ok(3);
+    CHECK(ok.OnFramesMax(3).empty());
+    CHECK_EQ(ok.Wanted(), 3u);
+    CHECK(ok.ClampNote().empty());
+}
+
+TEST(FgMultTracker_AFailedQueryMeans2X) {
+    FgMultiplierTracker t(3);
+    CHECK_EQ(t.OnFramesMax(0), std::string("3X requested, Streamline allows up to 2X; using 2X"));
+    CHECK_EQ(t.Wanted(), 2u);
+    CHECK(!t.QueryDue());  // asked again at the next request only
+}
+
+TEST(FgMultTracker_ANewRequestIsQueriedAgainBeforeTheNextOptions) {
+    FgMultiplierTracker t(2);
+    CHECK(t.OnFramesMax(1).empty());
+    // Unchanged or invalid requests change nothing.
+    CHECK(!t.Request(2));
+    CHECK(!t.Request(5));
+    CHECK(!t.Request(0));
+    CHECK(!t.QueryDue());
+    CHECK(t.Request(4));
+    CHECK_EQ(t.Requested(), 4u);
+    CHECK(t.QueryDue());
+    // Until the answer, the last known max already clamps it (the status is
+    // right while DLSS-G is off).
+    CHECK_EQ(t.Wanted(), 2u);
+    CHECK_EQ(t.ClampNote(), std::string("4X requested, Streamline allows up to 2X; using 2X"));
+    // The answer for the new request logs its note once more.
+    CHECK_EQ(t.OnFramesMax(1), std::string("4X requested, Streamline allows up to 2X; using 2X"));
+    CHECK(t.OnFramesMax(1).empty());
+    // Back and forth: each request that is lowered is logged again.
+    CHECK(t.Request(2));
+    CHECK(t.OnFramesMax(1).empty());
+    CHECK(t.ClampNote().empty());
+    CHECK(t.Request(4));
+    CHECK_EQ(t.OnFramesMax(1), std::string("4X requested, Streamline allows up to 2X; using 2X"));
+}
+
+TEST(FgMultTracker_AHigherMaxAllowsTheRequest) {
+    FgMultiplierTracker t(4);
+    CHECK_EQ(t.OnFramesMax(3), std::string());
+    CHECK_EQ(t.Wanted(), 4u);
+    CHECK(t.Request(3));
+    CHECK_EQ(t.Wanted(), 3u);
+    CHECK(t.OnFramesMax(3).empty());
+    CHECK_EQ(t.Wanted(), 3u);
+}
+
+TEST(FgMult_TheOptionsCarryTheGuardsGrantForTheWantedMultiplier) {
+    // No check yet, or a check for another multiplier: the wanted one.
+    CHECK_EQ(UsedFgMultiplier(4, false, 2, 2), 4u);
+    CHECK_EQ(UsedFgMultiplier(4, true, 3, 3), 4u);
+    // The guard passed the wanted multiplier as it is, or fell back to 2X.
+    CHECK_EQ(UsedFgMultiplier(4, true, 4, 4), 4u);
+    CHECK_EQ(UsedFgMultiplier(4, true, 4, 2), 2u);
+    // A refusal keeps DLSS-G off; the options would carry the wanted count.
+    CHECK_EQ(UsedFgMultiplier(3, false, 3, 2), 3u);
+}
