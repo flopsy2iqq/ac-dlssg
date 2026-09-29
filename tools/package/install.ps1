@@ -8,8 +8,9 @@
   neither the repository nor any build tool. It asks nothing: it prints what
   it finds and decides, and runs to the end. The package layout:
     install.bat          starts this script
-    files\               ac-dlssg.dll, apps\lua\AcDlssg, and deps\ for the
-                         downloads
+    files\               ac-dlssg.dll, apps\lua\AcDlssg, ac-dlssg\ (the
+                         uninstaller and the log collector for the game
+                         folder), and deps\ for the downloads
     scripts\             this script and the ones it runs
     tools\               uninstall.bat, collect-logs.bat
     docs\                READMEs, LICENSE, EXCEPTIONS.md, THIRD_PARTY_NOTICES.txt,
@@ -43,8 +44,12 @@
          and stops the install with nothing changed.
        - RTX 40 and RTX 50: nothing is needed.
        - RTX 20: frame generation is not supported there; no spoof.
-  4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll and the
-     CSP Lua app files\apps\lua\AcDlssg. -Mode Auto (the default) installs
+  4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll, the
+     CSP Lua app files\apps\lua\AcDlssg and, as -Tools, files\ac-dlssg: the
+     uninstaller and the log collector go into <game>\ac-dlssg
+     (uninstall.bat, collect-logs.bat, and the scripts they run in
+     scripts\), so that the unpacked package and its zip can be deleted
+     after the install. -Mode Auto (the default) installs
      standalone (the bridge as <game>\dxgi.dll) when the game has no dxgi.dll,
      and next to ReShade when ReShade is the game's dxgi.dll; it refuses any
      other dxgi.dll. The Lua app goes to <game>\apps\lua\AcDlssg; a folder of
@@ -56,7 +61,8 @@
      ships are removed, and when the mode has to change (ReShade was
      installed or removed since) the old mode's files are undone and the new
      mode installed in the same run.
-  Undo with tools\uninstall.bat.
+  Undo with <game>\ac-dlssg\uninstall.bat (or this package's
+  tools\uninstall.bat).
 
   The last line is "Press Enter to exit", so that a double-clicked window
   stays open; not with -NoPause or when the input is redirected.
@@ -123,6 +129,9 @@ function Wait-BeforeClose {
     try { [void](Read-Host 'Press Enter to exit') } catch { }
 }
 
+# The uninstaller and the log collector that the install puts into the game folder.
+function Get-InstalledTool([string]$Game, [string]$Name) { return Join-Path (Join-Path $Game $script:AcdbDataDirName) $Name }
+
 function Get-GpuArchText($Adapter) {
     switch ($Adapter.Arch) {
         'Ampere' { if ($Adapter.Sm86) { return 'RTX 30, Ampere SM86' } else { return 'Ampere SM80 (A100)' } }
@@ -135,7 +144,7 @@ function Get-GpuArchText($Adapter) {
 }
 
 # Printed before the download, from spec 10; the install goes on without a question.
-function Write-SpoofNotice {
+function Write-SpoofNotice([string]$Game) {
     $v = $script:AcdbSpoofVersion
     Say ('This PC has an RTX 30 GPU. NVIDIA allows DLSS Frame Generation only on RTX 40 and newer; on RTX 30 it runs ' +
         "through dlssg_for_sm86, which the installer now downloads and puts next to acs.exe:")
@@ -150,7 +159,7 @@ function Write-SpoofNotice {
     Write-Host '    circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you'
     Write-Host '    are that license''s licensee.'
     Write-Host '  - Risk: it runs inside the game and changes the GPU architecture that NVIDIA''s driver interface reports'
-    Write-Host '    to it (CSP sees that too). If the game misbehaves, tools\uninstall.bat removes it again.'
+    Write-Host "    to it (CSP sees that too). If the game misbehaves, $(Get-InstalledTool $Game 'uninstall.bat') removes it again."
     Write-Host '  - To install without it: install.bat -NoSpoof.'
 }
 
@@ -218,7 +227,7 @@ function Get-SpoofInstallArgs([string]$Game) {
     }
     $fetch = @($script:AcdbSpoofNames | Where-Object { $state[$_] -eq 'absent' })
     if ($fetch.Count -gt 0) {
-        Write-SpoofNotice
+        Write-SpoofNotice $Game
         $deps = $depsDir
         $fetchArgs = @{ Only = 'Spoof'; SpoofFiles = $fetch; DepsDir = $deps }
         if ($SpoofSourceDir) { $fetchArgs.SpoofSourceDir = $SpoofSourceDir }
@@ -275,7 +284,7 @@ try {
     if ($sac -eq 1) {
         Stop-Refused 'Windows Smart App Control is on. It blocks the unsigned ac-dlssg.dll, and the game would not start. Nothing was installed.'
     } elseif ($sac -eq 2) {
-        Say 'WARNING: Windows Smart App Control is in evaluation mode. If Windows switches it on later, it blocks the bridge and the game no longer starts; then run tools\uninstall.bat.'
+        Say "WARNING: Windows Smart App Control is in evaluation mode. If Windows switches it on later, it blocks the bridge and the game no longer starts; then run $(Get-InstalledTool $game 'uninstall.bat')."
     }
 
     $licenses = @()
@@ -301,6 +310,7 @@ try {
         Dll           = (Join-Path $filesDir 'ac-dlssg.dll')
         LuaApp        = (Join-Path $filesDir 'apps\lua\AcDlssg')
         StreamlineDir = $StreamlineDir
+        Tools         = (Join-Path $filesDir $script:AcdbDataDirName)
         Mode          = $Mode
         AutoUpgrade   = $true
     }
@@ -309,7 +319,9 @@ try {
     & (Join-Path $scripts 'dev-install.ps1') @installArgs
     $code = $LASTEXITCODE
     if ($code -eq 0) {
-        Say 'installed. Start the game as usual, drive a few minutes, close it, then run tools\collect-logs.bat and send the zip it writes. To undo, run tools\uninstall.bat.'
+        Say 'installed. Nothing in the game folder needs this unpacked folder: it and the zip can be deleted now.'
+        Say "Start the game as usual, drive a few minutes, close it, then run $(Get-InstalledTool $game 'collect-logs.bat') and send the zip it writes next to it."
+        Say "To undo, run $(Get-InstalledTool $game 'uninstall.bat')."
     } else {
         Say 'nothing was installed, or it was rolled back (see the lines above).'
     }

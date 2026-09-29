@@ -22,6 +22,10 @@ $script:AcdbImportAllowList = @('KERNEL32.dll', 'USER32.dll', 'ADVAPI32.dll', 'S
 $script:AcdbSlDirName = 'sl'
 $script:AcdbSlDlls = @('sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll')
 $script:AcdbSlSignerCn = 'NVIDIA Corporation'
+# The uninstaller and the log collector that the package install puts into
+# <game>\ac-dlssg (the manifest's "tools"): .bat files directly in it, and
+# the scripts they run in its scripts\ folder. Nothing else there is a tool.
+$script:AcdbToolsScriptsDirName = 'scripts'
 $script:AcdbGameExe = 'acs.exe'
 $script:AcdbSteamAppId = '244210'
 $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
@@ -62,6 +66,14 @@ function Get-NvidiaSignatureProblem([string]$Path) {
     $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
     if ($cn -ne $script:AcdbSlSignerCn) { return "signed by '$cn', not '$($script:AcdbSlSignerCn)'" }
     return ''
+}
+
+# True when $Rel (relative to the game folder) may be a tool file: a .bat
+# file directly in <game>\ac-dlssg, or a file in <game>\ac-dlssg\scripts.
+function Test-ToolRelPath([string]$Rel) {
+    $name = '[^\\/:*?"<>|]+'
+    return $Rel -match ('^' + [regex]::Escape($script:AcdbDataDirName) + '\\(?:' + $name + '\.bat|' +
+        [regex]::Escape($script:AcdbToolsScriptsDirName) + '\\' + $name + ')$')
 }
 
 function Get-NormalizedPath([string]$Path) {
@@ -896,11 +908,18 @@ function Get-ForwardArguments($Bound, [hashtable]$Set) {
 
 # Starts $Script again in an elevated Windows PowerShell (Windows shows its
 # UAC prompt) and waits for it; returns its exit code. Throws when the
-# prompt is declined.
-function Invoke-ElevatedScript([string]$Script, [string[]]$Arguments) {
+# prompt is declined. -WithoutUac, for tests only: the second run is a
+# plain Windows PowerShell in this console, started without asking Windows
+# for administrator rights.
+function Invoke-ElevatedScript([string]$Script, [string[]]$Arguments, [switch]$WithoutUac) {
     $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + @($Arguments)
     $text = (@($all | ForEach-Object { ConvertTo-CommandLineArg $_ })) -join ' '
-    $process = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $text -Verb RunAs -PassThru
+    $exe = Join-Path $PSHOME 'powershell.exe'
+    if ($WithoutUac) {
+        $process = Start-Process -FilePath $exe -ArgumentList $text -NoNewWindow -PassThru
+    } else {
+        $process = Start-Process -FilePath $exe -ArgumentList $text -Verb RunAs -PassThru
+    }
     # Opened now, so that the exit code is still there after the wait.
     [void]$process.Handle
     $process.WaitForExit()

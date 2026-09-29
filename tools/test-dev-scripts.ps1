@@ -165,7 +165,9 @@ function Assert-PackageArguments([string]$Script, [string[]]$Arguments) {
     if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoSpoof' -and $Arguments -notcontains '-SpoofSourceDir') {
         throw "refusing to run $Script without -NoSpoof or -SpoofSourceDir; it could download dlssg_for_sm86"
     }
-    if (@('install.ps1', 'install.bat', 'uninstall.ps1', 'uninstall.bat') -contains $leaf -and $Arguments -notcontains '-NoElevate') {
+    # -FakeElevation (uninstall.ps1 only) starts the second run without UAC.
+    if (@('install.ps1', 'install.bat', 'uninstall.ps1', 'uninstall.bat') -contains $leaf -and $Arguments -notcontains '-NoElevate' -and
+        $Arguments -notcontains '-FakeElevation') {
         throw "refusing to run $Script without -NoElevate; it could ask Windows for administrator rights"
     }
 }
@@ -1708,10 +1710,16 @@ function New-PackageCopy([string]$Name) {
 }
 
 # Runs a package .bat through cmd.exe, with -FakeRoot as the current folder
-# and an empty stdin; the same safety net as Invoke-Tool.
+# and an empty stdin; the same safety net as Invoke-Tool. The launchers the
+# install puts into <game>\ac-dlssg work on the game folder they are in, so
+# one of those under -FakeRoot needs no -GameDir. StdErr is what cmd.exe and
+# the scripts wrote to stderr ("The batch file cannot be found" lands there).
 function Invoke-Bat([string]$Bat, [string[]]$Arguments) {
+    $batDir = Split-Path -Parent $Bat
+    $installed = (Test-UnderFakeRoot $Bat) -and (Split-Path -Leaf $batDir) -eq 'ac-dlssg' -and
+        (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $batDir) 'acs.exe') -PathType Leaf)
     $i = [array]::IndexOf($Arguments, '-GameDir')
-    if ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1])) {
+    if (($i -ge 0 -or -not $installed) -and ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1]))) {
         throw "refusing to run $Bat without a -GameDir under $FakeRoot"
     }
     Assert-PackageArguments $Bat $Arguments
@@ -1730,9 +1738,10 @@ function Invoke-Bat([string]$Bat, [string[]]$Arguments) {
         throw "$Bat did not end within 10 minutes"
     }
     $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
-    $text = [IO.File]::ReadAllText($stdout, $oem) + [IO.File]::ReadAllText($stderr, $oem)
+    $errText = [IO.File]::ReadAllText($stderr, $oem)
+    $text = [IO.File]::ReadAllText($stdout, $oem) + $errText
     foreach ($line in ($text -split "`r?`n")) { if ($line) { Write-Host "      | $line" } }
-    return [pscustomobject]@{ Code = $proc.ExitCode; Text = $text }
+    return [pscustomobject]@{ Code = $proc.ExitCode; Text = $text; StdErr = $errText }
 }
 
 # dlssg_for_sm86 fixtures: a fake version.dll and dlssg_sm86.ini, and pins
@@ -1798,6 +1807,55 @@ function Get-TreeState([string]$Dir) {
             }) -join "`n")
 }
 
+# The uninstaller and log collector that the package install puts into
+# <game>\ac-dlssg, each with the repository file it is a copy of; the package
+# carries them in files\ac-dlssg.
+$toolSources = [ordered]@{
+    'ac-dlssg\uninstall.bat'               = 'package\installed\uninstall.bat'
+    'ac-dlssg\collect-logs.bat'            = 'package\installed\collect-logs.bat'
+    'ac-dlssg\scripts\uninstall.ps1'       = 'package\uninstall.ps1'
+    'ac-dlssg\scripts\dev-uninstall.ps1'   = 'dev-uninstall.ps1'
+    'ac-dlssg\scripts\dev-common.ps1'      = 'dev-common.ps1'
+    'ac-dlssg\scripts\collect-logs.ps1'    = 'collect-logs.ps1'
+    'ac-dlssg\scripts\collect-sysinfo.ps1' = 'collect-sysinfo.ps1'
+}
+$toolRels = @($toolSources.Keys | Sort-Object)
+
+# The tool files in <game>\ac-dlssg: the .bat files at its top and everything in scripts\.
+function Get-ToolFiles([string]$Game) {
+    $data = Join-Path $Game 'ac-dlssg'
+    if (-not (Test-Path -LiteralPath $data -PathType Container)) { return @() }
+    $found = @(Get-ChildItem -LiteralPath $data -File -Force -Filter '*.bat' | ForEach-Object { "ac-dlssg\$($_.Name)" })
+    $scripts = Join-Path $data 'scripts'
+    if (Test-Path -LiteralPath $scripts) {
+        $found += @(Get-ChildItem -LiteralPath $scripts -Recurse -Force | ForEach-Object { 'ac-dlssg\scripts\' + $_.FullName.Substring($scripts.Length + 1) })
+    }
+    return @($found | Sort-Object)
+}
+
+# True when <game>\ac-dlssg holds exactly the tool files, each a copy of its repository file.
+function Test-ToolsInstalled([string]$Game) {
+    if ((@(Get-ToolFiles $Game) -join '|') -ne ($toolRels -join '|')) { return $false }
+    foreach ($rel in $toolRels) {
+        if ((Get-Sha (Join-Path $Game $rel)) -ne (Get-Sha (Join-Path $tools $toolSources[$rel]))) { return $false }
+    }
+    return $true
+}
+
+function Test-NoTools([string]$Game) { return @(Get-ToolFiles $Game).Count -eq 0 }
+
+# True when the manifest records exactly the tool files, with their hashes in the game folder.
+function Test-ToolsRecorded($Manifest, [string]$Game) {
+    if (-not $Manifest.PSObject.Properties['tools'] -or -not $Manifest.tools) { return $false }
+    $records = @($Manifest.tools.files)
+    if ((@($records | ForEach-Object { [string]$_.path } | Sort-Object) -join '|') -ne ($toolRels -join '|')) { return $false }
+    foreach ($rec in $records) {
+        $path = Join-Path $Game ([string]$rec.path)
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or [string]$rec.sha256 -ne (Get-Sha $path)) { return $false }
+    }
+    return $true
+}
+
 $spoofNoticePatterns = @('sdli1995', 'Coldwood1026', 'no LICENSE file', 'nvngx_dlssg\.dll', 'section 4\.d', 'NVIDIA RTX SDKs License',
     'github\.com/sdli1995/dlssg_for_sm86')
 
@@ -1813,6 +1871,7 @@ Invoke-Case 'PK: the friend test package' {
         'scripts/fetch-deps.ps1', 'tools/uninstall.bat', 'tools/collect-logs.bat', 'docs/README-test.txt', 'docs/README.md',
         'docs/README.ru.md', 'docs/LICENSE', 'docs/EXCEPTIONS.md', 'docs/THIRD_PARTY_NOTICES.txt', 'docs/INSTALL.md',
         'docs/INSTALL.ru.md') +
+        @($toolSources.Keys | ForEach-Object { 'files/' + $_.Replace('\', '/') }) +
         @($luaRealFiles | ForEach-Object { 'files/apps/lua/AcDlssg/' + $_.Replace('\', '/') })
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | ForEach-Object { $_.FullName.Substring($pkg.Length + 1).Replace('\', '/') } | Sort-Object)
     Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
@@ -1841,6 +1900,7 @@ Invoke-Case 'PK: the friend test package' {
     Check ($readmeText -match 'install\.bat' -and $readmeText -match 'tools\\collect-logs\.bat' -and $readmeText -match 'tools\\uninstall\.bat' -and
         $readmeText -notmatch '\.ps1' -and $readmeText -match '9\.8\.7' -and
         $readmeText -match (Get-Sha $dllV1)) 'README-test.txt names install.bat and the two tools\ files (no .ps1), the version and the DLL hash'
+    Check ($readmeText -match 'ac-dlssg\\uninstall\.bat' -and $readmeText -match 'ac-dlssg\\collect-logs\.bat') 'README-test.txt names uninstall.bat and collect-logs.bat in the game folder''s ac-dlssg'
     # Russian patterns as \u escapes: Windows PowerShell reads this BOM-less file in the ANSI code page.
     Check ($readmeText -match '\u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438[\u044f\u044e] \u043a\u0430\u0434\u0440\u043e\u0432' -and
         $readmeText -notmatch '\u0435\u0449\u0451\s+\u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u0430') 'README-test.txt says the build contains frame generation'
@@ -1920,6 +1980,7 @@ Invoke-Case 'PK: the friend test package' {
     $r = Invoke-Bat (Join-Path $pkg 'tools\uninstall.bat') @('-GameDir', $game, '-NoPause', '-NoElevate')
     Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'tools\uninstall.bat removes dxgi.dll'
     Check (Test-NoSpoofFiles $game) 'and the dlssg_for_sm86 files it installed'
+    Check (Test-NoTools $game) 'and the uninstaller and the log collector in <game>\ac-dlssg'
 
     # Without -StreamlineDir the package uses <package>\files\deps as
     # fetch-deps.ps1 stages it; already staged, nothing is downloaded.
@@ -2029,7 +2090,8 @@ Invoke-Case 'SP0: GPU table, dlssg_for_sm86 pins, and install.ps1 asks nothing (
         }
     }
     foreach ($f in @('package\install.ps1', 'package\uninstall.ps1', 'dev-common.ps1', 'dev-install.ps1', 'dev-uninstall.ps1', 'fetch-deps.ps1',
-            'make-test-package.ps1', 'collect-logs.ps1', 'package\install.bat', 'package\uninstall.bat', 'package\collect-logs.bat')) {
+            'make-test-package.ps1', 'collect-logs.ps1', 'collect-sysinfo.ps1', 'package\install.bat', 'package\uninstall.bat',
+            'package\collect-logs.bat', 'package\installed\uninstall.bat', 'package\installed\collect-logs.bat')) {
         $bytes = Read-Bytes (Join-Path $tools $f)
         Check ($bytes.Length -gt 0 -and @($bytes | Where-Object { $_ -gt 0x7E -or ($_ -lt 0x20 -and $_ -ne 9 -and $_ -ne 10 -and $_ -ne 13) }).Count -eq 0) "$f is ASCII"
     }
@@ -2283,7 +2345,7 @@ Invoke-Case 'UP1: upgrade of an older package install: changed files are replace
     Check (Test-LuaMatches $game $luaReal) 'the Lua app is exactly the new one (the changed file replaced, the obsolete one and its folder gone)'
     Check (Test-SlMatches $game $slReal) 'ac-dlssg\sl is exactly the new Streamline (the obsolete file removed)'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 4 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 4 and records the new bridge'
+    Check ($m.schema -eq 5 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 5 and records the new bridge'
     Check (@($m.streamline.files | Where-Object { $_.path -like '*sl.old.dll' }).Count -eq 0 -and
         @($m.luaApp.files | Where-Object { $_.path -like '*old.lua' }).Count -eq 0) 'the manifest no longer records the obsolete files'
     $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Sha $_.FullName } | Sort-Object)
@@ -2312,7 +2374,7 @@ Invoke-Case 'UP2: upgrade of a schema 1 ReShade-mode install (no Streamline, no 
     Check ((Test-SlMatches $game $slReal) -and (Test-LuaMatches $game $luaReal)) 'it adds Streamline and the Lua app'
     Check (Test-SameBytes (Read-Bytes $ini) $afterFirst) 'ReShade.ini is unchanged'
     $m = Get-Manifest $game
-    Check ($m.mode -eq 'reshade' -and $m.schema -eq 4) 'the manifest records ReShade mode, schema 4'
+    Check ($m.mode -eq 'reshade' -and $m.schema -eq 5) 'the manifest records ReShade mode, schema 5'
     $r = Invoke-PackageUninstall $pkg $game
     Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $ini) $original)) 'the uninstall restores a byte-identical ReShade.ini'
 }
@@ -2374,6 +2436,217 @@ Invoke-Case 'UP5: files that are clearly not ours still stop the package install
     Write-Text (Join-Path (Get-LuaDir $game) 'AcDlssg.lua') "-- someone else's app`r`n"
     $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
     Check ((Test-Refused $r) -and $r.Text -match 'apps\\lua\\AcDlssg') 'a foreign apps\lua\AcDlssg is refused'
+}
+
+# ---------------------------------------------------------------------------
+# 1.1.0: after the install the unpacked package can be deleted. The
+# uninstaller and the log collector live in <game>\ac-dlssg.
+
+# The unpacked folder the tester deletes after the install (New-PackageCopy
+# puts each copy into a folder of its own).
+function Remove-PackageFolder([string]$Pkg) {
+    $unpacked = Split-Path -Parent $Pkg
+    Remove-Item -LiteralPath $unpacked -Recurse -Force
+    return -not (Test-Path -LiteralPath $unpacked)
+}
+
+function Invoke-InstalledUninstall([string]$Game, [string[]]$Arguments) {
+    return Invoke-Bat (Join-Path $Game 'ac-dlssg\uninstall.bat') $Arguments
+}
+
+$cyrName = -join [char[]](0x0418, 0x0433, 0x0440, 0x0430)
+
+Invoke-Case 'IT0: the installed launchers and the system report (static)' {
+    $bat = [IO.File]::ReadAllText((Join-Path $tools 'package\installed\uninstall.bat'))
+    Check ($bat -match '(?m)^[^\r\n]*scripts\\uninstall\.ps1" -InstalledCopy %\*[^\r\n]*\(goto\) 2>nul') 'uninstall.bat ends itself with (goto) on the line that runs PowerShell, so that cmd.exe never reads the deleted file again'
+    $sysinfo = [IO.File]::ReadAllText((Join-Path $tools 'collect-sysinfo.ps1'))
+    $collect = [IO.File]::ReadAllText((Join-Path $tools 'collect-logs.ps1'))
+    Check ($sysinfo -match '(?s)^.*?param\([^)]*\$OutDir' -and $collect -match '-File \$sysinfo -OutDir') 'collect-logs.ps1 has collect-sysinfo.ps1 write its report into the staging folder (nothing next to the installed scripts)'
+}
+
+Invoke-Case 'IT1: the uninstaller in the game folder works after the package is deleted' {
+    $pkg = New-PackageCopy 'IT1'
+    $game = New-FakeGame "IT1 $cyrName & co"
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
+    Write-Bytes $ini $original
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade') 'install exits 0 in ReShade mode'
+    Check (Test-ToolsInstalled $game) '<game>\ac-dlssg holds uninstall.bat, collect-logs.bat and the scripts they run in scripts\'
+    $m = Get-Manifest $game
+    Check ($m.schema -eq 5 -and (Test-ToolsRecorded $m $game)) 'the manifest (schema 5) records each of them with its hash'
+    Check ($r.Text -match '(?i)can be deleted' -and $r.Text -match 'ac-dlssg\\uninstall\.bat' -and $r.Text -match 'ac-dlssg\\collect-logs\.bat' -and
+        $r.Text -notmatch 'tools\\(uninstall|collect-logs)\.bat') 'the install says the unpacked folder can be deleted and names the uninstall.bat and collect-logs.bat in the game folder'
+    $pkgRoot = Split-Path -Parent $pkg
+    $mentions = @(Get-ChildItem -LiteralPath $game -Recurse -File -Force | Where-Object { $_.Name -ne 'dev-manifest.json' } |
+            Where-Object { $utf8.GetString((Read-Bytes $_.FullName)).IndexOf($pkgRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 } |
+            ForEach-Object { $_.Name })
+    Check ($mentions.Count -eq 0) "no installed file names the package folder ($($mentions -join ', '))"
+    # The manifest names this Cyrillic folder; an upgrade must read it back.
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -match 'this run is an upgrade' -and (Test-ToolsInstalled $game)) 'an upgrade in this folder exits 0'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake log`r`n"
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0) 'the installed uninstall.bat exits 0'
+    Check ($r.StdErr.Trim().Length -eq 0) "nothing on stderr, no 'The batch file cannot be found' ($($r.StdErr.Trim()))"
+    Check (Test-SameBytes (Read-Bytes $ini) $original) 'ReShade.ini is byte-identical to before the install'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\uninstall.bat')) -and (Test-NoTools $game)) 'uninstall.bat, collect-logs.bat and scripts\ are gone'
+    $left = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg') -Recurse -Force | ForEach-Object { $_.FullName.Substring($game.Length + 1) } | Sort-Object)
+    $keep = @('ac-dlssg\ac-dlssg.ini', 'ac-dlssg\logs', 'ac-dlssg\logs\bridge.log') | Sort-Object
+    Check (($left -join '|') -eq ($keep -join '|')) "only the settings and the logs stay in <game>\ac-dlssg ($($left -join ', '))"
+    $rest = @(Get-ChildItem -LiteralPath $game -Force | ForEach-Object { $_.Name } | Sort-Object)
+    Check (($rest -join '|') -eq ((@('ac-dlssg', 'acs.exe', 'dxgi.dll', 'ReShade.ini') | Sort-Object) -join '|')) "the rest of the game folder is as before ($($rest -join ', '))"
+}
+
+Invoke-Case 'IT2: uninstall.bat -RemoveData in the game folder: a byte-identical round trip with the spoof' {
+    $pkg = New-PackageCopy 'IT2'
+    $game = New-FakeGame "IT2 $cyrName"
+    Write-Bytes (Join-Path $game 'ReShade.ini') (Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary=')
+    $before = Get-TreeState $game
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game) -and (Test-ToolsInstalled $game)) 'install exits 0 with the spoof and the tools'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake log`r`n"
+    Write-Text (Join-Path $game 'dlssg_sm86\logs\loader_7.jsonl') "{}`r`n"
+    $r = Invoke-InstalledUninstall $game @('-RemoveData', '-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and $r.StdErr.Trim().Length -eq 0) "uninstall.bat -RemoveData exits 0, nothing on stderr ($($r.StdErr.Trim()))"
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) '-RemoveData removes <game>\ac-dlssg, the uninstaller included'
+    Check ((Get-TreeState $game) -eq $before) 'the game folder is byte-identical to before the install'
+}
+
+Invoke-Case 'IT3: the installed collect-logs.bat works after the package is deleted and writes its zip into <game>\ac-dlssg' {
+    $pkg = New-PackageCopy 'IT3'
+    $game = New-FakeGame "IT3 $cyrName & co" -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake bridge log`r`n"
+    $acDocs = Join-Path $FakeRoot 'documents\IT3\Assetto Corsa'
+    Write-Text (Join-Path $acDocs 'logs\log.txt') "fake AC log`r`n"
+    $listing = { @(Get-ChildItem -LiteralPath $game, $acDocs -Recurse -Force -File | Where-Object { $_.Name -notlike 'ac-dlssg-logs-*.zip' } |
+                ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n" }
+    $before = & $listing
+    $r = Invoke-Bat (Join-Path $game 'ac-dlssg\collect-logs.bat') @('-AcDocsDir', $acDocs, '-SkipSysinfo', '-NoPause')
+    Check ($r.Code -eq 0) 'the installed collect-logs.bat exits 0'
+    $zips = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg') -Filter 'ac-dlssg-logs-*.zip' -File)
+    Check ($zips.Count -eq 1) 'it writes one zip into <game>\ac-dlssg'
+    Check ($r.Text -match '(?m)Send this file: [A-Za-z]:\\.*\\ac-dlssg\\ac-dlssg-logs-\d{8}-\d{6}\.zip\s*$' -and $r.Text -notmatch 'Send this file: .*\\\.\\') 'it prints the zip''s full path'
+    Check ((& $listing) -eq $before) 'it changes nothing else in the game or documents folder'
+    Check (@(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg') -Directory -Recurse | Where-Object { $_.Name -like 'ac-dlssg-logs-*' -or $_.Name -eq 'ac-dlssg-sysinfo' }).Count -eq 0) 'no staging or report folder is left'
+    if ($zips.Count -eq 1) {
+        $names = @(Get-ZipEntryNames $zips[0].FullName)
+        foreach ($n in @('ac-dlssg/logs/bridge.log', 'ac-dlssg/install/dev-manifest.json', 'game-files.txt', 'documents/log.txt')) {
+            Check ($names -contains $n) "the zip holds $n"
+        }
+    }
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and (Test-NoTools $game) -and $zips.Count -eq 1 -and (Test-Path -LiteralPath $zips[0].FullName)) 'the uninstall removes the tools and keeps the log zip with the logs'
+}
+
+Invoke-Case 'IT4: an upgrade over a 1.0.0 install adds the tools, a later one replaces them; schema 4 manifests still work' {
+    $pkg = New-PackageCopy 'IT4'
+    $game = New-FakeGame 'IT4' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the first install exits 0'
+    # What 1.0.0 leaves: a schema 4 manifest without tools, and no tool files.
+    $toOneZero = {
+        $m = Get-Manifest $game
+        $m.schema = 4
+        [void]$m.PSObject.Properties.Remove('tools')
+        Set-Manifest $game $m
+        foreach ($rel in $toolRels) { Remove-Item -LiteralPath (Join-Path $game $rel) -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath (Join-Path $game 'ac-dlssg\scripts') -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    & $toOneZero
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -notmatch 'REFUSED') 'the upgrade over a 1.0.0 install exits 0'
+    Check (Test-ToolsInstalled $game) 'it adds the tools'
+    $m = Get-Manifest $game
+    Check ($m.schema -eq 5 -and (Test-ToolsRecorded $m $game)) 'the manifest becomes schema 5 and records them'
+
+    # An older build's tools: two files it recorded that differ from this
+    # build's, and one that this build no longer ships.
+    [IO.File]::AppendAllText((Join-Path $game 'ac-dlssg\uninstall.bat'), "rem an older build`r`n")
+    [IO.File]::AppendAllText((Join-Path $game 'ac-dlssg\scripts\dev-common.ps1'), "# an older build`r`n")
+    $old = Join-Path $game 'ac-dlssg\scripts\old-helper.ps1'
+    Write-Text $old "# a helper an older build shipped`r`n"
+    $m = Get-Manifest $game
+    foreach ($rec in @($m.tools.files)) { $rec.sha256 = Get-Sha (Join-Path $game ([string]$rec.path)) }
+    $m.tools.files = @($m.tools.files) + @([pscustomobject]@{ path = 'ac-dlssg\scripts\old-helper.ps1'; sha256 = (Get-Sha $old) })
+    Set-Manifest $game $m
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the next upgrade exits 0'
+    Check (Test-ToolsInstalled $game) 'it replaces the older tools and removes the one this build no longer ships'
+    Check (Test-ToolsRecorded (Get-Manifest $game) $game) 'the manifest records this build''s tools only'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\install\backup'))) 'no backup is kept of tools the manifest recorded'
+
+    # The new package uninstaller undoes a 1.0.0 install.
+    & $toOneZero
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'tools\uninstall.bat undoes a schema 4 install without tools: only acs.exe is left'
+}
+
+Invoke-Case 'IT5: a failed install rolls the tools back with everything else' {
+    $pkg = New-PackageCopy 'IT5'
+    $game = New-FakeGame 'IT5'
+    $ini = Join-Path $game 'ReShade.ini'
+    Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
+    $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    } finally {
+        $lock.Dispose()
+    }
+    Check ($r.Code -ne 0 -and $r.Text -match 'FAILED:') 'a first install whose ReShade.ini write fails fails'
+    Check ($r.Text -match 'rolled back: removed .*ac-dlssg\\uninstall\.bat') 'the rollback reports the removed uninstall.bat'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'the tools are rolled back with the rest: no <game>\ac-dlssg'
+
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the install exits 0 once ReShade.ini is writable'
+    $bat = Join-Path $game 'ac-dlssg\uninstall.bat'
+    [IO.File]::AppendAllText($bat, "rem an older build`r`n")
+    $olderBat = Get-Sha $bat
+    $m = Get-Manifest $game
+    foreach ($rec in @($m.tools.files)) { $rec.sha256 = Get-Sha (Join-Path $game ([string]$rec.path)) }
+    Set-Manifest $game $m
+    # The user switched the proxy off, so the upgrade has to write ReShade.ini.
+    Write-Bytes $ini (Get-Utf8Bytes "[PROXY]`r`nEnableProxyLibrary=0`r`nProxyLibrary=$ourDll`r`n")
+    $manifestBefore = Read-Bytes (Get-ManifestPath $game)
+    $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    } finally {
+        $lock.Dispose()
+    }
+    Check ($r.Code -ne 0 -and $r.Text -match 'FAILED:') 'an upgrade whose ReShade.ini write fails fails'
+    Check ((Get-Sha $bat) -eq $olderBat) 'the older uninstall.bat is back'
+    Check (Test-SameBytes (Read-Bytes (Get-ManifestPath $game)) $manifestBefore) 'the manifest is byte-identical to before'
+    Check (Test-NoLeftovers @((Join-Path $game 'ac-dlssg'), (Join-Path $game 'ac-dlssg\scripts'))) 'no .new files left'
+}
+
+Invoke-Case 'IT6: the installed uninstall.bat: a refusal keeps it, another -GameDir is refused, the elevated run removes it' {
+    $pkg = New-PackageCopy 'IT6'
+    $game = New-FakeGame "IT6 $cyrName" -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    $manifest = Get-ManifestPath $game
+    $saved = Join-Path $FakeRoot 'games\IT6-manifest.json'
+    Move-Item -LiteralPath $manifest -Destination $saved
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
+    Check ((Test-Refused $r) -and (Test-ToolsInstalled $game)) 'a refused uninstall exits non-zero and keeps uninstall.bat and its scripts'
+    Check ($r.StdErr.Trim().Length -eq 0) "nothing on stderr ($($r.StdErr.Trim()))"
+    Move-Item -LiteralPath $saved -Destination $manifest
+    $other = New-FakeGame 'IT6-other' -NoDxgi
+    $r = Invoke-InstalledUninstall $game @('-GameDir', $other, '-NoPause', '-NoElevate')
+    Check ((Test-Refused $r) -and $r.Text -match 'belongs to' -and (Test-ToolsInstalled $game) -and (Test-Path -LiteralPath $manifest)) 'the -GameDir of another game is refused, and nothing changes'
+    # -FakeElevation: the "elevated" second run is another PowerShell in this
+    # console, started without UAC; the first one waits for it.
+    $r = Invoke-InstalledUninstall $game @('-RemoveData', '-NoPause', '-FakeElevation')
+    Check ($r.Code -eq 0 -and $r.Text -match 'starts again with administrator rights' -and $r.Text -match 'ended with exit code 0') 'the second run does the uninstall, and the first reports its exit code 0'
+    Check ($r.StdErr.Trim().Length -eq 0) "nothing on stderr: the first uninstall.bat ends without reading its deleted file ($($r.StdErr.Trim()))"
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'the second run removes everything, <game>\ac-dlssg with uninstall.bat included'
 }
 
 # ---------------------------------------------------------------------------

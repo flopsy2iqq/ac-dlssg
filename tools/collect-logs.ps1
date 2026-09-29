@@ -6,7 +6,9 @@
   Read-only: nothing in the game folder or on the system is changed. It only
   writes ac-dlssg-logs-<yyyyMMdd-HHmmss>.zip into -OutDir, by default next to
   this script (the test package's tools\collect-logs.bat passes its own
-  folder), and collect-sysinfo.ps1 writes its report folder next to itself.
+  folder, <game>\ac-dlssg\collect-logs.bat that game folder's ac-dlssg), and
+  prints the zip's full path; collect-sysinfo.ps1 writes its report into the
+  staging folder, which is deleted after zipping.
   The zip holds:
     ac-dlssg\logs\...        the bridge's logs (bridge.log, bridge.prev.log) and
                              the Streamline logs it writes into the same folder
@@ -125,7 +127,8 @@ $staging = $null
 try {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     if (-not $OutDir) { $OutDir = $PSScriptRoot }
-    $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+    # A full path without "." parts ("<folder>\." is how the .bat files pass theirs).
+    $OutDir = [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)).TrimEnd('\')
     $staging = Join-Path $OutDir "ac-dlssg-logs-$stamp"
     $zip = "$staging.zip"
     New-Item -ItemType Directory -Path $staging | Out-Null
@@ -225,10 +228,18 @@ try {
             Note 'collect-sysinfo.ps1 not found; no system report'
         } else {
             Write-Host 'collect-logs: running collect-sysinfo.ps1 (dxdiag takes up to a minute)'
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sysinfo | Out-Host
-            $report = Join-Path (Split-Path -Parent $sysinfo) 'ac-dlssg-sysinfo'
+            # Straight into the staging folder's sysinfo\, so that nothing
+            # stays next to the script (in <game>\ac-dlssg\scripts for the
+            # installed copy).
+            $report = Join-Path $staging 'sysinfo'
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sysinfo -OutDir $report | Out-Host
             foreach ($f in @('ac-dlssg-sysinfo.txt', 'dxdiag.txt')) {
-                Add-File (Join-Path $report $f) "sysinfo\$f" $staging
+                $path = Join-Path $report $f
+                if (Test-Path -LiteralPath $path -PathType Leaf) {
+                    Note "collected sysinfo\$f ($((Get-Item -LiteralPath $path).Length) bytes, from $sysinfo)"
+                } else {
+                    Note "missing: $path"
+                }
             }
         }
     }

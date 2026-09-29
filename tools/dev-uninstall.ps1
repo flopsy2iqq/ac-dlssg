@@ -40,6 +40,11 @@
   and %LOCALAPPDATA%\DlssgSm86, but only when the install put
   dlssg_for_sm86 there and no version.dll is left in the game folder.
 
+  Last come the uninstaller and the log collector that the package install
+  put into <game>\ac-dlssg (the manifest's tools: uninstall.bat,
+  collect-logs.bat and scripts\), each only if it is the version installed,
+  then scripts\ when it is empty; not with -KeepTools.
+
 .PARAMETER GameDir
   The Assetto Corsa folder (the one with acs.exe). Default: found through
   Steam's libraryfolders.vdf.
@@ -52,13 +57,19 @@
   Standalone mode: uninstall even when <game>\dxgi.dll is not the recorded
   bridge, leaving that dxgi.dll in place.
 
+.PARAMETER KeepTools
+  Leave the tools that the install put into <game>\ac-dlssg in place, also
+  with -RemoveData. The copy of uninstall.ps1 in <game>\ac-dlssg\scripts
+  passes it: that copy is one of them and removes them itself at its end.
+
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-uninstall.ps1
 #>
 param(
     [string]$GameDir,
     [switch]$RemoveData,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$KeepTools
 )
 
 $ErrorActionPreference = 'Stop'
@@ -281,6 +292,38 @@ try {
         }
     }
 
+    # 4d. The uninstaller and the log collector in <game>\ac-dlssg, each only
+    #     while it is the version installed, then scripts\ when it is empty;
+    #     with -KeepTools they stay (the running copy removes them at its end).
+    $toolPaths = @()
+    if ($manifest.PSObject.Properties['tools'] -and $manifest.tools) {
+        foreach ($f in @($manifest.tools.files)) {
+            $rel = [string]$f.path
+            if (-not (Test-ToolRelPath $rel)) {
+                Step "WARNING: the manifest names $rel as a tool, which it cannot be; left alone"
+                continue
+            }
+            $path = Join-Path $game $rel
+            $toolPaths += $path
+            if ($KeepTools) { continue }
+            if (Test-Path -LiteralPath "$path.new") { Remove-Item -LiteralPath "$path.new" -Force }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Step "$path is already gone"; continue }
+            $hash = Get-Sha256OfFile $path
+            if ($hash -eq [string]$f.sha256) {
+                Remove-Item -LiteralPath $path -Force
+                Step "deleted $path"
+            } else {
+                Step "WARNING: $path is not the file dev-install.ps1 copied (SHA-256 $hash); left in place. Delete it by hand if you no longer need it."
+            }
+        }
+        $toolScriptsDir = Join-Path $dataDir $script:AcdbToolsScriptsDirName
+        if ($KeepTools) {
+            Step "kept the uninstaller and the log collector in $dataDir ($($toolPaths.Count) files, -KeepTools)"
+        } elseif ((Test-Path -LiteralPath $toolScriptsDir -PathType Container) -and @(Get-ChildItem -LiteralPath $toolScriptsDir -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $toolScriptsDir -Force
+        }
+    }
+
     # 5. Data. dlssg_for_sm86 keeps its logs in <game>\dlssg_sm86 and its data
     #    in %LOCALAPPDATA%\DlssgSm86; they go only when the install put the
     #    spoof there and its version.dll is gone.
@@ -300,7 +343,18 @@ try {
         }
     }
     if ($RemoveData) {
-        if (Test-Path -LiteralPath $dataDir) {
+        if ((Test-Path -LiteralPath $dataDir) -and $KeepTools -and $toolPaths.Count -gt 0) {
+            # Everything but the tools, which the running copy removes at its end.
+            $keep = @{}
+            foreach ($p in $toolPaths) { $keep[(Get-NormalizedPath $p).ToLowerInvariant()] = $true }
+            foreach ($f in @(Get-ChildItem -LiteralPath $dataDir -Recurse -File -Force)) {
+                if (-not $keep.ContainsKey((Get-NormalizedPath $f.FullName).ToLowerInvariant())) { Remove-Item -LiteralPath $f.FullName -Force }
+            }
+            foreach ($d in @(Get-ChildItem -LiteralPath $dataDir -Recurse -Directory -Force | Sort-Object { $_.FullName.Length } -Descending)) {
+                if (@(Get-ChildItem -LiteralPath $d.FullName -Force).Count -eq 0) { Remove-Item -LiteralPath $d.FullName -Force }
+            }
+            Step "deleted $dataDir (-RemoveData) but for the uninstaller and the log collector (-KeepTools)"
+        } elseif (Test-Path -LiteralPath $dataDir) {
             Remove-Item -LiteralPath $dataDir -Recurse -Force
             Step "deleted $dataDir (-RemoveData)"
         }

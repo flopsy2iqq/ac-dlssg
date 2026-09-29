@@ -12,6 +12,13 @@
                          the CSP Lua app that publishes the camera (from the
                          repository's apps\lua\AcDlssg); dev-install.ps1 puts it
                          into <game>\apps\lua\AcDlssg
+    files\ac-dlssg\      what dev-install.ps1 -Tools puts into <game>\ac-dlssg,
+                         so that the unpacked package can be deleted after the
+                         install: uninstall.bat and collect-logs.bat (from
+                         tools\package\installed; they work on the game folder
+                         they are in) and scripts\ with uninstall.ps1,
+                         dev-uninstall.ps1, dev-common.ps1, collect-logs.ps1 and
+                         collect-sysinfo.ps1
     scripts\install.ps1  tools\package\install.ps1: finds the game through
                          Steam, starts itself again with administrator rights
                          when the game folder needs them, gets Streamline with
@@ -134,6 +141,18 @@ try {
     }
     foreach ($f in @('uninstall.bat', 'collect-logs.bat')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "package\$f") -Destination (Join-Path $toolsDir $f)
+    }
+    # The uninstaller and the log collector for <game>\ac-dlssg; scripts\install.ps1
+    # passes files\ac-dlssg to dev-install.ps1 as -Tools.
+    $gameTools = Join-Path $filesDir $script:AcdbDataDirName
+    $gameScripts = Join-Path $gameTools $script:AcdbToolsScriptsDirName
+    New-Item -ItemType Directory -Force -Path $gameScripts | Out-Null
+    foreach ($f in @('uninstall.bat', 'collect-logs.bat')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "package\installed\$f") -Destination (Join-Path $gameTools $f)
+    }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'package\uninstall.ps1') -Destination (Join-Path $gameScripts 'uninstall.ps1')
+    foreach ($f in @('dev-uninstall.ps1', 'dev-common.ps1', 'collect-logs.ps1', 'collect-sysinfo.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $f) -Destination (Join-Path $gameScripts $f)
     }
     # The CSP Lua app; scripts\install.ps1 passes files\apps\lua\AcDlssg to dev-install.ps1.
     $luaSource = Join-Path $repo 'apps\lua\AcDlssg'
