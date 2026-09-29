@@ -108,7 +108,21 @@ struct VramCheck {
     std::string reason;  // "video memory: need <x> MiB, free <y> MiB" when refused
     uint64_t needMib = 0;  // what had to fit, rounded up (0 when no check was made)
     uint64_t freeMib = 0;  // what was free, rounded down
+    uint64_t estimateMib = 0;  // needMib's DLSS-G part (the estimate, or its growth), without the headroom
 };
+
+// fg_vram_headroom_mib=auto (spec 6.11): no headroom on a render adapter
+// whose video memory budget is below 6144 MiB (a 4 GB card has none to
+// spare), else 256 MiB.
+unsigned AutoVramHeadroomMib(uint64_t budgetBytes);
+
+// The headroom the guard adds to the estimate: AutoVramHeadroomMib with
+// auto, else the configured number.
+unsigned VramHeadroomMib(bool autoHeadroom, unsigned configuredMib, uint64_t budgetBytes);
+
+// How much a 2X check may fall short with auto and DLSS-G still turns on,
+// marked tight: max(128 MiB, a tenth of estimateMib).
+uint64_t VramTightToleranceMib(uint64_t estimateMib);
 
 // Spec 6.11: DLSS-G stays off when budget - usage < estimate + headroom.
 // need is rounded up and free rounded down to MiB; usage above the budget
@@ -140,14 +154,30 @@ VramCheck DecideVram(const VramInputs& in);
 // Multi frame generation (spec 6.11): the check at the wanted multiplier
 // decides; when it refuses and the wanted multiplier is above 2X, the 2X
 // check (at2x, null when it was not made) may allow DLSS-G at 2X instead.
+//
+// fg_vram_headroom_mib=auto (autoHeadroom): when the 2X check (atWanted
+// for 2X, else at2x) refuses by at most VramTightToleranceMib (needMib -
+// freeMib), DLSS-G runs at 2X anyway: check ok, tight, and the note
+// "video memory is tight (<free> MiB free for <need> MiB); frame generation
+// on anyway (fg_vram_headroom_mib=auto)". A larger shortfall keeps DLSS-G
+// off with the actionable reason "not enough video memory: frame generation
+// needs <need> MiB, <free> MiB free; lower CSP texture quality, shadows or
+// the render resolution", which is also the note. Only 2X is ever tight.
+//
+// A number (autoHeadroom false) decides as before auto existed: never tight,
+// and the refusal keeps "video memory: need <x> MiB, free <y> MiB"; its note
+// is the actionable text all the same, for the panel.
 struct VramMultiplierDecision {
     VramCheck check;          // ok, or the refusal DLSS-G stays off with (2X's when both were made)
     unsigned multiplier = 2;  // the multiplier the guard allows
     // "video memory: <m>X needs <n> MiB, free <f> MiB; falling back to 2X",
     // empty without a fallback.
     std::string fallback;
+    bool tight = false;  // auto: 2X fell short within the tolerance, DLSS-G on anyway
+    std::string note;    // the panel's vramNote: the tight or the not-enough text; empty when it fits
 };
-VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x);
+VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x,
+                                            bool autoHeadroom = false);
 
 // When the guard runs: before DLSS-G is first enabled, whenever the wanted
 // multiplier is not the one it last checked, and every 60 frames while it
@@ -157,12 +187,15 @@ class VramGuard {
 public:
     static constexpr uint64_t kRecheckFrames = 60;
     bool CheckDue(uint64_t frame, unsigned wanted = 2) const;
-    // result is the outcome for `wanted`, granted the multiplier it allows.
-    // True for the first result, whenever it changes between ok and refused,
-    // for a new wanted multiplier and for a new granted one: the presenter
-    // logs only those at INFO.
-    bool Record(uint64_t frame, const VramCheck& result, unsigned wanted = 2, unsigned granted = 2);
+    // result is the outcome for `wanted`, granted the multiplier it allows,
+    // tight when it passed only as tight (DecideVramMultiplier). True for the
+    // first result, whenever it changes between ok and refused, for a new
+    // wanted multiplier, for a new granted one and when a pass becomes tight
+    // or no longer is: the presenter logs only those at INFO.
+    bool Record(uint64_t frame, const VramCheck& result, unsigned wanted = 2, unsigned granted = 2,
+                bool tight = false);
     bool Passed() const { return passed_; }
+    bool Tight() const { return tight_; }
     unsigned Wanted() const { return wanted_; }
     unsigned Granted() const { return granted_; }
     const std::string& Refusal() const { return refusal_; }
@@ -170,6 +203,7 @@ public:
 private:
     bool passed_ = false;
     bool checked_ = false;
+    bool tight_ = false;
     uint64_t last_ = 0;
     unsigned wanted_ = 2;
     unsigned granted_ = 2;

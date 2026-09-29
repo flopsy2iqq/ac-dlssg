@@ -11,6 +11,10 @@ namespace {
 
 constexpr uint64_t kMiB = 1024ull * 1024ull;
 constexpr size_t kMaxReasons = 256;
+// fg_vram_headroom_mib=auto (spec 6.11).
+constexpr uint64_t kAutoHeadroomBudgetMib = 6144;
+constexpr unsigned kAutoHeadroomMib = 256;
+constexpr uint64_t kTightMinMib = 128;
 
 FgGateResult Off(std::string reason, bool perFrame) {
     FgGateResult r;
@@ -77,6 +81,7 @@ VramCheck CheckVideoMemory(uint64_t budgetBytes, uint64_t usageBytes, uint64_t e
     VramCheck r;
     r.needMib = (need + kMiB - 1) / kMiB;
     r.freeMib = free / kMiB;
+    r.estimateMib = (estimateBytes + kMiB - 1) / kMiB;
     if (free >= need) return r;
     char buf[96];
     std::snprintf(buf, sizeof(buf), "video memory: need %llu MiB, free %llu MiB",
@@ -100,27 +105,91 @@ VramCheck DecideVram(const VramInputs& in) {
     return CheckVideoMemory(in.budgetBytes, in.usageBytes, in.estimateBytes - in.heldBytes, in.headroomMib);
 }
 
-VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x) {
-    VramMultiplierDecision d;
-    d.multiplier = wanted;
-    d.check = atWanted;
-    if (atWanted.ok || wanted <= 2 || !at2x) return d;
-    d.multiplier = 2;
-    d.check = *at2x;
-    if (!at2x->ok) return d;
+unsigned AutoVramHeadroomMib(uint64_t budgetBytes) {
+    return budgetBytes < kAutoHeadroomBudgetMib * kMiB ? 0u : kAutoHeadroomMib;
+}
+
+unsigned VramHeadroomMib(bool autoHeadroom, unsigned configuredMib, uint64_t budgetBytes) {
+    return autoHeadroom ? AutoVramHeadroomMib(budgetBytes) : configuredMib;
+}
+
+uint64_t VramTightToleranceMib(uint64_t estimateMib) {
+    const uint64_t tenth = estimateMib / 10;
+    return tenth > kTightMinMib ? tenth : kTightMinMib;
+}
+
+namespace {
+
+std::string FallbackText(unsigned wanted, const VramCheck& atWanted) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "video memory: %uX needs %llu MiB, free %llu MiB; falling back to 2X", wanted,
                   static_cast<unsigned long long>(atWanted.needMib), static_cast<unsigned long long>(atWanted.freeMib));
-    d.fallback = buf;
+    return buf;
+}
+
+std::string TightText(const VramCheck& c) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "video memory is tight (%llu MiB free for %llu MiB); frame generation on anyway "
+                  "(fg_vram_headroom_mib=auto)",
+                  static_cast<unsigned long long>(c.freeMib), static_cast<unsigned long long>(c.needMib));
+    return buf;
+}
+
+std::string NotEnoughText(const VramCheck& c) {
+    char buf[192];
+    std::snprintf(buf, sizeof(buf),
+                  "not enough video memory: frame generation needs %llu MiB, %llu MiB free; lower CSP texture "
+                  "quality, shadows or the render resolution",
+                  static_cast<unsigned long long>(c.needMib), static_cast<unsigned long long>(c.freeMib));
+    return buf;
+}
+
+bool WithinTolerance(const VramCheck& c) {
+    return !c.ok && c.needMib > c.freeMib && c.needMib - c.freeMib <= VramTightToleranceMib(c.estimateMib);
+}
+
+}  // namespace
+
+VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x,
+                                            bool autoHeadroom) {
+    VramMultiplierDecision d;
+    d.multiplier = wanted;
+    d.check = atWanted;
+    if (atWanted.ok) return d;
+    // The 2X check: the wanted one at 2X, else at2x when it was made.
+    const VramCheck* two = wanted <= 2 ? &atWanted : at2x;
+    if (wanted > 2 && at2x) {
+        d.multiplier = 2;
+        d.check = *at2x;
+        if (at2x->ok) {
+            d.fallback = FallbackText(wanted, atWanted);
+            return d;
+        }
+    }
+    if (autoHeadroom && two && WithinTolerance(*two)) {
+        d.tight = true;
+        d.multiplier = 2;
+        d.check = *two;
+        d.check.ok = true;
+        d.check.reason.clear();
+        d.note = TightText(*two);
+        if (wanted > 2) d.fallback = FallbackText(wanted, atWanted);
+        return d;
+    }
+    d.note = NotEnoughText(d.check);
+    if (autoHeadroom) d.check.reason = d.note;
     return d;
 }
 
-bool VramGuard::Record(uint64_t frame, const VramCheck& result, unsigned wanted, unsigned granted) {
-    const bool changed =
-        !checked_ || passed_ != result.ok || wanted != wanted_ || (result.ok && granted != granted_);
+bool VramGuard::Record(uint64_t frame, const VramCheck& result, unsigned wanted, unsigned granted, bool tight) {
+    tight = tight && result.ok;
+    const bool changed = !checked_ || passed_ != result.ok || wanted != wanted_ ||
+                         (result.ok && (granted != granted_ || tight != tight_));
     checked_ = true;
     last_ = frame;
     passed_ = result.ok;
+    tight_ = tight;
     wanted_ = wanted;
     granted_ = granted;
     refusal_ = result.ok ? std::string() : result.reason;
