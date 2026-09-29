@@ -25,6 +25,16 @@
   commit of github.com/NVIDIA/nvapi into <DepsDir>\nvapi and verifies each
   file's git blob SHA-1.
 
+  Spoof (only with -Only Spoof; the test package's install.ps1 asks for it on
+  an RTX 30): downloads version.dll and dlssg_sm86.ini of dlssg_for_sm86
+  0.3.5, the files of commit 9621db5 of github.com/sdli1995/dlssg_for_sm86
+  (pins in dev-common.ps1), from raw.githubusercontent.com into
+  <DepsDir>\dlssg_for_sm86-0.3.5. Each file is checked against its size and
+  git blob SHA-1, version.dll also against its SHA-256, in <DepsDir>\download
+  first; only when every requested file matches are they moved into place,
+  and on any mismatch the downloads are deleted. Never the repository
+  archive and nothing under alternatives/ (spec 10).
+
   Idempotent: files that are already present and verified are not downloaded
   again. Everything temporary (downloads, extraction staging, a replaced
   streamline-2.14.1.old-* folder) stays under <DepsDir>. A relative
@@ -39,6 +49,9 @@
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\fetch-deps.ps1 -Only Nvapi -DepsDir build\deps
+
+.EXAMPLE
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\fetch-deps.ps1 -Only Spoof -DepsDir build\deps
 #>
 param(
     # Where the files go; the default is deps\ at the repository root.
@@ -47,13 +60,25 @@ param(
     [string]$StreamlineZip = '',
     # Keep the downloaded Streamline zip in <DepsDir>\download.
     [switch]$KeepZip,
-    # Stage only these parts (default: both).
-    [ValidateSet('Streamline', 'Nvapi')]
-    [string[]]$Only = @('Streamline', 'Nvapi')
+    # Stage only these parts (default: Streamline and Nvapi; Spoof only when named).
+    [ValidateSet('Streamline', 'Nvapi', 'Spoof')]
+    [string[]]$Only = @('Streamline', 'Nvapi'),
+    # Spoof: which of its files to stage (default: both).
+    [ValidateSet('version.dll', 'dlssg_sm86.ini')]
+    [string[]]$SpoofFiles = @('version.dll', 'dlssg_sm86.ini'),
+    # Spoof, for tests only: copy the files from this folder instead of
+    # downloading them; they go through the same checks.
+    [string]$SpoofSourceDir = '',
+    # Spoof, for tests only: a JSON file with the pins of those files (see
+    # Get-SpoofPins in dev-common.ps1).
+    [string]$SpoofPins = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Shared helpers: Get-GitBlobSha1, Get-NvidiaSignatureProblem and the
+# dlssg_for_sm86 pins.
+. (Join-Path $PSScriptRoot 'dev-common.ps1')
 
 # --- Pinned sources -------------------------------------------------------
 
@@ -95,20 +120,6 @@ function Get-Sha256Hex([string]$Path) {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
-# The id git gives a file's content: SHA-1 over "blob <size>\0" + bytes.
-function Get-GitBlobSha1([string]$Path) {
-    $bytes = [System.IO.File]::ReadAllBytes($Path)
-    $header = [System.Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")
-    $sha = [System.Security.Cryptography.SHA1]::Create()
-    try {
-        [void]$sha.TransformBlock($header, 0, $header.Length, $null, 0)
-        [void]$sha.TransformFinalBlock($bytes, 0, $bytes.Length)
-        return ([BitConverter]::ToString($sha.Hash) -replace '-', '').ToLowerInvariant()
-    } finally {
-        $sha.Dispose()
-    }
-}
-
 function Remove-IfPresent([string]$Path) {
     if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
 }
@@ -142,17 +153,6 @@ function Invoke-Download([string]$Url, [string]$OutFile) {
         }
     }
     Stop-Fetch "download of $Url failed: $lastError"
-}
-
-# Empty when the file carries a valid Authenticode signature whose signer's
-# common name is $SlSignerCn; otherwise the reason.
-function Get-NvidiaSignatureProblem([string]$Path) {
-    $sig = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($sig.Status -ne 'Valid') { return "signature status $($sig.Status): $($sig.StatusMessage)" }
-    if (-not $sig.SignerCertificate) { return 'no signer certificate' }
-    $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-    if ($cn -ne $SlSignerCn) { return "signed by '$cn', expected '$SlSignerCn'" }
-    return ''
 }
 
 # --- NVAPI -----------------------------------------------------------------
@@ -363,6 +363,67 @@ function Expand-StreamlineZip([string]$Zip, [string]$Stage) {
     Write-Host "  extracted $($extracted.Count) files ($($SlLicenses.Count) license files)"
 }
 
+# --- dlssg_for_sm86 ---------------------------------------------------------
+
+function Invoke-SpoofFetch {
+    $pins = Get-SpoofPins $SpoofPins
+    $dir = Join-Path $DepsDir $script:AcdbSpoofDirName
+    $downloadDir = Join-Path $DepsDir 'download'
+    $source = ''
+    if ($SpoofSourceDir) { $source = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SpoofSourceDir) }
+    Write-Host ("  $($script:AcdbSpoofProject) $($script:AcdbSpoofVersion): $($SpoofFiles -join ', ') of commit " +
+        "$($script:AcdbSpoofCommit) of github.com/$($script:AcdbSpoofRepository)")
+    $todo = @()
+    foreach ($name in $SpoofFiles) {
+        $target = Join-Path $dir $name
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            $problem = Get-SpoofFileProblem $target $pins[$name]
+            if (-not $problem) {
+                Write-Host "  $name present and verified"
+                continue
+            }
+            Write-Host "  $target does not match its pins ($problem); deleted, fetching it again"
+            Remove-IfPresent $target
+        }
+        $todo += $name
+    }
+    # Everything fetched stays in <DepsDir>\download until all of it is verified.
+    $pending = @()
+    try {
+        foreach ($name in $todo) {
+            $temp = Join-Path $downloadDir $name
+            $pending += $temp
+            if ($source) {
+                $from = Join-Path $source $name
+                Write-Host "  copying $from (-SpoofSourceDir, no download)"
+                if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { Stop-Fetch "-SpoofSourceDir has no $name" }
+                New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+                Copy-Item -LiteralPath $from -Destination $temp -Force
+            } else {
+                $size = ''
+                if ($null -ne $pins[$name].size) { $size = " ($($pins[$name].size) bytes)" }
+                Write-Host "  downloading $(Get-SpoofUrl $name)$size"
+                Invoke-Download (Get-SpoofUrl $name) $temp
+            }
+            $problem = Get-SpoofFileProblem $temp $pins[$name]
+            if ($problem) { Stop-Fetch "the downloaded $problem; the download was deleted" }
+            $what = "git blob SHA-1 $($pins[$name].gitSha1)"
+            if ($pins[$name].sha256) { $what += ", SHA-256 $($pins[$name].sha256)" }
+            Write-Host "  $name verified ($what)"
+        }
+        if ($todo.Count -gt 0) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        foreach ($name in $todo) { Move-Item -LiteralPath (Join-Path $downloadDir $name) -Destination (Join-Path $dir $name) }
+        $pending = @()
+    } finally {
+        foreach ($f in $pending) {
+            Remove-IfPresent $f
+            Remove-IfPresent "$f.partial"
+        }
+        Remove-IfEmptyDir $downloadDir
+    }
+    Write-Host "$($script:AcdbSpoofProject): $($SpoofFiles.Count) files in $dir ($($todo.Count) fetched)"
+}
+
 # --- Main ------------------------------------------------------------------
 
 try {
@@ -374,6 +435,7 @@ try {
     Write-Host "fetch-deps: $DepsDir"
     if ($Only -contains 'Nvapi') { Invoke-NvapiFetch }
     if ($Only -contains 'Streamline') { Invoke-StreamlineFetch }
+    if ($Only -contains 'Spoof') { Invoke-SpoofFetch }
     Write-Host 'fetch-deps: OK'
     exit 0
 } catch {

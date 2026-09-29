@@ -604,3 +604,170 @@ function Copy-FileViaTemp([string]$Source, [string]$Target) {
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
     [System.IO.File]::WriteAllText($Path, $Text, $script:Utf8NoBom)
 }
+
+# The id git gives a file's content: SHA-1 over "blob <size>\0" + bytes.
+function Get-GitBlobSha1([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $header = [System.Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        [void]$sha.TransformBlock($header, 0, $header.Length, $null, 0)
+        [void]$sha.TransformFinalBlock($bytes, 0, $bytes.Length)
+        return ([BitConverter]::ToString($sha.Hash) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+# ---------------------------------------------------------------------------
+# GPU architecture from the PCI device ID: a port of src/gpu_info.cpp, which
+# tools\test-dev-scripts.ps1 compares this table with. Device IDs from the
+# PCI ID Repository, version 2026.09.25; each range spans the lowest to the
+# highest GPU-function ID of the listed chips.
+
+$script:AcdbNvidiaVendorId = 0x10DE
+# GA100 (A100) is SM80; every other Ampere chip is SM86.
+$script:AcdbGa100First = 0x2080
+$script:AcdbGa100Last = 0x20FF
+# The lowest Turing ID (TU102, TITAN RTX). NVIDIA IDs below it are older chips.
+$script:AcdbFirstTuringId = 0x1E02
+$script:AcdbGpuRanges = @(
+    [pscustomobject]@{ First = 0x1E02; Last = 0x1FF9; Arch = 'Turing' }     # TU102, TU104, TU106, TU117
+    [pscustomobject]@{ First = 0x2080; Last = 0x20FF; Arch = 'Ampere' }     # GA100
+    [pscustomobject]@{ First = 0x2182; Last = 0x21D1; Arch = 'Turing' }     # TU116
+    [pscustomobject]@{ First = 0x2200; Last = 0x223F; Arch = 'Ampere' }     # GA102
+    [pscustomobject]@{ First = 0x2414; Last = 0x25FB; Arch = 'Ampere' }     # GA103, GA104, GA106, GA107
+    [pscustomobject]@{ First = 0x2681; Last = 0x28F8; Arch = 'Ada' }        # AD102, AD103, AD104, AD106, AD107
+    [pscustomobject]@{ First = 0x2B85; Last = 0x2DF9; Arch = 'Blackwell' }  # GB202, GB203, GB206, GB207
+    [pscustomobject]@{ First = 0x2F04; Last = 0x2F58; Arch = 'Blackwell' }  # GB205
+)
+
+# NonNvidia, OlderNvidia, Turing, Ampere, Ada, Blackwell or Unknown (an
+# NVIDIA ID above Turing that the table does not know).
+function Get-GpuArch([int]$VendorId, [int]$DeviceId) {
+    if ($VendorId -ne $script:AcdbNvidiaVendorId) { return 'NonNvidia' }
+    foreach ($r in $script:AcdbGpuRanges) {
+        if ($DeviceId -ge $r.First -and $DeviceId -le $r.Last) { return $r.Arch }
+    }
+    if ($DeviceId -lt $script:AcdbFirstTuringId) { return 'OlderNvidia' }
+    return 'Unknown'
+}
+
+# An SM86 Ampere chip (GA102 to GA107, desktop and laptop): the GPUs
+# dlssg_for_sm86 is for.
+function Test-AmpereSm86([int]$VendorId, [int]$DeviceId) {
+    return (Get-GpuArch $VendorId $DeviceId) -eq 'Ampere' -and
+        ($DeviceId -lt $script:AcdbGa100First -or $DeviceId -gt $script:AcdbGa100Last)
+}
+
+# The vendor and device ID in a PNPDeviceID such as
+# PCI\VEN_10DE&DEV_2206&SUBSYS_38971462&REV_A1\...; $null without them.
+function ConvertFrom-PnpDeviceId([string]$PnpDeviceId) {
+    $m = [regex]::Match("$PnpDeviceId", '(?i)VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})')
+    if (-not $m.Success) { return $null }
+    return [pscustomobject]@{
+        VendorId = [Convert]::ToInt32($m.Groups[1].Value, 16)
+        DeviceId = [Convert]::ToInt32($m.Groups[2].Value, 16)
+    }
+}
+
+function New-GpuAdapter([int]$VendorId, [int]$DeviceId, [string]$Name) {
+    return [pscustomobject]@{
+        VendorId = $VendorId
+        DeviceId = $DeviceId
+        Id       = '{0:X4}:{1:X4}' -f $VendorId, $DeviceId
+        Name     = $Name
+        Arch     = Get-GpuArch $VendorId $DeviceId
+        Sm86     = [bool](Test-AmpereSm86 $VendorId $DeviceId)
+    }
+}
+
+# Every display adapter, from the PNPDeviceID of each Win32_VideoController.
+# $DeviceIds ('VVVV:DDDD' PCI IDs in hex, one per adapter; "a,b" counts as
+# two) replaces that query, for tests on a PC whose own GPU does not matter.
+function Get-GpuAdapters([string[]]$DeviceIds) {
+    $adapters = @()
+    $ids = @($DeviceIds | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($ids.Count -gt 0) {
+        foreach ($id in $ids) {
+            if ($id -notmatch '^([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})$') {
+                Stop-Refused "-GpuDeviceIds '$id' is not a PCI vendor:device ID such as 10DE:2206."
+            }
+            $adapters += New-GpuAdapter ([Convert]::ToInt32($Matches[1], 16)) ([Convert]::ToInt32($Matches[2], 16)) 'an adapter from -GpuDeviceIds'
+        }
+        return $adapters
+    }
+    foreach ($vc in @(Get-CimInstance -ClassName Win32_VideoController -ErrorAction Stop)) {
+        $pci = ConvertFrom-PnpDeviceId ([string]$vc.PNPDeviceID)
+        if ($pci) { $adapters += New-GpuAdapter $pci.VendorId $pci.DeviceId ([string]$vc.Name) }
+    }
+    return $adapters
+}
+
+# ---------------------------------------------------------------------------
+# dlssg_for_sm86 (spec 10): exactly two files of commit 9621db5 of
+# sdli1995/dlssg_for_sm86, the files of its tag 0.3.5. The GitHub contents
+# API lists both as plain git blobs at that commit (version.dll 30021920
+# bytes, not a Git LFS pointer; the repository has no .gitattributes), so
+# raw.githubusercontent.com/<repository>/<commit>/<name> serves them. Never
+# the repository archive, which holds archive/0.1.0/version.dll (flagged by
+# Defender), and nothing under alternatives/.
+
+$script:AcdbSpoofProject = 'dlssg_for_sm86'
+$script:AcdbSpoofVersion = '0.3.5'
+$script:AcdbSpoofRepository = 'sdli1995/dlssg_for_sm86'
+$script:AcdbSpoofCommit = '9621db573e07ed54f50c15bbb585ed9a7bdfac28'
+$script:AcdbSpoofNames = @('version.dll', 'dlssg_sm86.ini')
+# The folder under deps\ that fetch-deps.ps1 stages the files in.
+$script:AcdbSpoofDirName = "dlssg_for_sm86-$($script:AcdbSpoofVersion)"
+
+function Get-SpoofUrl([string]$Name) {
+    return "https://raw.githubusercontent.com/$($script:AcdbSpoofRepository)/$($script:AcdbSpoofCommit)/$Name"
+}
+
+# Name -> { gitSha1, sha256 ($null: not pinned), size ($null: not pinned) }.
+# $PinsFile, for tests only, gives other pins for local fixture files as JSON:
+# {"version.dll": {"gitSha1": "...", "sha256": "...", "size": 123}, ...}.
+function Get-SpoofPins([string]$PinsFile) {
+    $pins = [ordered]@{}
+    if (-not $PinsFile) {
+        $pins['version.dll'] = [pscustomobject]@{
+            gitSha1 = 'efd92261f2b74e0a0fb927d74bce7a1c0c2413f7'
+            sha256  = 'c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838'
+            size    = [long]30021920
+        }
+        $pins['dlssg_sm86.ini'] = [pscustomobject]@{ gitSha1 = '2c97d64f2239b7d511f7d0a36c16e149dd3329f6'; sha256 = $null; size = [long]3548 }
+        return $pins
+    }
+    if (-not (Test-Path -LiteralPath $PinsFile -PathType Leaf)) { Stop-Refused "-SpoofPins file not found: $PinsFile" }
+    $json = [System.IO.File]::ReadAllText($PinsFile) | ConvertFrom-Json
+    foreach ($name in $script:AcdbSpoofNames) {
+        $p = $json.PSObject.Properties[$name]
+        if (-not $p -or -not $p.Value.PSObject.Properties['gitSha1'] -or -not $p.Value.gitSha1) {
+            Stop-Refused "-SpoofPins $PinsFile has no gitSha1 for $name."
+        }
+        $v = $p.Value
+        $sha256 = $null
+        if ($v.PSObject.Properties['sha256'] -and $v.sha256) { $sha256 = ([string]$v.sha256).ToLowerInvariant() }
+        $size = $null
+        if ($v.PSObject.Properties['size'] -and $null -ne $v.size) { $size = [long]$v.size }
+        $pins[$name] = [pscustomobject]@{ gitSha1 = ([string]$v.gitSha1).ToLowerInvariant(); sha256 = $sha256; size = $size }
+    }
+    return $pins
+}
+
+# Empty when the file matches its pins (size, git blob SHA-1, SHA-256);
+# otherwise the first mismatch.
+function Get-SpoofFileProblem([string]$Path, $Pin) {
+    $name = Split-Path -Leaf $Path
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "$name is missing" }
+    $size = (Get-Item -LiteralPath $Path).Length
+    if ($null -ne $Pin.size -and $size -ne $Pin.size) { return "$name is $size bytes, expected $($Pin.size) bytes" }
+    $git = Get-GitBlobSha1 $Path
+    if ($git -ne $Pin.gitSha1) { return "$name has git blob SHA-1 $git, expected $($Pin.gitSha1)" }
+    if ($Pin.sha256) {
+        $sha = Get-Sha256OfFile $Path
+        if ($sha -ne $Pin.sha256) { return "$name has SHA-256 $sha, expected $($Pin.sha256)" }
+    }
+    return ''
+}
