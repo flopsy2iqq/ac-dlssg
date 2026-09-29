@@ -147,7 +147,7 @@ try {
         "| ``ac-dlssg.dll`` (``files\ac-dlssg.dll`` in the zip) | ``$dllSha`` |"
         ''
         'Both files have a GitHub build provenance attestation from the release workflow of this repository.'
-        'In standalone mode the installer copies ac-dlssg.dll into the game folder as dxgi.dll, so that file verifies too.'
+        'The installed bridge is the same file, so it verifies too: <game>\ac-dlssg.dll in ReShade mode, <game>\dxgi.dll in standalone mode.'
         ''
         "Verify with: ``gh attestation verify <file> --repo $Repo``"
         ''
