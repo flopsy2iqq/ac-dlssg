@@ -23,11 +23,14 @@
       EnableProxyLibrary/ProxyLibrary lines) in
       <game>\ac-dlssg\install\dev-manifest.json before changing anything;
     - copies the Streamline DLLs and the license files next to them into
-      <game>\ac-dlssg\sl, then the CSP Lua app (apps\lua\AcDlssg, which
-      publishes the camera to the bridge) into <game>\apps\lua\AcDlssg, then
-      the bridge DLL, each file through a .new file, a hash check and a
+      <game>\ac-dlssg\sl, then the dlssg_for_sm86 files given with
+      -SpoofInstall next to acs.exe, then the CSP Lua app (apps\lua\AcDlssg,
+      which publishes the camera to the bridge) into <game>\apps\lua\AcDlssg,
+      then the bridge DLL, each file through a .new file, a hash check and a
       rename (spec 12 order). A <game>\apps\lua\AcDlssg that no previous run
       of this script installed is refused in every mode, even with -Force;
+    - records the dlssg_for_sm86 files: the ones it copied as installed, the
+      ones named with -SpoofFound as found (dev-uninstall.ps1 leaves those);
     - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults, the M3 keys
       and log_level=debug when it does not exist, and names the M3 keys an
       existing one lacks (the bridge then uses their defaults).
@@ -76,6 +79,17 @@
 .PARAMETER Mode
   Auto (default), ReShade or Standalone; see the description.
 
+.PARAMETER SpoofInstall
+  dlssg_for_sm86 files (version.dll, dlssg_sm86.ini) to install next to
+  acs.exe, already checked against their pins: the test package's
+  install.ps1 passes the ones scripts\fetch-deps.ps1 staged. Default: none.
+
+.PARAMETER SpoofFound
+  Names of dlssg_for_sm86 files that are already next to acs.exe as the
+  pinned version. They are left as they are and recorded as found, so that
+  dev-uninstall.ps1 leaves them; a file that an earlier run installed and
+  that is unchanged stays recorded as installed.
+
 .PARAMETER Force
   Replace installed files that were changed outside this script.
 
@@ -92,6 +106,8 @@ param(
     [string]$LuaApp,
     [ValidateSet('Auto', 'ReShade', 'Standalone')]
     [string]$Mode = 'Auto',
+    [string[]]$SpoofInstall = @(),
+    [string[]]$SpoofFound = @(),
     [switch]$Force
 )
 
@@ -443,6 +459,43 @@ try {
         }
         $slPlans += New-FilePlan $file $slTarget $rel $slRecorded[$rel.ToLowerInvariant()]
     }
+    # dlssg_for_sm86 next to acs.exe (spec 10), after Streamline and before
+    # the Lua app (spec 12 order). A file counts as ours only while the
+    # manifest records it as installed.
+    $spoofOld = @()
+    if ($manifest -and $manifest.PSObject.Properties['spoof'] -and $manifest.spoof) { $spoofOld = @($manifest.spoof.files) }
+    $spoofRec = @{}
+    foreach ($f in $spoofOld) { $spoofRec[([string]$f.path).ToLowerInvariant()] = $f }
+    $spoofPlans = @()
+    foreach ($file in @($SpoofInstall | Where-Object { $_ })) {
+        $name = Split-Path -Leaf $file
+        if ($script:AcdbSpoofNames -notcontains $name) {
+            Stop-Refused "-SpoofInstall $file is not one of the dlssg_for_sm86 files ($($script:AcdbSpoofNames -join ', '))."
+        }
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { Stop-Refused "-SpoofInstall $file was not found." }
+        $rec = $spoofRec[$name.ToLowerInvariant()]
+        $recorded = $null
+        if ($rec -and [string]$rec.origin -eq 'installed') { $recorded = [string]$rec.sha256 }
+        $spoofPlans += New-FilePlan (Get-NormalizedPath (Resolve-Path -LiteralPath $file).ProviderPath) (Join-Path $game $name) $name $recorded
+    }
+    $spoofFoundFiles = @()
+    foreach ($name in @($SpoofFound | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        if ($script:AcdbSpoofNames -notcontains $name) {
+            Stop-Refused "-SpoofFound $name is not one of the dlssg_for_sm86 files ($($script:AcdbSpoofNames -join ', '))."
+        }
+        if (@($spoofPlans | Where-Object { $_.Rel -ieq $name }).Count -gt 0) { Stop-Refused "$name is named by both -SpoofInstall and -SpoofFound." }
+        $path = Join-Path $game $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Stop-Refused "-SpoofFound names $name, but $path does not exist." }
+        $hash = Get-Sha256OfFile $path
+        $rec = $spoofRec[$name.ToLowerInvariant()]
+        if ($rec -and [string]$rec.origin -eq 'installed' -and [string]$rec.sha256 -eq $hash) {
+            $spoofFoundFiles += [ordered]@{ path = $name; sha256 = $hash; origin = 'installed' }
+            Step "$path is the dlssg_for_sm86 file an earlier run installed; kept, and still recorded as installed"
+        } else {
+            $spoofFoundFiles += [ordered]@{ path = $name; sha256 = $hash; origin = 'found' }
+            Step "$path was already there; left as it is and recorded as found (dev-uninstall.ps1 leaves it)"
+        }
+    }
     # The Lua app after Streamline and before the bridge (spec 12 order). A
     # folder of that name that this script did not install may be another app:
     # refused. The folders a first install creates are recorded, deepest first,
@@ -472,7 +525,7 @@ try {
     $dllRecorded = $null
     if ($manifest) { $dllRecorded = [string]$manifest.dll.sha256 }
     $dllPlan = New-FilePlan $source $target $targetRel $dllRecorded
-    $plans = @($slPlans) + @($luaPlans) + @($dllPlan)
+    $plans = @($slPlans) + @($spoofPlans) + @($luaPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
     $foreign = @($plans | Where-Object { $_.Foreign })
     if ($foreign.Count -gt 0 -and -not $Force) {
@@ -549,10 +602,39 @@ try {
     foreach ($f in $luaOldFiles) {
         if (-not ($luaPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $luaFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
     }
-    # Schema 2 adds mode, schema 3 luaApp; dev-uninstall.ps1 reads a schema 1
-    # manifest as reshade and one without luaApp as one without the Lua app.
+    # dlssg_for_sm86: a file copied now is installed, unless the same file was
+    # already there and the manifest does not record it as ours; earlier
+    # records this run does not touch are kept.
+    $spoofFiles = @()
+    foreach ($plan in $spoofPlans) {
+        $rec = $spoofRec[$plan.Rel.ToLowerInvariant()]
+        $origin = 'installed'
+        if ($plan.TargetHash -and $plan.TargetHash -eq $plan.SourceHash -and -not ($rec -and [string]$rec.origin -eq 'installed')) { $origin = 'found' }
+        $spoofFiles += [ordered]@{ path = $plan.Rel; sha256 = $plan.SourceHash; origin = $origin }
+    }
+    $spoofFiles += $spoofFoundFiles
+    $spoofRecord = $null
+    if ($spoofFiles.Count -gt 0) {
+        foreach ($f in $spoofOld) {
+            if (-not ($spoofFiles | Where-Object { $_.path -ieq [string]$f.path })) {
+                $spoofFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256; origin = [string]$f.origin }
+            }
+        }
+        $spoofRecord = [ordered]@{
+            project    = $script:AcdbSpoofProject
+            version    = $script:AcdbSpoofVersion
+            repository = $script:AcdbSpoofRepository
+            commit     = $script:AcdbSpoofCommit
+            files      = $spoofFiles
+        }
+    } elseif ($manifest -and $manifest.PSObject.Properties['spoof'] -and $manifest.spoof) {
+        $spoofRecord = $manifest.spoof
+    }
+    # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof; dev-uninstall.ps1
+    # reads a schema 1 manifest as reshade, and one without luaApp or spoof
+    # as one without the Lua app or the spoof.
     $newManifest = [ordered]@{
-        schema       = 3
+        schema       = 4
         tool         = 'tools\dev-install.ps1'
         mode         = $chosen.Mode
         state        = 'installing'
@@ -561,6 +643,7 @@ try {
         gameDir      = $game
         reshade      = $reshadeRecord
         streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
+        spoof        = $spoofRecord
         luaApp       = [ordered]@{ source = $luaSourceDir; dir = $script:AcdbLuaAppRelDir; createdDirs = $luaCreatedDirs; files = $luaFiles }
         dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }

@@ -33,12 +33,20 @@
       dev-install.ps1 -Force replaced) unless -RemoveData is given, which
       deletes the whole <game>\ac-dlssg folder.
 
+  In both modes the dlssg_for_sm86 files next to acs.exe that the manifest
+  records as installed are deleted, each only if it is still the version
+  installed; files it records as found (they were there before) stay. With
+  -RemoveData it also deletes dlssg_for_sm86's own data, <game>\dlssg_sm86
+  and %LOCALAPPDATA%\DlssgSm86, but only when the install put
+  dlssg_for_sm86 there and no version.dll is left in the game folder.
+
 .PARAMETER GameDir
   The Assetto Corsa folder (the one with acs.exe). Default: found through
   Steam's libraryfolders.vdf.
 
 .PARAMETER RemoveData
-  Also delete <game>\ac-dlssg, including logs and the config.
+  Also delete <game>\ac-dlssg, including logs and the config, and the data
+  of a dlssg_for_sm86 that the install put there (see above).
 
 .PARAMETER Force
   Standalone mode: uninstall even when <game>\dxgi.dll is not the recorded
@@ -307,7 +315,52 @@ try {
         }
     }
 
-    # 5. Data.
+    # 4c. dlssg_for_sm86 next to acs.exe: the files the install put there, each
+    #     only while it is the version installed; found files stay.
+    $spoofOurs = $false
+    if ($manifest.PSObject.Properties['spoof'] -and $manifest.spoof) {
+        foreach ($f in @($manifest.spoof.files)) {
+            $name = [string]$f.path
+            if ($script:AcdbSpoofNames -notcontains $name) {
+                Step "WARNING: the manifest names $name as a dlssg_for_sm86 file, which it is not; left alone"
+                continue
+            }
+            $path = Join-Path $game $name
+            if ([string]$f.origin -ne 'installed') {
+                if (Test-Path -LiteralPath $path) { Step "kept $path (it was there before the install)" }
+                continue
+            }
+            $spoofOurs = $true
+            if (Test-Path -LiteralPath "$path.new") { Remove-Item -LiteralPath "$path.new" -Force }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Step "$path is already gone"; continue }
+            $hash = Get-Sha256OfFile $path
+            if ($hash -eq [string]$f.sha256) {
+                Remove-Item -LiteralPath $path -Force
+                Step "deleted $path"
+            } else {
+                Step "WARNING: $path is not the file dev-install.ps1 copied (SHA-256 $hash); left in place. Delete it by hand if you no longer use it."
+            }
+        }
+    }
+
+    # 5. Data. dlssg_for_sm86 keeps its logs in <game>\dlssg_sm86 and its data
+    #    in %LOCALAPPDATA%\DlssgSm86; they go only when the install put the
+    #    spoof there and its version.dll is gone.
+    if ($RemoveData) {
+        $spoofData = @(Join-Path $game 'dlssg_sm86')
+        if ($env:LOCALAPPDATA) { $spoofData += Join-Path $env:LOCALAPPDATA 'DlssgSm86' }
+        $spoofGone = -not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))
+        foreach ($d in @($spoofData | Where-Object { Test-Path -LiteralPath $_ })) {
+            if ($spoofOurs -and $spoofGone) {
+                Remove-Item -LiteralPath $d -Recurse -Force
+                Step "deleted $d (-RemoveData)"
+            } elseif ($spoofOurs) {
+                Step "kept $d, the data of dlssg_for_sm86: a version.dll is still in the game folder"
+            } else {
+                Step "kept $d, the data of dlssg_for_sm86, which the install did not put there"
+            }
+        }
+    }
     if ($RemoveData) {
         if (Test-Path -LiteralPath $dataDir) {
             Remove-Item -LiteralPath $dataDir -Recurse -Force
