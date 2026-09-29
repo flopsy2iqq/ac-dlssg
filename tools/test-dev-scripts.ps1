@@ -35,6 +35,15 @@
   One case reads collect-sysinfo.ps1 without running it: the wording of its
   HAGS section, and that it contains no command that changes the system.
 
+  The SP cases run the test package's install.ps1 and uninstall.ps1 with the
+  dlssg_for_sm86 step (spec 10). They never download: the spoof files are
+  local fixtures under -FakeRoot (-SpoofSourceDir) with their own pins
+  (-SpoofPins), and the GPU is injected with -GpuDeviceIds, because the PC
+  that runs the tests may well have an RTX 30. The runner refuses to start
+  the package install.ps1 without -NoSpoof or -SpoofSourceDir.
+  LOCALAPPDATA also points into -FakeRoot, so that the uninstaller's
+  %LOCALAPPDATA%\DlssgSm86 is a fake one too.
+
   -Case runs only the named cases (their ids, such as SA1 or LA2; wildcards
   allowed); the fixtures are built as always.
 
@@ -99,6 +108,11 @@ $tempDir = Join-Path $FakeRoot 'tmp'
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 $env:TEMP = $tempDir
 $env:TMP = $tempDir
+# uninstall.ps1 -RemoveData deletes %LOCALAPPDATA%\DlssgSm86; the children
+# get a fake LOCALAPPDATA so that the real one is never touched.
+$fakeLocalAppData = Join-Path $FakeRoot 'localappdata'
+New-Item -ItemType Directory -Path $fakeLocalAppData | Out-Null
+$env:LOCALAPPDATA = $fakeLocalAppData
 
 # The child processes inherit this; only the env-override cases set it.
 Remove-Item Env:\RESHADE_BASE_PATH_OVERRIDE -ErrorAction SilentlyContinue
@@ -143,12 +157,26 @@ function Test-UnderFakeRoot([string]$Path) {
     return $full.StartsWith($FakeRoot + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
+# Safety net for the package scripts: install.ps1 (and install.bat) download
+# dlssg_for_sm86 on an RTX 30, and install and uninstall start again with
+# administrator rights (a UAC prompt) when the game folder is not writable.
+function Assert-PackageArguments([string]$Script, [string[]]$Arguments) {
+    $leaf = Split-Path -Leaf $Script
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoSpoof' -and $Arguments -notcontains '-SpoofSourceDir') {
+        throw "refusing to run $Script without -NoSpoof or -SpoofSourceDir; it could download dlssg_for_sm86"
+    }
+    if (@('install.ps1', 'install.bat', 'uninstall.ps1', 'uninstall.bat') -contains $leaf -and $Arguments -notcontains '-NoElevate') {
+        throw "refusing to run $Script without -NoElevate; it could ask Windows for administrator rights"
+    }
+}
+
 function Invoke-Tool([string]$Script, [string[]]$Arguments) {
     # Safety net: without -GameDir the scripts would find the real game.
     $i = [array]::IndexOf($Arguments, '-GameDir')
     if ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1])) {
         throw "refusing to run $Script without a -GameDir under $FakeRoot"
     }
+    Assert-PackageArguments $Script $Arguments
     $eap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -1530,7 +1558,11 @@ function Get-ZipEntryNames([string]$Zip) {
     try { return @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }) } finally { $archive.Dispose() }
 }
 
-Invoke-Case 'PK: the friend test package' {
+# The package is built once, from the fake bridge DLL; PK checks the build,
+# and the SP cases each use their own copy of it (their own deps\ folder).
+$script:testPackage = $null
+function Get-TestPackage {
+    if ($script:testPackage) { return $script:testPackage }
     $out = Join-Path $FakeRoot 'package'
     $eap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -1541,30 +1573,156 @@ Invoke-Case 'PK: the friend test package' {
     } finally {
         $ErrorActionPreference = $eap
     }
-    $text | ForEach-Object { Write-Host "      | $_" }
-    Check ($code -eq 0) 'make-test-package exits 0'
-    $pkg = Join-Path $out 'ac-dlssg-9.8.7-test'
+    $script:testPackage = [pscustomobject]@{ Code = $code; Text = $text; Dir = (Join-Path $out 'ac-dlssg-9.8.7-test') }
+    return $script:testPackage
+}
+
+function New-PackageCopy([string]$Name) {
+    $p = Get-TestPackage
+    if ($p.Code -ne 0) { throw 'make-test-package failed; see the PK case' }
+    $dest = Join-Path $FakeRoot "packages\$Name\$(Split-Path -Leaf $p.Dir)"
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    # As built: without files\deps and the log zips that the PK case adds.
+    foreach ($item in @(Get-ChildItem -LiteralPath $p.Dir -Force)) {
+        if ($item.PSIsContainer -and @('files', 'tools') -contains $item.Name) {
+            $sub = Join-Path $dest $item.Name
+            New-Item -ItemType Directory -Path $sub -Force | Out-Null
+            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force | Where-Object { $_.Name -ne 'deps' -and $_.Name -notlike 'ac-dlssg-logs-*' })) {
+                Copy-Item -LiteralPath $child.FullName -Destination $sub -Recurse
+            }
+        } else {
+            Copy-Item -LiteralPath $item.FullName -Destination $dest -Recurse
+        }
+    }
+    return $dest
+}
+
+# Runs a package .bat through cmd.exe, with -FakeRoot as the current folder
+# and an empty stdin; the same safety net as Invoke-Tool.
+function Invoke-Bat([string]$Bat, [string[]]$Arguments) {
+    $i = [array]::IndexOf($Arguments, '-GameDir')
+    if ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1])) {
+        throw "refusing to run $Bat without a -GameDir under $FakeRoot"
+    }
+    Assert-PackageArguments $Bat $Arguments
+    $id = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $stdin = Join-Path $tempDir "bat-$id-in.txt"
+    $stdout = Join-Path $tempDir "bat-$id-out.txt"
+    $stderr = Join-Path $tempDir "bat-$id-err.txt"
+    [IO.File]::WriteAllText($stdin, '')
+    $argText = (@($Arguments | ForEach-Object { ConvertTo-CommandLineArg $_ })) -join ' '
+    $proc = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/d /c ""' + $Bat + '" ' + $argText + '"') `
+        -WorkingDirectory $FakeRoot -RedirectStandardInput $stdin -RedirectStandardOutput $stdout -RedirectStandardError $stderr -NoNewWindow -PassThru
+    # Opened now, so that the exit code is still there after the wait.
+    [void]$proc.Handle
+    if (-not $proc.WaitForExit(600000)) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        throw "$Bat did not end within 10 minutes"
+    }
+    $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+    $text = [IO.File]::ReadAllText($stdout, $oem) + [IO.File]::ReadAllText($stderr, $oem)
+    foreach ($line in ($text -split "`r?`n")) { if ($line) { Write-Host "      | $line" } }
+    return [pscustomobject]@{ Code = $proc.ExitCode; Text = $text }
+}
+
+# dlssg_for_sm86 fixtures: a fake version.dll and dlssg_sm86.ini, and pins
+# files for them, correct ones and ones that each get one value wrong.
+$spoofNames = @('version.dll', 'dlssg_sm86.ini')
+$spoofSrc = Join-Path $FakeRoot 'spoof\src'
+New-FakePeDll (Join-Path $spoofSrc 'version.dll') @('GetFileVersionInfoW', 'VerQueryValueW') -Salt '-spoof'
+Write-Text (Join-Path $spoofSrc 'dlssg_sm86.ini') "; fake dlssg_for_sm86 settings for the tests`r`n[general]`r`nlog=1`r`n"
+
+function New-SpoofPinsFile([string]$Name, [hashtable]$Wrong = @{}) {
+    $pins = [ordered]@{}
+    foreach ($n in $spoofNames) {
+        $f = Join-Path $spoofSrc $n
+        $pins[$n] = [ordered]@{ gitSha1 = (Get-GitBlobSha1 $f); sha256 = (Get-Sha $f); size = (Get-Item -LiteralPath $f).Length }
+    }
+    foreach ($n in $Wrong.Keys) { foreach ($k in $Wrong[$n].Keys) { $pins[$n][$k] = $Wrong[$n][$k] } }
+    $path = Join-Path $FakeRoot "spoof\pins-$Name.json"
+    Write-Text $path ($pins | ConvertTo-Json -Depth 4)
+    return $path
+}
+$spoofPins = New-SpoofPinsFile 'good'
+
+function Get-SpoofArgs([string]$Gpu, [string]$Pins = $spoofPins) {
+    return @('-GpuDeviceIds', $Gpu, '-SpoofSourceDir', $spoofSrc, '-SpoofPins', $Pins)
+}
+
+function Invoke-PackageInstall([string]$Pkg, [string]$Game, [string[]]$Extra) {
+    return Invoke-Tool (Join-Path $Pkg 'scripts\install.ps1') (@('-GameDir', $Game, '-StreamlineDir', $slReal, '-NoPause', '-NoElevate') + @($Extra))
+}
+
+function Invoke-PackageUninstall([string]$Pkg, [string]$Game, [switch]$RemoveData) {
+    $a = @('-GameDir', $Game, '-NoPause', '-NoElevate')
+    if ($RemoveData) { $a += '-RemoveData' }
+    return Invoke-Tool (Join-Path $Pkg 'scripts\uninstall.ps1') $a
+}
+
+function Get-SpoofRecord($Manifest, [string]$Name) {
+    if (-not $Manifest.PSObject.Properties['spoof'] -or -not $Manifest.spoof) { return $null }
+    $rec = @($Manifest.spoof.files | Where-Object { $_.path -eq $Name })
+    if ($rec.Count -ne 1) { return $null }
+    return $rec[0]
+}
+
+function Test-SpoofInstalled([string]$Game) {
+    foreach ($n in $spoofNames) {
+        $p = Join-Path $Game $n
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $false }
+        if ((Get-Sha $p) -ne (Get-Sha (Join-Path $spoofSrc $n))) { return $false }
+    }
+    return $true
+}
+
+function Test-NoSpoofFiles([string]$Game) {
+    return @($spoofNames | Where-Object { Test-Path -LiteralPath (Join-Path $Game $_) }).Count -eq 0
+}
+
+function Get-StagedSpoofDir([string]$Pkg) { return Join-Path $Pkg 'files\deps\dlssg_for_sm86-0.3.5' }
+
+# Every file below $Dir with its hash, for "nothing changed" checks.
+function Get-TreeState([string]$Dir) {
+    return (@(Get-ChildItem -LiteralPath $Dir -Recurse -Force | Sort-Object FullName | ForEach-Object {
+                if ($_.PSIsContainer) { "$($_.FullName)|dir" } else { "$($_.FullName)|$(Get-Sha $_.FullName)" }
+            }) -join "`n")
+}
+
+$spoofNoticePatterns = @('sdli1995', 'Coldwood1026', 'no LICENSE file', 'nvngx_dlssg\.dll', 'section 4\.d', 'NVIDIA RTX SDKs License',
+    'github\.com/sdli1995/dlssg_for_sm86')
+
+Invoke-Case 'PK: the friend test package' {
+    $p = Get-TestPackage
+    $p.Text | ForEach-Object { Write-Host "      | $_" }
+    Check ($p.Code -eq 0) 'make-test-package exits 0'
+    $pkg = $p.Dir
     $zip = "$pkg.zip"
     Check ((Test-Path -LiteralPath $pkg -PathType Container) -and (Test-Path -LiteralPath $zip -PathType Leaf)) 'the package folder and the zip next to it exist'
-    $expected = @('README-test.txt', 'ac-dlssg.dll', 'collect-logs.ps1', 'install.ps1', 'uninstall.ps1',
+    $expected = @('install.bat', 'files/ac-dlssg.dll', 'scripts/install.ps1', 'scripts/uninstall.ps1', 'scripts/collect-logs.ps1',
         'scripts/collect-sysinfo.ps1', 'scripts/dev-common.ps1', 'scripts/dev-install.ps1', 'scripts/dev-uninstall.ps1',
-        'scripts/fetch-deps.ps1') + @($luaRealFiles | ForEach-Object { 'apps/lua/AcDlssg/' + $_.Replace('\', '/') })
+        'scripts/fetch-deps.ps1', 'tools/uninstall.bat', 'tools/collect-logs.bat', 'tools/README-test.txt') +
+        @($luaRealFiles | ForEach-Object { 'files/apps/lua/AcDlssg/' + $_.Replace('\', '/') })
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | ForEach-Object { $_.FullName.Substring($pkg.Length + 1).Replace('\', '/') } | Sort-Object)
     Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
     $dlls = @($files | Where-Object { $_ -like '*.dll' })
-    Check ($dlls.Count -eq 1 -and $dlls[0] -eq 'ac-dlssg.dll') 'the package holds no DLL other than ac-dlssg.dll'
+    Check ($dlls.Count -eq 1 -and $dlls[0] -eq 'files/ac-dlssg.dll') 'the package holds no DLL other than files\ac-dlssg.dll'
+    $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })
+    $rootDirs = @(Get-ChildItem -LiteralPath $pkg -Directory -Force | ForEach-Object { $_.Name } | Sort-Object)
+    Check (($rootFiles -join '|') -eq 'install.bat' -and ($rootDirs -join '|') -eq 'files|scripts|tools') "the package root holds only install.bat and the folders files, scripts, tools ($(@($rootFiles + $rootDirs) -join ', '))"
+    $bats = @(Get-ChildItem -LiteralPath $pkg -Recurse -File -Filter '*.bat')
+    Check (@($bats | Where-Object { $b = Read-Bytes $_.FullName; @($b | Where-Object { $_ -gt 0x7E }).Count -gt 0 -or $utf8.GetString($b) -match '[^\r]\n' }).Count -eq 0) 'the .bat files are ASCII with CRLF line ends'
     $entries = @(Get-ZipEntryNames $zip | Where-Object { -not $_.EndsWith('/') })
     $zipDlls = @($entries | Where-Object { $_ -like '*.dll' })
-    Check ($zipDlls.Count -eq 1 -and $zipDlls[0] -eq 'ac-dlssg-9.8.7-test/ac-dlssg.dll') 'the zip holds no DLL other than ac-dlssg.dll'
+    Check ($zipDlls.Count -eq 1 -and $zipDlls[0] -eq 'ac-dlssg-9.8.7-test/files/ac-dlssg.dll') 'the zip holds no DLL other than files\ac-dlssg.dll'
     Check (@($entries | Where-Object { $_ -match '(?i)nvngx|dlssg_sm86|sl\.[a-z_]+\.dll|version\.dll' }).Count -eq 0) 'no NVIDIA or dlssg_for_sm86 file in the zip'
     Check ($entries.Count -eq $expected.Count) 'the zip holds the same files as the folder'
-    Check ((Get-Sha (Join-Path $pkg 'ac-dlssg.dll')) -eq (Get-Sha $dllV1)) 'the package DLL is the given build'
-    $readme = Read-Bytes (Join-Path $pkg 'README-test.txt')
+    Check ((Get-Sha (Join-Path $pkg 'files\ac-dlssg.dll')) -eq (Get-Sha $dllV1)) 'the package DLL is the given build'
+    $readme = Read-Bytes (Join-Path $pkg 'tools\README-test.txt')
     $readmeText = $utf8.GetString($readme)
     Check ((Test-HasBom $readme) -and $readmeText -match '[Ѐ-ӿ]') 'README-test.txt is UTF-8 with a BOM, in Russian'
-    Check ($readmeText -match 'install\.ps1' -and $readmeText -match 'collect-logs\.ps1' -and $readmeText -match 'uninstall\.ps1' -and
-        $readmeText -match '-ExecutionPolicy Bypass' -and $readmeText -match '9\.8\.7' -and
-        $readmeText -match (Get-Sha $dllV1)) 'README-test.txt names the scripts, the Bypass command, the version and the DLL hash'
+    Check ($readmeText -match 'install\.bat' -and $readmeText -match 'tools\\collect-logs\.bat' -and $readmeText -match 'tools\\uninstall\.bat' -and
+        $readmeText -notmatch '\.ps1' -and $readmeText -match '9\.8\.7' -and
+        $readmeText -match (Get-Sha $dllV1)) 'README-test.txt names install.bat and the two tools\ files (no .ps1), the version and the DLL hash'
     # Russian patterns as \u escapes: Windows PowerShell reads this BOM-less file in the ANSI code page.
     Check ($readmeText -match '\u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438[\u044f\u044e] \u043a\u0430\u0434\u0440\u043e\u0432' -and
         $readmeText -notmatch '\u0435\u0449\u0451\s+\u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u0430') 'README-test.txt says the build contains frame generation'
@@ -1574,15 +1732,22 @@ Invoke-Case 'PK: the friend test package' {
     Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86') "the only link is the dlssg_for_sm86 repository, no binary ($($urls -join ', '))"
     Check ($readmeText -notmatch '(?i)defender|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438|\u043e\u0442\u043a\u043b\u044e\u0447|smartscreen|smart app control') 'README-test.txt asks for no security feature to be turned off'
 
-    # install.ps1 from the package layout, standalone, Streamline from -StreamlineDir (no download).
+    # install.ps1 from the package layout, standalone, Streamline from
+    # -StreamlineDir and dlssg_for_sm86 from the fixtures (no download), on a
+    # laptop with an Intel GPU and an RTX 3050 Ti Laptop GPU.
     $game = New-FakeGame 'PK' -NoDxgi
-    $r = Invoke-Tool (Join-Path $pkg 'install.ps1') @('-GameDir', $game, '-StreamlineDir', $slReal, '-NoPause')
-    Check ($r.Code -eq 0) 'the package install.ps1 exits 0'
+    $r = Invoke-Bat (Join-Path $pkg 'install.bat') (@('-GameDir', $game, '-StreamlineDir', $slReal, '-NoPause', '-NoElevate') +
+        (Get-SpoofArgs '8086:9A49,10DE:25A0'))
+    Check ($r.Code -eq 0) 'install.bat, started from another folder, exits 0'
     Check ($r.Text -match 'mode: standalone') 'it installs in standalone mode (Auto, no dxgi.dll)'
     Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'the package DLL is <game>\dxgi.dll'
     Check (Test-SlMatches $game $slReal) 'the Streamline files are installed'
     Check ((Get-Manifest $game).mode -eq 'standalone') 'the manifest records standalone mode'
     Check (Test-LuaMatches $game $luaReal) 'the package installs the Lua app into apps\lua\AcDlssg'
+    Check (Test-SpoofInstalled $game) 'the RTX 3050 Ti Laptop GPU gets dlssg_for_sm86 next to acs.exe'
+    Check ($r.Text -match '10DE:25A0' -and $r.Text -notmatch '8086:9A49') 'it lists the NVIDIA adapter only'
+    Check ($r.Text -match '(?i)license' -and $r.Text -match '(?i)means you accept') 'it says that installing means accepting the licenses'
+    Check ($r.Text -notmatch '(?i)type y|\(y/n\)|press enter to accept') 'it asks nothing'
 
     # collect-logs.ps1: read-only, one zip next to the script. The Assetto
     # Corsa documents folder is a fake one (-AcDocsDir) with CSP's log, in
@@ -1601,12 +1766,13 @@ Invoke-Case 'PK: the friend test package' {
     Write-Text (Join-Path $acDocs 'logs\custom_shaders_patch.log') (($cspLog -join "`r`n") + "`r`n")
     Write-Text (Join-Path $acDocs 'logs\log.txt') "fake AC log`r`n"
     $before = @(Get-ChildItem -LiteralPath $game, $acDocs -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
-    $r = Invoke-Tool (Join-Path $pkg 'collect-logs.ps1') @('-GameDir', $game, '-AcDocsDir', $acDocs, '-SkipSysinfo', '-NoPause')
-    Check ($r.Code -eq 0) 'collect-logs.ps1 exits 0'
+    $r = Invoke-Bat (Join-Path $pkg 'tools\collect-logs.bat') @('-GameDir', $game, '-AcDocsDir', $acDocs, '-SkipSysinfo', '-NoPause')
+    Check ($r.Code -eq 0) 'tools\collect-logs.bat exits 0'
     $after = @(Get-ChildItem -LiteralPath $game, $acDocs -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
     Check (($before -join "`n") -eq ($after -join "`n")) 'collect-logs.ps1 changes nothing in the game or documents folder'
-    $logZips = @(Get-ChildItem -LiteralPath $pkg -Filter 'ac-dlssg-logs-*.zip' -File)
-    Check ($logZips.Count -eq 1) 'collect-logs.ps1 writes one zip next to itself'
+    $logZips = @(Get-ChildItem -LiteralPath (Join-Path $pkg 'tools') -Filter 'ac-dlssg-logs-*.zip' -File)
+    Check ($logZips.Count -eq 1) 'collect-logs.bat writes one zip next to itself, in tools\'
+    Check (@(Get-ChildItem -LiteralPath $pkg -Filter 'ac-dlssg-logs-*' -Recurse | Where-Object { $_.DirectoryName -ne (Join-Path $pkg 'tools') }).Count -eq 0) 'and nothing anywhere else'
     if ($logZips.Count -eq 1) {
         $names = @(Get-ZipEntryNames $logZips[0].FullName)
         foreach ($n in @('ac-dlssg/logs/bridge.log', 'ac-dlssg/logs/sl.log', 'ac-dlssg/ac-dlssg.ini',
@@ -1630,25 +1796,531 @@ Invoke-Case 'PK: the friend test package' {
         Check ($luaLines.Count -eq 3 -and @($luaLines | Where-Object { $_ -match 'Other|Unrelated' }).Count -eq 0) "acdlssg-lua-app.txt holds the app's three CSP log lines and nothing else ($($luaLines.Count) lines)"
         Remove-Item -LiteralPath $logZips[0].FullName
     }
-    Check (@(Get-ChildItem -LiteralPath $pkg -Directory | Where-Object { $_.Name -like 'ac-dlssg-logs-*' }).Count -eq 0) 'no staging folder left'
+    Check (@(Get-ChildItem -LiteralPath (Join-Path $pkg 'tools') -Directory | Where-Object { $_.Name -like 'ac-dlssg-logs-*' }).Count -eq 0) 'no staging folder left'
 
-    $r = Invoke-Tool (Join-Path $pkg 'uninstall.ps1') @('-GameDir', $game, '-NoPause')
-    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'the package uninstall.ps1 removes dxgi.dll'
+    $r = Invoke-Bat (Join-Path $pkg 'tools\uninstall.bat') @('-GameDir', $game, '-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'tools\uninstall.bat removes dxgi.dll'
+    Check (Test-NoSpoofFiles $game) 'and the dlssg_for_sm86 files it installed'
 
-    # Without -StreamlineDir the package uses <package>\deps as fetch-deps.ps1
-    # stages it; already staged, nothing is downloaded.
-    $deps = Join-Path $pkg 'deps'
+    # Without -StreamlineDir the package uses <package>\files\deps as
+    # fetch-deps.ps1 stages it; already staged, nothing is downloaded.
+    $deps = Join-Path $pkg 'files\deps'
     New-Item -ItemType Directory -Path $deps -Force | Out-Null
     $staged = Join-Path $tools '..\deps\streamline-2.14.1'
     Copy-Item -LiteralPath $staged -Destination (Join-Path $deps 'streamline-2.14.1') -Recurse
     Copy-Item -LiteralPath "$staged.sha256" -Destination (Join-Path $deps 'streamline-2.14.1.sha256')
-    $r = Invoke-Tool (Join-Path $pkg 'install.ps1') @('-GameDir', $game, '-AcceptNvidiaLicenses', '-NoPause')
-    Check ($r.Code -eq 0) 'install.ps1 without -StreamlineDir exits 0 with <package>\deps staged'
+    $r = Invoke-Tool (Join-Path $pkg 'scripts\install.ps1') @('-GameDir', $game, '-NoSpoof', '-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0) 'install.ps1 without -StreamlineDir exits 0 with <package>\files\deps staged'
     Check ($r.Text -match 'present and verified' -and $r.Text -notmatch 'downloading') 'it verifies the staged Streamline and downloads nothing'
     Check ($r.Text -match 'nvngx_dlss\.license\.txt') 'it names the NVIDIA license files'
+    Check ($r.Text -match '(?i)means you accept' -and $r.Text -notmatch '(?i)type y|\(y/n\)') 'it says that installing means accepting them, and asks nothing'
+    Check ($r.Text -match 'skipped \(-NoSpoof\)' -and (Test-NoSpoofFiles $game)) '-NoSpoof skips dlssg_for_sm86'
     Check (Test-SlMatches $game (Join-Path $deps 'streamline-2.14.1\bin\x64')) 'the staged Streamline files are installed'
-    $r = Invoke-Tool (Join-Path $pkg 'uninstall.ps1') @('-GameDir', $game, '-RemoveData', '-NoPause')
+    $r = Invoke-Tool (Join-Path $pkg 'scripts\uninstall.ps1') @('-GameDir', $game, '-RemoveData', '-NoPause', '-NoElevate')
     Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'uninstall.ps1 -RemoveData removes everything'
+}
+
+# ---------------------------------------------------------------------------
+# dlssg_for_sm86 (spec 10): the package install.ps1 installs it on RTX 30.
+
+Invoke-Case 'SP0: GPU table, dlssg_for_sm86 pins, and install.ps1 asks nothing (static)' {
+    # The installer's device-ID table is a port of kRanges in src/gpu_info.cpp.
+    $cpp = [IO.File]::ReadAllText((Join-Path $tools '..\src\gpu_info.cpp'))
+    $consts = @{}
+    foreach ($m in [regex]::Matches($cpp, 'constexpr uint32_t (\w+) = (0x[0-9A-Fa-f]+);')) {
+        $consts[$m.Groups[1].Value] = [Convert]::ToInt32($m.Groups[2].Value, 16)
+    }
+    $toId = { param($t) if ($consts.ContainsKey($t)) { $consts[$t] } else { [Convert]::ToInt32($t, 16) } }
+    $cppRanges = @(foreach ($m in [regex]::Matches($cpp, '\{\s*(\w+),\s*(\w+),\s*GpuArch::(\w+)\s*\}')) {
+            '{0:X4}-{1:X4} {2}' -f (& $toId $m.Groups[1].Value), (& $toId $m.Groups[2].Value), $m.Groups[3].Value
+        })
+    $psRanges = @($script:AcdbGpuRanges | ForEach-Object { '{0:X4}-{1:X4} {2}' -f $_.First, $_.Last, $_.Arch })
+    Check ($cppRanges.Count -ge 8 -and ($cppRanges -join '|') -eq ($psRanges -join '|')) "the installer's GPU table is kRanges of src/gpu_info.cpp ($($psRanges -join ', '))"
+    Check ($script:AcdbFirstTuringId -eq $consts['kFirstTuringId'] -and $script:AcdbGa100First -eq $consts['kGa100First'] -and
+        $script:AcdbGa100Last -eq $consts['kGa100Last']) 'the first Turing ID and the GA100 range match src/gpu_info.cpp'
+    foreach ($t in @(
+            @('10DE:2206', 'Ampere', $true, 'GA102, RTX 3080'),
+            @('10DE:2520', 'Ampere', $true, 'GA106, RTX 3060 Laptop'),
+            @('10DE:25A0', 'Ampere', $true, 'GA107, RTX 3050 Ti Laptop'),
+            @('10DE:20B0', 'Ampere', $false, 'GA100, A100, SM80'),
+            @('10DE:2684', 'Ada', $false, 'AD102, RTX 4090'),
+            @('10DE:2B85', 'Blackwell', $false, 'GB202, RTX 5090'),
+            @('10DE:1E84', 'Turing', $false, 'TU104, RTX 2070 SUPER'),
+            @('10DE:2182', 'Turing', $false, 'TU116, GTX 1660 Ti'),
+            @('10DE:1B80', 'OlderNvidia', $false, 'GP104, GTX 1080'),
+            @('10DE:3000', 'Unknown', $false, 'not in the table'),
+            @('8086:2206', 'NonNvidia', $false, 'Intel'))) {
+        $a = @(Get-GpuAdapters @($t[0]))
+        Check ($a.Count -eq 1 -and $a[0].Arch -eq $t[1] -and $a[0].Sm86 -eq $t[2]) "$($t[0]) ($($t[3])) is $($t[1])$(if ($t[2]) { ', SM86' })"
+    }
+    $two = @(Get-GpuAdapters @('8086:9A49,10DE:25A0'))
+    Check ($two.Count -eq 2 -and $two[1].Id -eq '10DE:25A0' -and $two[1].Sm86) '-GpuDeviceIds "a,b" is two adapters'
+    $pnp = ConvertFrom-PnpDeviceId 'PCI\VEN_10DE&DEV_2206&SUBSYS_38971462&REV_A1\4&2B5B5B5B&0&0008'
+    Check ($pnp -and $pnp.VendorId -eq 0x10DE -and $pnp.DeviceId -eq 0x2206) 'a Win32_VideoController PNPDeviceID gives vendor 10DE, device 2206'
+    Check ($null -eq (ConvertFrom-PnpDeviceId 'ROOT\BASICDISPLAY\0000')) 'a PNPDeviceID without VEN_ and DEV_ gives nothing'
+    $threw = $false
+    try { [void](Get-GpuAdapters @('RTX 3080')) } catch { $threw = $true }
+    Check $threw 'a -GpuDeviceIds value that is not VVVV:DDDD is refused'
+
+    # The pins of spec 10, and the URL form the GitHub contents API gives.
+    $pins = Get-SpoofPins ''
+    Check ((@($pins.Keys) -join '|') -eq 'version.dll|dlssg_sm86.ini') 'exactly the two files version.dll and dlssg_sm86.ini'
+    Check ($pins['version.dll'].gitSha1 -eq 'efd92261f2b74e0a0fb927d74bce7a1c0c2413f7' -and
+        $pins['version.dll'].sha256 -eq 'c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838' -and
+        $pins['version.dll'].size -eq 30021920) 'version.dll: git blob SHA-1, SHA-256 and size of 0.3.5'
+    Check ($pins['dlssg_sm86.ini'].gitSha1 -eq '2c97d64f2239b7d511f7d0a36c16e149dd3329f6') 'dlssg_sm86.ini: git blob SHA-1 of 0.3.5'
+    $urls = @($pins.Keys | ForEach-Object { Get-SpoofUrl $_ })
+    Check ($urls[0] -eq 'https://raw.githubusercontent.com/sdli1995/dlssg_for_sm86/9621db573e07ed54f50c15bbb585ed9a7bdfac28/version.dll' -and
+        $urls[1] -eq 'https://raw.githubusercontent.com/sdli1995/dlssg_for_sm86/9621db573e07ed54f50c15bbb585ed9a7bdfac28/dlssg_sm86.ini') "the download URLs are raw files of commit 9621db5 ($($urls -join ', '))"
+    Check (@($urls | Where-Object { $_ -match '(?i)archive|alternatives|zipball|tarball' }).Count -eq 0) 'never the repository archive or alternatives/'
+    $hello = Join-Path $FakeRoot 'spoof\hello.txt'
+    Write-Text $hello "hello`n"
+    Check ((Get-GitBlobSha1 $hello) -eq 'ce013625030ba8dba906f756967f9e9ca394464a') 'Get-GitBlobSha1 gives git''s blob id'
+
+    # No prompt: the package scripts and the scripts they run ask nothing;
+    # the only Read-Host is the last line, "Press Enter to exit".
+    $entry = @((Join-Path $tools 'package\install.ps1'), (Join-Path $tools 'package\uninstall.ps1'), (Join-Path $tools 'collect-logs.ps1'))
+    $helpers = @((Join-Path $tools 'dev-install.ps1'), (Join-Path $tools 'dev-uninstall.ps1'), (Join-Path $tools 'dev-common.ps1'),
+        (Join-Path $tools 'fetch-deps.ps1'), (Join-Path $tools 'collect-sysinfo.ps1'))
+    $prompts = @('Read-Host', 'Get-Credential', 'Out-GridView', 'pause', 'choice', 'choice.exe')
+    $promptMembers = @('PromptForChoice', 'PromptForCredential', 'Prompt', 'ReadLine', 'ReadKey')
+    foreach ($f in @($entry + $helpers)) {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$errors)
+        $leaf = Split-Path -Leaf $f
+        Check (@($errors).Count -eq 0) "$leaf parses"
+        $commandAsts = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+        $readHosts = @($commandAsts | Where-Object { $_.GetCommandName() -eq 'Read-Host' })
+        $bad = @($commandAsts | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $_ -ne 'Read-Host' -and $prompts -contains $_ } | Sort-Object -Unique)
+        $members = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true))
+        $bad += @($members | Where-Object { $promptMembers -contains $_.Member.Value } | ForEach-Object { $_.Member.Value })
+        Check ($bad.Count -eq 0) "$leaf has no prompt ($($bad -join ', '))"
+        if ($helpers -contains $f) {
+            Check ($readHosts.Count -eq 0) "$leaf has no Read-Host"
+        } else {
+            $text = [IO.File]::ReadAllText($f)
+            Check ($readHosts.Count -eq 1 -and $readHosts[0].Extent.Text -match "Read-Host 'Press Enter to exit'") "$leaf has one Read-Host, 'Press Enter to exit'"
+            Check ($text -match '(?s)IsInputRedirected.{0,200}Read-Host|NoPause.{0,300}Read-Host') "$leaf skips it with -NoPause or redirected input"
+            $tail = ($text.TrimEnd() -split "`r?`n") | Select-Object -Last 2
+            Check (($tail[1].Trim() -eq 'exit $code') -and ($tail[0].Trim() -eq 'Wait-BeforeClose' -or $tail[0].Trim() -eq '}')) "$leaf waits for Enter only at its very end"
+            Check ($text -notmatch '(?i)type y|AcceptNvidiaLicenses') "$leaf has no license question"
+        }
+    }
+    foreach ($f in @('package\install.ps1', 'package\uninstall.ps1', 'dev-common.ps1', 'dev-install.ps1', 'dev-uninstall.ps1', 'fetch-deps.ps1',
+            'make-test-package.ps1', 'collect-logs.ps1', 'package\install.bat', 'package\uninstall.bat', 'package\collect-logs.bat')) {
+        $bytes = Read-Bytes (Join-Path $tools $f)
+        Check ($bytes.Length -gt 0 -and @($bytes | Where-Object { $_ -gt 0x7E -or ($_ -lt 0x20 -and $_ -ne 9 -and $_ -ne 10 -and $_ -ne 13) }).Count -eq 0) "$f is ASCII"
+    }
+}
+
+Invoke-Case 'SP1: RTX 30: dlssg_for_sm86 is fetched, verified, installed, recorded, and removed again' {
+    $pkg = New-PackageCopy 'SP1'
+    $game = New-FakeGame 'SP1' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check ($r.Text -match '10DE:2206' -and $r.Text -match 'SM86') 'it names the RTX 30 (SM86) adapter'
+    $missing = @($spoofNoticePatterns | Where-Object { $r.Text -notmatch $_ })
+    Check ($missing.Count -eq 0) "it prints the dlssg_for_sm86 notice (missing: $($missing -join ', '))"
+    $noticeAt = $r.Text.IndexOf('Coldwood1026')
+    $fetchAt = $r.Text.IndexOf('fetch-deps:')
+    Check ($noticeAt -ge 0 -and $fetchAt -gt $noticeAt) 'the notice comes before the download'
+    Check ($r.Text -match 'copying .*-SpoofSourceDir' -and $r.Text -notmatch 'downloading https') 'the fixtures stand in for the download'
+    Check ($r.Text -notmatch '(?i)type y|\(y/n\)') 'it asks nothing'
+    Check (Test-SpoofInstalled $game) 'version.dll and dlssg_sm86.ini are next to acs.exe with the fixture hashes'
+    $staged = Get-StagedSpoofDir $pkg
+    Check (@($spoofNames | Where-Object { (Get-Sha (Join-Path $staged $_)) -eq (Get-Sha (Join-Path $spoofSrc $_)) }).Count -eq 2) 'both files are staged in <package>\files\deps\dlssg_for_sm86-0.3.5'
+    Check (-not (Test-Path -LiteralPath (Join-Path $pkg 'files\deps\download'))) 'no download left in <package>\files\deps\download'
+    $m = Get-Manifest $game
+    foreach ($n in $spoofNames) {
+        $rec = Get-SpoofRecord $m $n
+        Check ($rec -and $rec.origin -eq 'installed' -and $rec.sha256 -eq (Get-Sha (Join-Path $spoofSrc $n))) "the manifest records $n as installed, with its hash"
+    }
+    Check ($m.spoof.version -eq '0.3.5' -and $m.spoof.repository -eq 'sdli1995/dlssg_for_sm86' -and
+        $m.spoof.commit -eq '9621db573e07ed54f50c15bbb585ed9a7bdfac28') 'the manifest records the version, repository and commit'
+    $slAt = $r.Text.LastIndexOf('copied ac-dlssg\sl\')
+    $spoofAt = $r.Text.IndexOf('copied version.dll')
+    $luaAt = $r.Text.IndexOf('copied apps\lua\AcDlssg\')
+    Check ($slAt -ge 0 -and $spoofAt -gt $slAt -and $luaAt -gt $spoofAt -and $r.Text.IndexOf('copied dxgi.dll') -gt $luaAt) 'spec 12 order: Streamline, the spoof files, the Lua app, the bridge'
+    Check (Test-NoLeftovers @($game)) 'no .new files left'
+
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0) 're-run exits 0'
+    Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') 'the re-run downloads nothing and prints no notice'
+    $m = Get-Manifest $game
+    Check (@($spoofNames | Where-Object { (Get-SpoofRecord $m $_).origin -eq 'installed' }).Count -eq 2) 'the re-run keeps both files recorded as installed (not as found)'
+
+    Write-Text (Join-Path $game 'dlssg_sm86\logs\loader_1.jsonl') "{}`r`n"
+    Write-Text (Join-Path $env:LOCALAPPDATA 'DlssgSm86\cache\kernels.bin') 'fake cache'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall -RemoveData exits 0'
+    Check (Test-NoSpoofFiles $game) 'uninstall removes version.dll and dlssg_sm86.ini'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'dlssg_sm86'))) '-RemoveData deletes <game>\dlssg_sm86'
+    Check (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'DlssgSm86'))) '-RemoveData deletes %LOCALAPPDATA%\DlssgSm86 (a fake one)'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and -not (Test-Path -LiteralPath (Get-GameDxgi $game)) -and
+        (Test-Path -LiteralPath (Join-Path $game 'acs.exe'))) 'the rest is gone too, acs.exe stays'
+}
+
+Invoke-Case 'SP2: RTX 40 and RTX 50 need no spoof' {
+    $pkg = New-PackageCopy 'SP2'
+    foreach ($gpu in @('10DE:2684', '8086:46A6,10DE:2B85', '10DE:2206,10DE:2684')) {
+        $game = New-FakeGame "SP2-$($gpu.Replace(':', '').Replace(',', '-'))" -NoDxgi
+        $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs $gpu)
+        Check ($r.Code -eq 0) "$gpu`: install exits 0"
+        Check ($r.Text -match 'RTX 40 or newer' -and $r.Text -match 'not needed') "$gpu`: it says dlssg_for_sm86 is not needed"
+        Check (Test-NoSpoofFiles $game) "$gpu`: no spoof file installed"
+        Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') "$gpu`: no notice and no download"
+        Check ($null -eq (Get-SpoofRecord (Get-Manifest $game) 'version.dll')) "$gpu`: the manifest has no spoof record"
+    }
+    Check (-not (Test-Path -LiteralPath (Get-StagedSpoofDir $pkg))) 'nothing is staged'
+    # -RemoveData leaves dlssg_for_sm86 data that the install did not put there.
+    Write-Text (Join-Path $game 'dlssg_sm86\logs\loader_2.jsonl') "{}`r`n"
+    Write-Text (Join-Path $env:LOCALAPPDATA 'DlssgSm86\cache\kernels.bin') 'fake cache'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'uninstall -RemoveData exits 0'
+    Check ((Test-Path -LiteralPath (Join-Path $game 'dlssg_sm86\logs\loader_2.jsonl')) -and
+        (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'DlssgSm86\cache\kernels.bin'))) 'the spoof data it did not install stays'
+    Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'DlssgSm86') -Recurse -Force
+}
+
+Invoke-Case 'SP3: RTX 20 is not supported, and gets no spoof' {
+    $pkg = New-PackageCopy 'SP3'
+    $game = New-FakeGame 'SP3' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:1E84')
+    Check ($r.Code -eq 0) 'install exits 0 (the bridge is installed)'
+    Check ($r.Text -match 'RTX 20' -and $r.Text -match 'not supported') 'it says frame generation is not supported on RTX 20'
+    Check (Test-NoSpoofFiles $game) 'no spoof file installed'
+    Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') 'no notice and no download'
+    $game = New-FakeGame 'SP3b' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '8086:9A49')
+    Check ($r.Code -eq 0 -and $r.Text -match 'no NVIDIA GPU' -and (Test-NoSpoofFiles $game)) 'no NVIDIA GPU: install exits 0 without the spoof'
+}
+
+Invoke-Case 'SP4: a download that fails its pins stops the install with nothing changed' {
+    $pkg = New-PackageCopy 'SP4'
+    $staged = Get-StagedSpoofDir $pkg
+    $cases = @(
+        @('bad-sha1', @{ 'version.dll' = @{ gitSha1 = ('0' * 40) } }, 'version\.dll has git blob SHA-1'),
+        @('bad-sha256', @{ 'version.dll' = @{ sha256 = ('0' * 64) } }, 'version\.dll has SHA-256'),
+        @('bad-size', @{ 'version.dll' = @{ size = 30021920 } }, 'version\.dll is \d+ bytes'),
+        @('bad-ini', @{ 'dlssg_sm86.ini' = @{ gitSha1 = ('1' * 40) } }, 'dlssg_sm86\.ini has git blob SHA-1'))
+    foreach ($c in $cases) {
+        $game = New-FakeGame "SP4-$($c[0])" -NoDxgi
+        $before = Get-TreeState $game
+        $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206' (New-SpoofPinsFile $c[0] $c[1]))
+        Check ((Test-Refused $r) -and $r.Text -match $c[2]) "$($c[0]): the install refuses and names the mismatch"
+        Check ($r.Text -match 'Nothing was installed') "$($c[0]): it says nothing was installed"
+        Check ((Get-TreeState $game) -eq $before) "$($c[0]): the game folder is unchanged"
+        Check (@(Get-ChildItem -LiteralPath (Join-Path $pkg 'files\deps') -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0) "$($c[0]): the download is deleted"
+    }
+    Check (-not (Test-Path -LiteralPath (Join-Path $staged 'version.dll'))) 'no spoof file is staged'
+}
+
+Invoke-Case 'SP5: a pinned version.dll already in the game folder is recorded as found and survives the uninstall' {
+    $pkg = New-PackageCopy 'SP5'
+    $game = New-FakeGame 'SP5' -NoDxgi
+    $vd = Join-Path $game 'version.dll'
+    Copy-Item -LiteralPath (Join-Path $spoofSrc 'version.dll') -Destination $vd
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check ($r.Text -match 'version\.dll' -and $r.Text -match 'already in the game folder') 'it says the pinned version.dll is already there'
+    Check (-not (Test-Path -LiteralPath (Join-Path (Get-StagedSpoofDir $pkg) 'version.dll'))) 'version.dll is not downloaded'
+    Check (Test-SpoofInstalled $game) 'the missing dlssg_sm86.ini is fetched and installed next to it'
+    $m = Get-Manifest $game
+    Check ((Get-SpoofRecord $m 'version.dll').origin -eq 'found' -and (Get-SpoofRecord $m 'version.dll').sha256 -eq (Get-Sha $vd)) 'the manifest records version.dll as found, with its hash'
+    Check ((Get-SpoofRecord $m 'dlssg_sm86.ini').origin -eq 'installed') 'and dlssg_sm86.ini as installed'
+    Write-Text (Join-Path $game 'dlssg_sm86\logs\loader_3.jsonl') "{}`r`n"
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall -RemoveData exits 0'
+    Check ((Test-Path -LiteralPath $vd) -and (Get-Sha $vd) -eq (Get-Sha (Join-Path $spoofSrc 'version.dll'))) 'the found version.dll survives the uninstall'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'dlssg_sm86.ini'))) 'the dlssg_sm86.ini it installed is removed'
+    Check (Test-Path -LiteralPath (Join-Path $game 'dlssg_sm86\logs\loader_3.jsonl')) 'the data of a spoof that is still there stays'
+
+    # Both files already there: nothing is fetched, both are found.
+    $game = New-FakeGame 'SP5b' -NoDxgi
+    foreach ($n in $spoofNames) { Copy-Item -LiteralPath (Join-Path $spoofSrc $n) -Destination (Join-Path $game $n) }
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') 'both there: no download, no notice'
+    $m = Get-Manifest $game
+    Check (@($spoofNames | Where-Object { (Get-SpoofRecord $m $_).origin -eq 'found' }).Count -eq 2) 'both are recorded as found'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'the uninstall leaves both'
+}
+
+Invoke-Case 'SP6: a foreign version.dll is left alone, with a warning' {
+    $pkg = New-PackageCopy 'SP6'
+    $game = New-FakeGame 'SP6' -NoDxgi
+    $vd = Join-Path $game 'version.dll'
+    Write-Text $vd 'the version.dll of another mod'
+    $foreignSha = Get-Sha $vd
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check ($r.Text -match 'WARNING: .*version\.dll' -and $r.Text -match 'left untouched' -and $r.Text -match $foreignSha) 'it warns clearly and names the hash'
+    Check ((Get-Sha $vd) -eq $foreignSha) 'the foreign version.dll is untouched'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'dlssg_sm86.ini'))) 'no dlssg_sm86.ini is installed next to it'
+    Check ($r.Text -notmatch 'fetch-deps:') 'nothing is downloaded'
+    Check ($null -eq (Get-SpoofRecord (Get-Manifest $game) 'version.dll')) 'the manifest has no spoof record'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and (Get-Sha $vd) -eq $foreignSha) 'the uninstall leaves it too'
+}
+
+Invoke-Case 'SP7: -NoSpoof, and the uninstall removes only what the install put there' {
+    $pkg = New-PackageCopy 'SP7'
+    $game = New-FakeGame 'SP7' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2206', '-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -match 'skipped \(-NoSpoof\)') '-NoSpoof: install exits 0 and says so'
+    Check ((Test-NoSpoofFiles $game) -and $r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') '-NoSpoof: no spoof, no notice, no download'
+
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'a later run without -NoSpoof installs it'
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2206', '-NoSpoof')
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'a -NoSpoof re-run leaves the installed spoof alone'
+    Check ((Get-SpoofRecord (Get-Manifest $game) 'version.dll').origin -eq 'installed') 'and keeps its record'
+    $ini = Join-Path $game 'dlssg_sm86.ini'
+    [IO.File]::AppendAllText($ini, "; tuned by the user`r`n")
+    $tuned = Get-Sha $ini
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and (Get-Sha $ini) -eq $tuned -and $r.Text -match 'dlssg_sm86\.ini differs') 'a re-run keeps a dlssg_sm86.ini the user changed'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))) 'the installed version.dll is removed'
+    Check ((Get-Sha $ini) -eq $tuned -and $r.Text -match 'WARNING: .*dlssg_sm86\.ini is not the file') 'the changed dlssg_sm86.ini is kept with a warning'
+}
+
+Invoke-Case 'SP8: ReShade mode with the spoof: a byte-identical round trip' {
+    $pkg = New-PackageCopy 'SP8'
+    $game = New-FakeGame 'SP8'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
+    Write-Bytes $ini $original
+    $before = Get-TreeState $game
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade') 'install exits 0 in ReShade mode'
+    Check ((Test-SpoofInstalled $game) -and (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'the spoof and the bridge are installed'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall -RemoveData exits 0'
+    Check ((Get-TreeState $game) -eq $before) 'the game folder is exactly as before, ReShade.ini byte for byte'
+}
+
+Invoke-Case 'SP9: without -NoPause, install.ps1 with redirected input ends without waiting' {
+    $pkg = New-PackageCopy 'SP9'
+    $notGame = Join-Path $FakeRoot 'games\SP9\not a game'
+    New-Item -ItemType Directory -Path $notGame -Force | Out-Null
+    $stdin = Join-Path $FakeRoot 'games\SP9\stdin.txt'
+    $stdout = Join-Path $FakeRoot 'games\SP9\stdout.txt'
+    $stderr = Join-Path $FakeRoot 'games\SP9\stderr.txt'
+    Write-Text $stdin "`r`n"
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $pkg 'scripts\install.ps1')`"", '-GameDir', "`"$notGame`"", '-NoSpoof',
+        '-NoElevate')
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -RedirectStandardInput $stdin -RedirectStandardOutput $stdout `
+        -RedirectStandardError $stderr -NoNewWindow -PassThru
+    $ended = $proc.WaitForExit(60000)
+    if (-not $ended) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    $out = [IO.File]::ReadAllText($stdout)
+    foreach ($line in ($out -split "`r?`n")) { if ($line) { Write-Host "      | $line" } }
+    Check $ended 'install.ps1 ends by itself'
+    Check ($out -match 'REFUSED:' -and $out -notmatch '(?i)press enter') 'it refuses the folder and does not wait for Enter'
+}
+
+# ---------------------------------------------------------------------------
+# Upgrades through the package: over any earlier install they need nothing
+# from the user (dev-install.ps1 -AutoUpgrade).
+
+function Set-Manifest([string]$Game, $Manifest) {
+    [IO.File]::WriteAllText((Get-ManifestPath $Game), ($Manifest | ConvertTo-Json -Depth 8), $utf8)
+}
+
+Invoke-Case 'UP1: upgrade of an older package install: changed files are replaced, obsolete ones removed' {
+    $pkg = New-PackageCopy 'UP1'
+    $game = New-FakeGame 'UP1' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the first install exits 0'
+    # What an older package leaves: a schema 3 manifest without spoof, an
+    # older bridge build it recorded, an app file that build changed after
+    # recording it, and files the new build no longer ships.
+    $m = Get-Manifest $game
+    $m.schema = 3
+    [void]$m.PSObject.Properties.Remove('spoof')
+    Copy-Item -LiteralPath $dllV2 -Destination (Get-GameDxgi $game) -Force
+    $m.dll.sha256 = Get-Sha $dllV2
+    $oldSl = Join-Path (Get-SlDir $game) 'sl.old.dll'
+    Write-Text $oldSl 'an obsolete Streamline file'
+    $m.streamline.files = @($m.streamline.files) + @([pscustomobject]@{ path = 'ac-dlssg\sl\sl.old.dll'; sha256 = (Get-Sha $oldSl) })
+    $oldLua = Join-Path (Get-LuaDir $game) 'lib\old.lua'
+    Write-Text $oldLua "-- obsolete`r`n"
+    $m.luaApp.files = @($m.luaApp.files) + @([pscustomobject]@{ path = 'apps\lua\AcDlssg\lib\old.lua'; sha256 = (Get-Sha $oldLua) })
+    [IO.File]::AppendAllText($oldLua, "-- changed after it was recorded`r`n")
+    $changedOld = Get-Sha $oldLua
+    $appFile = Join-Path (Get-LuaDir $game) 'AcDlssg.lua'
+    [IO.File]::AppendAllText($appFile, "-- changed by an older build`r`n")
+    $changedApp = Get-Sha $appFile
+    Set-Manifest $game $m
+
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -notmatch 'REFUSED') 'the upgrade exits 0 without refusing or asking'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'the older bridge build is replaced'
+    Check (Test-LuaMatches $game $luaReal) 'the Lua app is exactly the new one (the changed file replaced, the obsolete one and its folder gone)'
+    Check (Test-SlMatches $game $slReal) 'ac-dlssg\sl is exactly the new Streamline (the obsolete file removed)'
+    $m = Get-Manifest $game
+    Check ($m.schema -eq 4 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 4 and records the new bridge'
+    Check (@($m.streamline.files | Where-Object { $_.path -like '*sl.old.dll' }).Count -eq 0 -and
+        @($m.luaApp.files | Where-Object { $_.path -like '*old.lua' }).Count -eq 0) 'the manifest no longer records the obsolete files'
+    $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Sha $_.FullName } | Sort-Object)
+    Check (($backups -join '|') -eq ((@($changedApp, $changedOld) | Sort-Object) -join '|')) 'install\backup keeps exactly the two changed files'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'uninstall -RemoveData leaves only acs.exe'
+}
+
+Invoke-Case 'UP2: upgrade of a schema 1 ReShade-mode install (no Streamline, no Lua app)' {
+    $pkg = New-PackageCopy 'UP2'
+    $game = New-FakeGame 'UP2'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
+    Write-Bytes $ini $original
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade') 'the first install exits 0 in ReShade mode'
+    $afterFirst = Read-Bytes $ini
+    $m = Get-Manifest $game
+    $m.schema = 1
+    foreach ($name in @('mode', 'streamline', 'luaApp', 'spoof')) { [void]$m.PSObject.Properties.Remove($name) }
+    Set-Manifest $game $m
+    Remove-Item -LiteralPath (Get-SlDir $game) -Recurse -Force
+    Remove-Item -LiteralPath (Join-Path $game 'apps') -Recurse -Force
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the upgrade exits 0'
+    Check ((Test-SlMatches $game $slReal) -and (Test-LuaMatches $game $luaReal)) 'it adds Streamline and the Lua app'
+    Check (Test-SameBytes (Read-Bytes $ini) $afterFirst) 'ReShade.ini is unchanged'
+    $m = Get-Manifest $game
+    Check ($m.mode -eq 'reshade' -and $m.schema -eq 4) 'the manifest records ReShade mode, schema 4'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $ini) $original)) 'the uninstall restores a byte-identical ReShade.ini'
+}
+
+Invoke-Case 'UP3: ReShade removed since: the upgrade switches to standalone mode in one run' {
+    $pkg = New-PackageCopy 'UP3'
+    $game = New-FakeGame 'UP3'
+    $ini = Join-Path $game 'ReShade.ini'
+    $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
+    Write-Bytes $ini $original
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade' -and (Test-SpoofInstalled $game)) 'the first install exits 0 in ReShade mode, with the spoof'
+    Remove-Item -LiteralPath (Get-GameDxgi $game)
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'switches to standalone mode') 'the upgrade exits 0 and says it switches to standalone mode'
+    Check (Test-SameBytes (Read-Bytes $ini) $original) 'the [PROXY] keys go back: ReShade.ini is byte-identical to before the first install'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'the ReShade-mode ac-dlssg.dll is removed'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'the bridge is now <game>\dxgi.dll'
+    $m = Get-Manifest $game
+    Check ($m.mode -eq 'standalone' -and $null -eq $m.reshade -and $m.dll.path -eq 'dxgi.dll') 'the manifest records standalone mode'
+    Check ((Test-SpoofInstalled $game) -and (Get-SpoofRecord $m 'version.dll').origin -eq 'installed') 'the spoof stays, recorded as installed'
+    Check ((Test-SlMatches $game $slReal) -and (Test-LuaMatches $game $luaReal)) 'Streamline and the Lua app stay'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\install\backup'))) 'no backup left'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    $left = @(Get-ChildItem -LiteralPath $game -Force | ForEach-Object { $_.Name } | Sort-Object)
+    Check ($r.Code -eq 0 -and ($left -join '|') -eq 'acs.exe|ReShade.ini' -and (Test-SameBytes (Read-Bytes $ini) $original)) "the uninstall leaves acs.exe and the original ReShade.ini ($($left -join ', '))"
+}
+
+Invoke-Case 'UP4: ReShade installed over the standalone bridge: the upgrade switches to ReShade mode' {
+    $pkg = New-PackageCopy 'UP4'
+    $game = New-FakeGame 'UP4' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'mode: standalone') 'the first install exits 0 in standalone mode'
+    Copy-Item -LiteralPath $fakeReShade -Destination (Get-GameDxgi $game) -Force
+    $ini = Join-Path $game 'ReShade.ini'
+    Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'switches to reshade mode') 'the upgrade exits 0 and says it switches to ReShade mode'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $fakeReShade)) 'ReShade''s dxgi.dll is untouched'
+    Check ((Get-Sha (Join-Path $game $ourDll)) -eq (Get-Sha $dllV1)) 'the bridge is <game>\ac-dlssg.dll'
+    Check (Test-SameBytes (Read-Bytes $ini) (Get-Utf8Bytes "[PROXY]`r`nEnableProxyLibrary=1`r`nProxyLibrary=$ourDll`r`n")) 'ReShade.ini loads it'
+    $m = Get-Manifest $game
+    Check ($m.mode -eq 'reshade' -and $m.reshade -and $m.dll.path -eq $ourDll) 'the manifest records ReShade mode'
+    Check (Test-SpoofInstalled $game) 'the spoof stays'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $ini) (Get-Utf8Bytes $simpleIni))) 'the uninstall restores ReShade.ini'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $fakeReShade) -and -not (Test-Path -LiteralPath (Join-Path $game $ourDll)) -and
+        (Test-NoSpoofFiles $game)) 'ReShade stays; the bridge and the spoof are gone'
+}
+
+Invoke-Case 'UP5: files that are clearly not ours still stop the package install' {
+    $pkg = New-PackageCopy 'UP5'
+    $game = New-FakeGame 'UP5' -NoDxgi
+    Copy-Item -LiteralPath $fakeOther -Destination (Get-GameDxgi $game)
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ((Test-Refused $r) -and $r.Text -match 'Not ReShade') 'a foreign dxgi.dll is refused'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $fakeOther) -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'and nothing changed'
+    $game = New-FakeGame 'UP5b' -NoDxgi
+    Write-Text (Join-Path (Get-LuaDir $game) 'AcDlssg.lua') "-- someone else's app`r`n"
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ((Test-Refused $r) -and $r.Text -match 'apps\\lua\\AcDlssg') 'a foreign apps\lua\AcDlssg is refused'
+}
+
+# ---------------------------------------------------------------------------
+# Administrator rights and the .bat launchers.
+
+Invoke-Case 'EL1: arguments passed on to the elevated run keep spaces, trailing backslashes and Cyrillic' {
+    $cyr = -join [char[]](0x0418, 0x0433, 0x0440, 0x044B)
+    $bound = [ordered]@{ GameDir = "C:\Games\$cyr AC\"; NoSpoof = [System.Management.Automation.SwitchParameter]$true; NoPause = [System.Management.Automation.SwitchParameter]$false; GpuDeviceIds = @('8086:9A49', '10DE:25A0') }
+    $list = @(Get-ForwardArguments $bound @{ Elevated = $true; GameDir = "D:\Steam Library\$cyr\" })
+    Check (($list -join ' ') -eq "-GameDir D:\Steam Library\$cyr\ -NoSpoof -GpuDeviceIds 8086:9A49,10DE:25A0 -Elevated") "the forwarded arguments ($($list -join ' '))"
+    $echo = Join-Path $FakeRoot 'el1\echo-args.ps1'
+    Write-Text $echo "param([string]`$GameDir, [switch]`$NoSpoof, [string[]]`$GpuDeviceIds, [switch]`$Elevated)`r`n[IO.File]::WriteAllText(`$env:ACDB_ECHO, (@(`$GameDir, [bool]`$NoSpoof, (`$GpuDeviceIds -join ';'), [bool]`$Elevated) -join '|'), (New-Object Text.UTF8Encoding(`$false)))`r`n"
+    $env:ACDB_ECHO = Join-Path $FakeRoot 'el1\echo.txt'
+    try {
+        $text = (@(@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $echo) + $list | ForEach-Object { ConvertTo-CommandLineArg $_ })) -join ' '
+        $proc = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $text -NoNewWindow -PassThru
+        [void]$proc.WaitForExit(60000)
+        $got = [IO.File]::ReadAllText($env:ACDB_ECHO, $utf8)
+    } finally {
+        Remove-Item Env:\ACDB_ECHO -ErrorAction SilentlyContinue
+    }
+    Check ($got -eq "D:\Steam Library\$cyr\|True|8086:9A49,10DE:25A0|True") "a child PowerShell reads them back ($got)"
+}
+
+Invoke-Case 'EL2: a game folder this account may not write into: install and uninstall refuse with -NoElevate' {
+    $pkg = New-PackageCopy 'EL2'
+    $game = New-FakeGame 'EL2' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'install exits 0 while the folder is writable'
+    $before = Get-TreeState $game
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $rights = [System.Security.AccessControl.FileSystemRights]'CreateFiles, CreateDirectories'
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $rights, 'None', 'None', 'Deny')
+    $acl = Get-Acl -LiteralPath $game
+    $acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $game -AclObject $acl
+    try {
+        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+        Check ((Test-Refused $r) -and $r.Text -match 'may not write into' -and $r.Text -match 'NoElevate') 'install refuses and names -NoElevate instead of asking for administrator rights'
+        $r = Invoke-PackageUninstall $pkg $game
+        Check ((Test-Refused $r) -and $r.Text -match 'may not change' -and $r.Text -match 'NoElevate') 'uninstall does the same'
+        Check ((Get-TreeState $game) -eq $before) 'nothing changed in the game folder, and no probe file is left'
+    } finally {
+        $acl = Get-Acl -LiteralPath $game
+        [void]$acl.RemoveAccessRule($rule)
+        Set-Acl -LiteralPath $game -AclObject $acl
+    }
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall exits 0 once the folder is writable'
+}
+
+Invoke-Case 'BAT: install.bat, uninstall.bat and collect-logs.bat from a folder with spaces and Cyrillic' {
+    $p = Get-TestPackage
+    $cyr = -join [char[]](0x043F, 0x0430, 0x043A, 0x0435, 0x0442)
+    $dest = Join-Path $FakeRoot "packages\BAT $cyr & co\$(Split-Path -Leaf $p.Dir)"
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    foreach ($item in @(Get-ChildItem -LiteralPath (New-PackageCopy 'BAT-src') -Force)) { Copy-Item -LiteralPath $item.FullName -Destination $dest -Recurse }
+    $game = New-FakeGame "BAT $cyr" -NoDxgi
+    $r = Invoke-Bat (Join-Path $dest 'install.bat') (@('-GameDir', $game, '-StreamlineDir', $slReal, '-NoPause', '-NoElevate') + (Get-SpoofArgs '10DE:2206'))
+    Check ($r.Code -eq 0) 'install.bat exits 0'
+    Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1) -and (Test-SpoofInstalled $game) -and (Test-LuaMatches $game $luaReal)) 'the bridge, the spoof and the Lua app are installed'
+    Check (Test-Path -LiteralPath (Join-Path (Get-StagedSpoofDir $dest) 'version.dll')) 'the download is staged in files\deps of that package'
+    $r = Invoke-Bat (Join-Path $dest 'tools\collect-logs.bat') @('-GameDir', $game, '-AcDocsDir', (Join-Path $FakeRoot 'documents\none'), '-SkipSysinfo', '-NoPause')
+    Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath (Join-Path $dest 'tools') -Filter 'ac-dlssg-logs-*.zip').Count -eq 1) 'collect-logs.bat writes its zip into tools\'
+    $r = Invoke-Bat (Join-Path $dest 'tools\uninstall.bat') @('-GameDir', $game, '-RemoveData', '-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'uninstall.bat leaves only acs.exe'
+    $r = Invoke-Bat (Join-Path $dest 'install.bat') @('-GameDir', (Join-Path $FakeRoot 'games\BAT none'), '-NoSpoof', '-NoPause', '-NoElevate')
+    Check ($r.Code -ne 0 -and $r.Text -match 'REFUSED') 'install.bat passes the exit code of a refusal on'
 }
 
 # ---------------------------------------------------------------------------

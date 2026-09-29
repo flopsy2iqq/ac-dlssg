@@ -4,8 +4,10 @@
 
 .DESCRIPTION
   Read-only: nothing in the game folder or on the system is changed. It only
-  writes ac-dlssg-logs-<yyyyMMdd-HHmmss>.zip next to this script (and
-  collect-sysinfo.ps1 writes its report folder next to itself). The zip holds:
+  writes ac-dlssg-logs-<yyyyMMdd-HHmmss>.zip into -OutDir, by default next to
+  this script (the test package's tools\collect-logs.bat passes its own
+  folder), and collect-sysinfo.ps1 writes its report folder next to itself.
+  The zip holds:
     ac-dlssg\logs\...        the bridge's logs (bridge.log, bridge.prev.log) and
                              the Streamline logs it writes into the same folder
     ac-dlssg\ac-dlssg.ini    the bridge's settings
@@ -32,7 +34,9 @@
   The game is found through Steam's libraryfolders.vdf unless -GameDir is
   given; the Assetto Corsa documents folder is Documents\Assetto Corsa unless
   -AcDocsDir is given. Works from the repository's tools folder and from the test package
-  (which keeps the helper scripts in scripts\).
+  (which keeps the helper scripts in scripts\). The last line is "Press Enter
+  to exit", so that a double-clicked window stays open; not with -NoPause or
+  when the input is redirected.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File .\collect-logs.ps1
@@ -41,7 +45,9 @@ param(
     [string]$GameDir,
     [string]$AcDocsDir,
     [switch]$SkipSysinfo,
-    [switch]$NoPause
+    [switch]$NoPause,
+    # Where the zip goes; default: next to this script.
+    [string]$OutDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,7 +122,9 @@ $code = 0
 $staging = $null
 try {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $staging = Join-Path $PSScriptRoot "ac-dlssg-logs-$stamp"
+    if (-not $OutDir) { $OutDir = $PSScriptRoot }
+    $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
+    $staging = Join-Path $OutDir "ac-dlssg-logs-$stamp"
     $zip = "$staging.zip"
     New-Item -ItemType Directory -Path $staging | Out-Null
     Write-Host "collect-logs: collecting into $zip"
@@ -235,7 +243,12 @@ try {
 } finally {
     if ($staging -and (Test-Path -LiteralPath $staging)) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 }
+# The last line: a double-clicked window stays open until Enter.
 if (-not $NoPause) {
-    try { [void](Read-Host 'Press Enter to close this window') } catch { }
+    $redirected = $true
+    try { $redirected = [Console]::IsInputRedirected } catch { }
+    if (-not $redirected) {
+        try { [void](Read-Host 'Press Enter to exit') } catch { }
+    }
 }
 exit $code
