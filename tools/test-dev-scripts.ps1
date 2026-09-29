@@ -1498,7 +1498,7 @@ Invoke-Case 'CF: the ac-dlssg.ini the install writes has the M3 keys with their 
     Check ($r.Code -eq 0) 'install exits 0'
     $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
     $lines = @([IO.File]::ReadAllLines($cfg))
-    foreach ($kv in @('proxy_without_fg=0', 'tag_without_fg=0', 'fg_vram_headroom_mib=512', 'camera_flip_handedness=0',
+    foreach ($kv in @('proxy_without_fg=0', 'tag_without_fg=0', 'fg_vram_headroom_mib=0', 'camera_flip_handedness=0',
             'camera_negate_side=0')) {
         $i = [array]::IndexOf($lines, $kv)
         Check ($i -gt 0 -and $lines[$i - 1].StartsWith(';')) "config has $kv under a comment"
