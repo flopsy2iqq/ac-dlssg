@@ -1,0 +1,173 @@
+=====================================================================
+STEAM GUIDE (English). How to publish it:
+1. Steam, Assetto Corsa's page, Community, Guides, "Create a guide".
+2. Title, description and cover: the "HEADER" block below.
+3. Add each "SECTION" block below as its own guide section: the "Section
+   title" goes into the title field, the text into the text field.
+4. Upload the pictures with the guide's "Images" button (the files are in
+   docs/screenshots and docs/logo of the repository) and place them where
+   it says [IMAGE: ...].
+Do not copy this top block into Steam.
+=====================================================================
+
+
+===== HEADER =====
+
+Title:
+DLSS Frame Generation in Assetto Corsa: up to 4x FPS (ac-dlssg)
+
+Description (short):
+The free ac-dlssg mod brings NVIDIA DLSS Frame Generation (2X, 3X, 4X) to Assetto Corsa with CSP. On an RTX 3080, 40 real FPS become 160 on screen. RTX 30 laptops work too. One-click install.
+
+Cover:
+[IMAGE: docs/logo/ac-dlssg-banner.png or social-preview.png]
+
+Category: Modding / Graphics. Language: English.
+
+
+===== SECTION 1 =====
+Section title: What it is
+
+[h1]NVIDIA Frame Generation in Assetto Corsa[/h1]
+
+[b]ac-dlssg[/b] is a free mod that adds [b]NVIDIA DLSS Frame Generation[/b] to Assetto Corsa, the same frame generation that new games have.
+
+In plain words: your graphics card renders a real frame and inserts generated frames between the real ones. You get 2, 3 or 4 times as many frames on screen, and the picture moves more smoothly.
+
+[list]
+[*][b]2X, 3X and 4X[/b], chosen in game.
+[*][b]NVIDIA Reflex[/b] turns on by itself and keeps input latency low.
+[*][b]An in-game settings window[/b]: on/off, multiplier, FPS, video memory.
+[*][b]One-click install[/b]: one install.bat, no questions asked.
+[*][b]Works on laptops[/b], even with 4 GB of video memory.
+[*][b]Free and open source[/b] on GitHub.
+[/list]
+
+Why: you can run heavier graphics (weather, traffic, shadows, supersampling) and still get a smooth picture.
+
+
+===== SECTION 2 =====
+Section title: Results
+
+[h1]How many FPS you get[/h1]
+
+[b]PC: Core i9-9900, RTX 3080 10 GB, 16 GB, Windows 10, CSP preview622[/b]
+[list]
+[*]2X: [b]62 → 124 FPS[/b]
+[*]4X: [b]40 → 160 FPS[/b]
+[/list]
+No ghosting, no blur, no freezes, no stutter.
+
+[IMAGE: docs/screenshots/fg4x-1.jpg]
+[IMAGE: docs/screenshots/fg2x-1.jpg]
+
+[b]Laptop: Acer Nitro 5, RTX 3050 Ti Laptop 4 GB, Windows 11[/b]
+[list]
+[*]2X: [b]31 → 60 FPS[/b]
+[*]4X: [b]23 → 89 FPS[/b]
+[/list]
+
+[IMAGE: docs/screenshots/fg4x-laptop-1.jpg]
+
+[i]On the screenshots: top left is CSP's counter (the real frames), top right is the NVIDIA overlay (the frames on screen after frame generation).[/i]
+
+
+===== SECTION 3 =====
+Section title: What you need
+
+[h1]What you need[/h1]
+
+[list]
+[*]An [b]NVIDIA RTX 30, 40 or 50[/b] graphics card (laptop GPUs work too).
+[*][b]Assetto Corsa[/b] on Steam and a [b]Custom Shaders Patch preview build[/b] (0.3.0-preview or newer), published by CSP's author on Patreon: [url=https://www.patreon.com/c/x4fab/home]patreon.com/c/x4fab[/url]
+[*][b]DLSS[/b] selected as the upscaler in CSP's settings (in Content Manager: Settings, Custom Shaders Patch, search for "DLSS").
+[*]Windows 10 (version 2004 or newer) or Windows 11, with "Hardware-accelerated GPU scheduling" on.
+[*]An internet connection during install: the installer downloads NVIDIA's files by itself.
+[/list]
+
+[b]RTX 30:[/b] NVIDIA officially enables frame generation only on RTX 40 and newer. On RTX 30 the installer downloads the third-party project [url=https://github.com/sdli1995/dlssg_for_sm86]dlssg_for_sm86[/url] (by sdli1995), which lifts that limit. It is not an NVIDIA project, and it works around NVIDIA's restriction. If you do not want it, the installer has a -NoSpoof option.
+
+
+===== SECTION 4 =====
+Section title: Install (5 minutes)
+
+[h1]Install[/h1]
+
+[olist]
+[*][b]Close the game.[/b]
+[*][b]Download[/b] ac-dlssg-1.0.0.zip from the latest release on GitHub:
+[url=https://github.com/flopsy2iqq/ac-dlssg/releases/latest]github.com/flopsy2iqq/ac-dlssg/releases[/url]
+[*][b]Unpack it[/b] (right-click, "Extract All").
+[*][b]Double-click install.bat.[/b] If Windows asks "Allow changes?", click Yes. Wait until it says it is done, then press Enter.
+[*][b]Start the game[/b] as usual and drive. Frame generation turns on by itself.
+[/olist]
+
+The installer finds the game, downloads NVIDIA's files, installs dlssg_for_sm86 on RTX 30, and asks nothing. It works with or without ReShade.
+
+Step-by-step guide: [url=https://github.com/flopsy2iqq/ac-dlssg/blob/main/docs/INSTALL.md]install guide[/url]
+
+
+===== SECTION 5 =====
+Section title: How to use it
+
+[h1]How to use it[/h1]
+
+[list]
+[*]Open the [b]AC DLSS-G[/b] window from CSP's app bar. It has the frame generation switch, the [b]2X / 3X / 4X[/b] buttons, the real and output FPS, the video memory and a "Save as default" button.
+[*][b]Ctrl+F10[/b] switches frame generation on and off, for a quick comparison.
+[*]Frame generation turns itself off in the pause menu and the main menu.
+[*]CSP's FPS counter shows only the real frames. Use the NVIDIA overlay (Alt+R) or RTSS to see the frames on screen.
+[/list]
+
+[IMAGE: a screenshot of the AC DLSS-G window]
+
+[b]Tip:[/b] 2X gives the cleanest picture, 3X and 4X give the most smoothness. Frame generation works best when you have at least 35-40 FPS without it.
+
+
+===== SECTION 6 =====
+Section title: FAQ
+
+[h1]FAQ[/h1]
+
+[b]What about input lag?[/b]
+The mod turns on NVIDIA Reflex by itself. Latency is a little higher than without frame generation, but it was not noticeable on a wheel or a gamepad in testing.
+
+[b]My FPS did not go up.[/b]
+Open the AC DLSS-G window: it says why frame generation is off. Most often DLSS is not selected in CSP, or on a laptop the game runs on the integrated GPU (Windows Settings, System, Display, Graphics: set acs.exe to High performance).
+
+[b]Not much video memory (4 GB)?[/b]
+The mod adapts to the card by itself. When memory is tight, the window tells you what to lower (textures, shadows).
+
+[b]Any artifacts?[/b]
+In fast motion, CSP app windows and on-screen UI can smear a little, because the whole frame is generated. The road and the cars stay clean.
+
+[b]RTX 20, GTX, AMD?[/b]
+No, it needs an RTX 30, 40 or 50.
+
+[b]ReShade? Online?[/b]
+It works with ReShade. The mod only changes how the frame is shown on screen and does not touch the game logic.
+
+[b]How do I uninstall it?[/b]
+In the unpacked folder, open tools and double-click uninstall.bat. Everything goes back to how it was.
+
+
+===== SECTION 7 =====
+Section title: Links and credits
+
+[h1]Links[/h1]
+
+[list]
+[*]The mod, source code and releases: [url=https://github.com/flopsy2iqq/ac-dlssg]github.com/flopsy2iqq/ac-dlssg[/url]
+[*]Found a bug? Open an issue on GitHub and attach the zip from tools\collect-logs.bat.
+[*]Support the author (optional): [url=https://ko-fi.com/flopsy2iq]ko-fi.com/flopsy2iq[/url]
+[/list]
+
+[h2]Thanks[/h2]
+[list]
+[*][b]sdli1995[/b] for [url=https://github.com/sdli1995/dlssg_for_sm86]dlssg_for_sm86[/url] (frame generation on RTX 30), and Coldwood1026.
+[*][b]x4fab[/b] for Custom Shaders Patch: [url=https://www.patreon.com/c/x4fab/home]Patreon[/url]
+[*][b]NVIDIA[/b] for Streamline, DLSS and Reflex.
+[*]The authors of dlss5-bridge, open-shaders and Community Shaders for the ideas.
+[/list]
+
+If this guide helped, please rate it and add it to your favourites, so more people find the mod.
