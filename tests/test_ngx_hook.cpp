@@ -759,8 +759,9 @@ TEST(NgxHook_DenoiserSnippetNeverCounts) {
     FreeLibrary(nr);
 }
 
-// CSP's NR ids are not SuperSampling; a feature-id-1 create that carries
-// DLSSNR or DLSSD keys is not either; and an evaluate on an unobserved handle
+// CSP's NR ids are not SuperSampling; a feature-id-1 create that carries a
+// DLSSNR or DLSSD input resource is not either, but one with only NR scalar
+// hints is; and an evaluate on an unobserved handle
 // that carries a DLSSNR resource is not counted even when Depth, MotionVectors
 // and the create flags are present too.
 TEST(NgxHook_NeuralRenderingIdsAndKeysNotCounted) {
@@ -788,12 +789,18 @@ TEST(NgxHook_NeuralRenderingIdsAndKeysNotCounted) {
     CHECK(fx.sink.creates.empty());
     CHECK(fx.sink.evals.empty());
 
+    // A SuperSampling create that carries only NR scalar hints is still CSP's
+    // DLSS: CSP 0.3.0-preview622 sets DLSSNR.Hint.Render.Preset on its
+    // SuperSampling create block (seen in game on 2026-09-29). Only a real
+    // denoiser input resource disqualifies a feature-id-1 create.
     s->nextHandle = reinterpret_cast<void*>(0x740000);
     FakeNgxParam nrScalars = SuperSamplingCreate();
+    nrScalars.SetU("DLSSNR.Hint.Render.Preset", 10u);
     nrScalars.SetU("DLSSNR.Width", 1920u);
     void* h1 = nullptr;
     Create(fake)(d.ctx11.Get(), kNgxFeatureSuperSampling, &nrScalars, &h1);
-    CHECK(fx.sink.creates.empty());
+    CHECK_EQ(fx.sink.creates.size(), size_t{1});
+    fx.sink.creates.clear();
 
     s->nextHandle = reinterpret_cast<void*>(0x750000);
     FakeNgxParam rr = SuperSamplingCreate();

@@ -81,10 +81,11 @@ inline const char* const kNgxDenoiserKeys[] = {
     "DLSSNR.Depth",          "DLSSNR.MVec",
 };
 
-// Scalar keys that only a denoiser feature sets; any Success counts. The
-// DLSSNR.* ones are what CSP's NR create sets (dwrite.dll 0.3.0-preview622);
-// DLSS.Denoise.Mode and DLSS.Roughness.Mode are DLSS-D create parameters
-// (nvsdk_ngx_defs_dlssd.h).
+// Scalar keys a denoiser feature sets. They are logged, never used to reject a
+// feature: CSP also sets DLSSNR.Hint.Render.Preset on its SuperSampling create.
+// The DLSSNR.* ones are what CSP's NR create sets (dwrite.dll
+// 0.3.0-preview622); DLSS.Denoise.Mode and DLSS.Roughness.Mode are DLSS-D
+// create parameters (nvsdk_ngx_defs_dlssd.h).
 inline const char* const kNgxDenoiserScalarKeys[] = {
     "DLSSNR.Width",      "DLSSNR.Height",
     "DLSSNR.InputWidth", "DLSSNR.InputHeight",

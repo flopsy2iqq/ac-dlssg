@@ -349,9 +349,9 @@ const DetourSet kDetours[kMaxLayers] = {
     NGX_DETOUR_ROW(12), NGX_DETOUR_ROW(13), NGX_DETOUR_ROW(14), NGX_DETOUR_ROW(15),
 };
 
-// The first denoiser key (DLSS-D or DLSS NR) present in p, or nullptr. A
-// resource key counts when it holds a non-null D3D11, D3D12 or untyped
-// resource; a scalar key counts when any numeric Get succeeds (F4).
+// The first denoiser input resource key (DLSS-D or DLSS NR) present in p, or
+// nullptr. A key counts when it holds a non-null D3D11, D3D12 or untyped
+// resource. Only these disqualify a SuperSampling feature (F4).
 const char* DenoiserKeyIn(const NgxParameter* p) {
     for (const char* key : kNgxDenoiserKeys) {
         ID3D11Resource* r11 = nullptr;
@@ -361,6 +361,14 @@ const char* DenoiserKeyIn(const NgxParameter* p) {
         void* untyped = nullptr;
         if (p->Get(key, &untyped) == kNgxSuccess && untyped) return key;
     }
+    return nullptr;
+}
+
+// The first denoiser scalar key present in p, or nullptr; logged only. CSP
+// 0.3.0-preview622 sets DLSSNR.Hint.Render.Preset on its SuperSampling create
+// block, so a scalar hint is no evidence of a denoiser. NR and RR are told
+// apart by feature id and by module (nvngx_dlssnr.dll, nvngx_dlssd.dll).
+const char* DenoiserScalarKeyIn(const NgxParameter* p) {
     for (const char* key : kNgxDenoiserScalarKeys) {
         unsigned int u = 0;
         int i = 0;
@@ -760,7 +768,13 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
             // not mirrored if CSP ever shares one parameter block with its NR.
             static LONG said = 0;
             if (InterlockedCompareExchange(&said, 1, 0) == 0)
-                LOGW("ngx: a SuperSampling create carries the denoiser key %s; not captured", denoiserKey);
+                LOGW("ngx: a SuperSampling create carries the denoiser input %s; not captured", denoiserKey);
+        } else if (featureId == kNgxFeatureSuperSampling) {
+            if (const char* hint = DenoiserScalarKeyIn(params)) {
+                static LONG saidHint = 0;
+                if (InterlockedCompareExchange(&saidHint, 1, 0) == 0)
+                    LOGI("ngx: a SuperSampling create carries the denoiser scalar %s; captured anyway", hint);
+            }
         }
         NgxCreateInfo info;
         info.featureId = featureId;
