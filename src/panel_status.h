@@ -50,6 +50,8 @@ enum PanelModeCode : uint32_t {
 
 constexpr size_t kPanelReasonChars = 160;
 constexpr size_t kPanelStateReasonChars = 256;  // pass-through and unsupported-adapter reasons are long
+// A fix whose ac-dlssg.ini could not be saved names the file's path.
+constexpr size_t kPanelAutoFixChars = 384;
 
 struct StatusLayout {
     uint32_t magic;       // kStatusMagic
@@ -96,9 +98,14 @@ struct StatusLayout {
     char fgMultNote[kPanelReasonChars];   // why fgMultUsed < fgMultRequested (FgMultiplier().note); empty otherwise
     char vramNote[kPanelReasonChars];     // the video memory guard's note: tight, or not enough (DecideVramMultiplier)
     char restartNote[kPanelReasonChars];  // what applies only after a restart (PanelRestartNote); empty otherwise
+    // Appended after those: a setting the bridge changed by itself so that
+    // frame generation can run, for the rest of the session (a number as
+    // fg_vram_headroom_mib switched to auto: VramHeadroomSwitchNote, spec
+    // 6.11); empty otherwise.
+    char autoFixNote[kPanelAutoFixChars];
 };
 
-static_assert(sizeof(StatusLayout) == 1308);
+static_assert(sizeof(StatusLayout) == 1692);
 static_assert(alignof(StatusLayout) == 4);
 static_assert(offsetof(StatusLayout, magic) == 0);
 static_assert(offsetof(StatusLayout, version) == 4);
@@ -140,6 +147,7 @@ static_assert(offsetof(StatusLayout, fgMultMax) == 824);
 static_assert(offsetof(StatusLayout, fgMultNote) == 828);
 static_assert(offsetof(StatusLayout, vramNote) == 988);
 static_assert(offsetof(StatusLayout, restartNote) == 1148);
+static_assert(offsetof(StatusLayout, autoFixNote) == 1308);
 
 struct ControlLayout {
     uint32_t magic;           // kControlMagic once the app has written a request
