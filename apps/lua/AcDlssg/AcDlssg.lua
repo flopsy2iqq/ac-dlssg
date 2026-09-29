@@ -28,6 +28,9 @@
   Per frame the app allocates nothing: every FFI reference it needs is taken
   once, each frame reads and writes plain numbers, and the window's texts are
   built only when the bridge publishes a new status (about once per second).
+  The window is custom-drawn (a dark card layout with a red accent, spec 6.9)
+  and its animations are numbers eased with the frame time; its colours and
+  vectors are made once and rewritten in place.
 ]]
 
 local SECTION_NAME = 'AcDlssg.Camera.v1'
@@ -265,16 +268,13 @@ local HEARTBEAT_TIMEOUT = 3.0
 -- How often a section that could not be opened is tried again, in seconds.
 local REOPEN_INTERVAL = 2.0
 
-local COLOR_ON = rgbm(0.16, 0.55, 0.24, 1)
-local COLOR_ON_HOVER = rgbm(0.2, 0.65, 0.3, 1)
-local COLOR_OFF = rgbm(0.32, 0.32, 0.32, 1)
-local COLOR_OFF_HOVER = rgbm(0.4, 0.4, 0.4, 1)
-local COLOR_GOOD = rgbm(0.45, 0.9, 0.5, 1)
-local COLOR_WARN = rgbm(1, 0.7, 0.2, 1)
-local COLOR_BAD = rgbm(1, 0.35, 0.3, 1)
+-- The state colours: running, tight or paused, off or an error, and the
+-- restart note.
+local COLOR_GOOD = rgbm(0.2, 0.78, 0.35, 1)
+local COLOR_WARN = rgbm(1, 0.69, 0.13, 1)
+local COLOR_BAD = rgbm(1, 0.27, 0.23, 1)
+local COLOR_RESTART = rgbm(0.35, 0.66, 1, 1)
 
-local LABEL_ON = 'Frame generation: ON###fgToggle'
-local LABEL_OFF = 'Frame generation: OFF###fgToggle'
 local LABEL_SAVE = 'Save as default'
 local LABEL_FLIP = 'Flip handedness (camera_flip_handedness)'
 local LABEL_NEGATE = 'Negate the side vector (camera_negate_side)'
@@ -294,10 +294,10 @@ local TEXT_VSYNC = 'VSync is not available with frame generation here: presentin
   .. ' window stays tear-free).'
 local TEXT_RESTART = 'Restart the game to apply'
 local TEXT_MULT_UNSUPPORTED = 'not supported by this GPU/driver'
--- The 2X/3X/4X buttons: labels with fixed IDs, so the selection colour can
--- change without ImGui seeing new widgets.
+-- The 2X/3X/4X segments: IDs that never change, so the selection can move
+-- without ImGui seeing new widgets; the text drawn on them is MULT_TEXTS.
 local MULT_LABELS = { [2] = '2X###fgMult2', [3] = '3X###fgMult3', [4] = '4X###fgMult4' }
-local COLOR_RESTART = rgbm(0.4, 0.75, 1, 1)
+local MULT_TEXTS = { [2] = '2X', [3] = '3X', [4] = '4X' }
 
 local st, ctl -- the two sections: status read-only, control for writing
 local statusSeq = -1 -- seq of the last stable status copy
@@ -328,11 +328,12 @@ local status, spare = newStatus(), newStatus()
 
 -- The window's texts, rebuilt when the status changes.
 local texts = {
-  status = '', unavailable = '', state = '', fps = '', gpuMs = '', vram = '', gpu = '', mode = '', hotkey = '',
-  warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '', vramNote = '', restartNote = '',
-  autoFixNote = '', versions = ''
+  status = '', unavailable = '', state = '', version = '', fgHint = '', gpuMs = '', vramValue = '', gpu = '',
+  mode = '', hotkey = '', warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '',
+  vramNote = '', restartNote = '', autoFixNote = '', versions = ''
 }
 local vramLevel = 0 -- 0 fine, 1 near the budget, 2 over it
+local vramFill = 0 -- used / budget, 0 while unknown
 
 local statusFailureLogged, controlFailureLogged = false, false
 
@@ -491,14 +492,16 @@ local function rebuildTexts()
   else
     texts.state = 'The bridge is loaded; ' .. s.stateReason
   end
-  texts.fps = string.format('Real %.0f fps, output %.0f fps', s.baseFps, s.presentedFps)
+  texts.version = s.bridgeVersion ~= '' and ('v' .. s.bridgeVersion) or ''
+  texts.fgHint = s.hotkey ~= '' and ('Hotkey ' .. s.hotkey) or ''
   if s.bridgeGpuMs >= 0 then
-    texts.gpuMs = string.format('Bridge GPU time %.2f ms per frame', s.bridgeGpuMs)
+    texts.gpuMs = string.format('%.2f ms per frame', s.bridgeGpuMs)
   else
-    texts.gpuMs = 'Bridge GPU time: not measured yet'
+    texts.gpuMs = 'not measured yet'
   end
   if s.vramBudgetMib > 0 then
-    texts.vram = string.format('Video memory %d / %d MiB', s.vramUsageMib, s.vramBudgetMib)
+    texts.vramValue = string.format('%d / %d MiB', s.vramUsageMib, s.vramBudgetMib)
+    vramFill = s.vramUsageMib / s.vramBudgetMib
     if s.vramUsageMib >= s.vramBudgetMib then
       vramLevel = 2
     elseif s.vramUsageMib >= s.vramBudgetMib * 0.9 then
@@ -507,7 +510,8 @@ local function rebuildTexts()
       vramLevel = 0
     end
   else
-    texts.vram = 'Video memory: unknown'
+    texts.vramValue = 'unknown'
+    vramFill = 0
     vramLevel = 0
   end
   local spoof = ''
@@ -524,9 +528,9 @@ local function rebuildTexts()
     mode = 'standalone mode'
   end
   texts.mode = 'ac-dlssg ' .. s.bridgeVersion .. ', ' .. mode
-  texts.hotkey = 'Hotkey: ' .. s.hotkey
+  texts.hotkey = s.hotkey
   texts.warning = s.warning
-  texts.perSecond = string.format('Per second: %.0f captures, %.0f fresh camera, %.0f tagged', s.capturesPerSec,
+  texts.perSecond = string.format('%.0f captures, %.0f fresh camera, %.0f tagged', s.capturesPerSec,
     s.cameraFreshPerSec, s.taggedPerSec)
   if s.fgMultUsed ~= 0 and s.fgMultUsed ~= s.fgMultRequested then
     texts.mult = string.format('Multiplier (using %dX)', s.fgMultUsed)
@@ -576,143 +580,628 @@ local function bridgeProblem(now)
   return 0
 end
 
-local toggleSize = vec2(0, 44)
-local saveSize = vec2(0, 0)
-local multSize = vec2(56, 0)
+-- ---------------------------------------------------------------------------
+-- Drawing (spec 6.9, the window's layout). Top to bottom: the header with
+-- the status pill, the notes, the frame generation switch, the 2X/3X/4X
+-- segments, the fps card, video memory, "Save as default" and "Details".
+--
+-- Everything is drawn with the ui.draw* primitives at positions taken from
+-- the cursor (window space, as the drawing functions expect), and every block
+-- ends with an item of its size so that the window's layout and scrolling
+-- know it. Per frame nothing is allocated: the colours and vectors below are
+-- made once and rewritten in place, the animations are plain numbers eased
+-- with the frame time, the numbers' strings are cached, and a note is
+-- measured only when its text or the window's width changes.
+--
+-- The constants and the animation state are grouped in tables: LuaJIT allows
+-- 200 locals per function, the main chunk included, and the camera writer and
+-- the channels above already use more than half of them.
 
-local function debugContent()
-  local controls = ctl ~= nil and status.bridgeState >= STATE_PROXY_NO_FG
+local FONT = {
+  text = 'Segoe UI:@System',
+  semi = 'Segoe UI:@System;Weight=SemiBold',
+  bold = 'Segoe UI:@System;Weight=Bold',
+  digits = 'Bahnschrift:@System;Weight=SemiBold',
+}
+local LOGO_IMAGE = 'logo.png' -- relative to the app folder
+
+local WORDS = {
+  title = 'AC DLSS-G', fg = 'Frame generation', fpsReal = 'real fps', fpsOutput = 'output fps',
+  vram = 'Video memory', details = 'Details', passThrough = 'Passing the game through',
+  waiting = 'Waiting for the game', gpu = 'GPU', bridge = 'Bridge', gpuTime = 'GPU time', hotkey = 'Hotkey',
+  perSecond = 'Per second',
+}
+local PILL = {
+  running = { [2] = 'Running 2X', [3] = 'Running 3X', [4] = 'Running 4X' }, runningAny = 'Running',
+  paused = 'Paused', off = 'Off', unavailable = 'Unavailable', waiting = 'Waiting', notRunning = 'Not running',
+  versions = 'Versions differ',
+}
+local ID = {
+  toggle = '###fgToggle', save = '###fgSave', details = '###fgDetails', detailsChild = 'fgDetailsContent',
+}
+
+-- The palette: near-black panels, racing red, white and two greys.
+local C = {
+  panel = rgbm(0.043, 0.043, 0.051, 0.94), -- #0B0B0D
+  track = rgbm(0.086, 0.086, 0.106, 1),    -- #16161B
+  line = rgbm(0.15, 0.15, 0.17, 1),        -- #26262C
+  button = rgbm(0.075, 0.075, 0.09, 0.96),
+  buttonHover = rgbm(0.12, 0.1, 0.105, 0.96),
+  hover = rgbm(1, 1, 1, 0.06),
+  text = rgbm(1, 1, 1, 1),
+  muted = rgbm(0.61, 0.61, 0.65, 1),       -- #9C9CA6
+  faint = rgbm(0.37, 0.37, 0.41, 1),       -- #5E5E68
+  red = rgbm(0.882, 0.024, 0, 1),          -- #E10600
+  redDeep = rgbm(0.478, 0.016, 0, 1),      -- #7A0400
+  switchOff = rgbm(0.17, 0.17, 0.2, 1),
+  knobOff = rgbm(0.8, 0.8, 0.84, 1),
+  shadow = rgbm(0, 0, 0, 0.35),
+  barReal = rgbm(0.86, 0.86, 0.9, 1),
+  barNormal = rgbm(0.72, 0.73, 0.78, 1),
+}
+-- Scratch colours, rewritten for each shape that needs a computed colour.
+local c1, c2 = rgbm(0, 0, 0, 0), rgbm(0, 0, 0, 0)
+-- The pill's colour, eased towards the state's.
+local pillColor = rgbm(0.61, 0.61, 0.65, 1)
+
+-- Scratch positions, the item size and the details' size.
+local P1, P2, P3 = vec2(0, 0), vec2(0, 0), vec2(0, 0)
+local SIZE, CHILD_SIZE = vec2(0, 0), vec2(0, 0)
+
+local K = {
+  alignStart = ui.Alignment.Start, alignCenter = ui.Alignment.Center, alignEnd = ui.Alignment.End,
+  corners = ui.CornerFlags.All, buttonNone = ui.ButtonFlags.None, buttonDisabled = ui.ButtonFlags.Disabled,
+  childFlags = bit.bor(ui.WindowFlags.NoScrollbar, ui.WindowFlags.NoScrollWithMouse, ui.WindowFlags.NoBackground),
+}
+
+-- Layout, in pixels; gap is added between blocks on top of ImGui's spacing.
+local L = {
+  gap = 8, headerH = 34, pillW = 108, pillH = 22, switchH = 60, segH = 34, fpsH = 88, saveH = 34,
+  detailsRowH = 26, detailValueX = 84, cardPad = 10,
+  savedHold = 2.2, savedFade = 0.8, -- seconds "Saved" shows, then fades
+}
+
+-- The frame time for the easing, and the content column of this frame.
+local frameDt = 0
+local lx, lw = 0, 0
+
+-- Animation state: every value eases towards its target each frame.
+local anim = {
+  switchT = -1, switchHover = 0, switchPress = 0,
+  segPos = -1, segHover = { [2] = 0, [3] = 0, [4] = 0 },
+  fpsReal = -1, fpsOut = 0, fpsShare = 1,
+  vramShown = 0, vramLevel = 0,
+  saveHover = 0, savePress = 0, savedAt = -100, lastSaveText = '',
+  detailsOpen = false, detailsT = 0, detailsH = 0, detailsHover = 0, detailsControls = false,
+  detailsFailureLogged = false,
+}
+
+-- Exponential easing towards a target at a rate per second: the same curve
+-- at any frame rate.
+local function ease(value, target, rate)
+  local v = value + (target - value) * (1 - math.exp(-rate * frameDt))
+  if math.abs(target - v) < 0.001 then return target end
+  return v
+end
+
+local function mix(a, b, t)
+  return a + (b - a) * t
+end
+
+-- out = a to b at t, its alpha scaled by alpha.
+local function lerpColor(out, a, b, t, alpha)
+  out.r = a.r + (b.r - a.r) * t
+  out.g = a.g + (b.g - a.g) * t
+  out.b = a.b + (b.b - a.b) * t
+  out.mult = (a.mult + (b.mult - a.mult) * t) * alpha
+  return out
+end
+
+-- out = a with its alpha scaled by alpha.
+local function faded(out, a, alpha)
+  out.r, out.g, out.b, out.mult = a.r, a.g, a.b, a.mult * alpha
+  return out
+end
+
+local function fillRect(x1, y1, x2, y2, color, rounding)
+  P1.x, P1.y, P2.x, P2.y = x1, y1, x2, y2
+  ui.drawRectFilled(P1, P2, color, rounding, K.corners)
+end
+
+local function strokeRect(x1, y1, x2, y2, color, rounding)
+  P1.x, P1.y, P2.x, P2.y = x1, y1, x2, y2
+  ui.drawRect(P1, P2, color, rounding, K.corners, 1)
+end
+
+local function fillCircle(x, y, radius, color)
+  P1.x, P1.y = x, y
+  ui.drawCircleFilled(P1, radius, color, 24)
+end
+
+local function line(x1, y1, x2, y2, color, thickness)
+  P1.x, P1.y, P2.x, P2.y = x1, y1, x2, y2
+  ui.drawLine(P1, P2, color, thickness)
+end
+
+-- A TTF text in a box, vertically centred.
+local function label(text, font, size, x1, y1, x2, y2, align, color)
+  P1.x, P1.y, P2.x, P2.y = x1, y1, x2, y2
+  ui.pushDWriteFont(font)
+  ui.dwriteDrawTextClipped(text, size, P1, P2, align, K.alignCenter, false, color)
+  ui.popDWriteFont()
+end
+
+-- Closes a block drawn from (x, y): one item of its size at its place, and
+-- the cursor below it.
+local function finishBlock(x, y, h)
+  ui.setCursorX(x)
+  ui.setCursorY(y)
+  SIZE.x, SIZE.y = lw, h
+  ui.dummy(SIZE)
+  ui.offsetCursorY(L.gap)
+end
+
+-- A wrapped line of the window's font in one colour, across the column.
+local function wrappedText(text, color)
+  ui.setCursorX(lx + 2)
+  ui.pushStyleColor(ui.StyleColor.Text, color)
+  ui.textWrapped(text, lx + lw - 2)
+  ui.popStyleColor(1)
+  ui.offsetCursorY(L.gap)
+end
+
+local function sectionLabel(text)
+  local x, y = lx, ui.getCursorY()
+  label(text, FONT.text, 12, x + 2, y, x + lw, y + 18, K.alignStart, C.muted)
+  SIZE.x, SIZE.y = lw, 18
+  ui.dummy(SIZE)
+end
+
+-- Integer strings for the eased numbers, each made once.
+local NUMBER_TEXT = {}
+local function numberText(value)
+  local n = math.floor(value + 0.5)
+  if not (n >= 0) then n = 0 elseif n > 99999 then n = 99999 end
+  local t = NUMBER_TEXT[n]
+  if not t then
+    t = tostring(n)
+    NUMBER_TEXT[n] = t
+  end
+  return t
+end
+
+-- Header: the logo, the title and the bridge's version, and the status pill
+-- whose dot pulses (a ping while frame generation runs, a slow breath else).
+local function pillState(problem)
+  if problem == 3 then return PILL.versions, COLOR_BAD, false end
+  if problem ~= 0 then return PILL.notRunning, COLOR_BAD, false end
+  local s = status
+  if s.bridgeState == STATE_NOT_LOADED then return PILL.waiting, COLOR_WARN, false end
+  if s.bridgeState < STATE_FG_AVAILABLE then return PILL.unavailable, COLOR_BAD, false end
+  if s.fgOn ~= 0 and s.fgPaused ~= 0 then return PILL.paused, COLOR_WARN, false end
+  if s.fgOn ~= 0 then
+    local m = s.fgMultUsed ~= 0 and s.fgMultUsed or s.fgMultRequested
+    return PILL.running[m] or PILL.runningAny, texts.vramNote ~= '' and COLOR_WARN or COLOR_GOOD, true
+  end
+  return PILL.off, COLOR_BAD, false
+end
+
+local function drawHeader(problem, now)
+  local x, y = lx, ui.getCursorY()
+  P1.x, P1.y, P2.x, P2.y = x, y + 3, x + 28, y + 31
+  ui.drawImage(LOGO_IMAGE, P1, P2)
+  local textRight = x + lw - L.pillW - 6
+  label(WORDS.title, FONT.bold, 16, x + 36, y, textRight, y + 20, K.alignStart, C.text)
+  label(texts.version, FONT.text, 11, x + 36, y + 19, textRight, y + 33, K.alignStart, C.muted)
+
+  local text, color, running = pillState(problem)
+  pillColor.r = ease(pillColor.r, color.r, 8)
+  pillColor.g = ease(pillColor.g, color.g, 8)
+  pillColor.b = ease(pillColor.b, color.b, 8)
+  local px2 = x + lw
+  local px1 = px2 - L.pillW
+  local py1 = y + (L.headerH - L.pillH) / 2
+  local py2 = py1 + L.pillH
+  fillRect(px1, py1, px2, py2, faded(c1, pillColor, 0.14), L.pillH / 2)
+  strokeRect(px1, py1, px2, py2, faded(c1, pillColor, 0.4), L.pillH / 2)
+  local dx, dy = px1 + 12, py1 + L.pillH / 2
+  if running then
+    local phase = (now * 0.7) % 1
+    fillCircle(dx, dy, 3.5 + 5 * phase, faded(c1, pillColor, 0.45 * (1 - phase)))
+    fillCircle(dx, dy, 3.5, pillColor)
+  else
+    fillCircle(dx, dy, 3.5, faded(c1, pillColor, 0.7 + 0.3 * math.sin(now * 2.4)))
+  end
+  label(text, FONT.semi, 12, px1 + 21, py1, px2 - 6, py2, K.alignStart, lerpColor(c1, pillColor, C.text, 0.35, 1))
+
+  -- A hairline under the header, red where it starts.
+  local ly = y + L.headerH + 4
+  fillRect(x, ly, x + lw, ly + 1, C.line, 0)
+  fillRect(x, ly, x + 28, ly + 1, C.red, 0)
+  finishBlock(x, y, L.headerH + 5)
+end
+
+-- A note as a small card that fades in: an accent bar, an optional title and
+-- the text wrapped inside. A card holds its fade and the measured text height.
+local function newCard()
+  return { alpha = 0, text = '', wrapW = -1, textH = 0 }
+end
+
+local cards = {
+  autoFix = newCard(), restart = newCard(), vsync = newCard(), driver = newCard(), state = newCard(),
+  problem = newCard(),
+}
+
+local function noteCard(card, title, text, accent)
+  local x, y = lx, ui.getCursorY()
+  local textX = x + L.cardPad + 5
+  local wrapX = x + lw - L.cardPad
+  local wrapW = wrapX - textX
+  if card.text ~= text or card.wrapW ~= wrapW then
+    card.text, card.wrapW = text, wrapW
+    card.textH = ui.measureText(text, wrapW).y
+  end
+  card.alpha = ease(card.alpha, 1, 7)
+  local a = card.alpha
+  local titleH = title and 20 or 0
+  local h = L.cardPad * 2 + titleH + card.textH
+  fillRect(x, y, x + lw, y + h, faded(c1, C.panel, a), 8)
+  fillRect(x, y, x + lw, y + h, faded(c1, accent, 0.08 * a), 8)
+  fillRect(x + 5, y + 7, x + 8, y + h - 7, faded(c1, accent, a), 1.5)
+  if title then
+    label(title, FONT.semi, 13, textX, y + L.cardPad - 2, wrapX, y + L.cardPad + titleH - 2, K.alignStart,
+      faded(c1, accent, a))
+  end
+  ui.setCursorX(textX)
+  ui.setCursorY(y + L.cardPad + titleH)
+  ui.pushStyleColor(ui.StyleColor.Text, lerpColor(c1, accent, C.text, title and 0.85 or 0.55, a))
+  ui.textWrapped(text, wrapX)
+  ui.popStyleColor(1)
+  finishBlock(x, y, h)
+end
+
+-- The big switch: the whole card is the button, the knob slides and the
+-- track fades to red, the card's edge warms on hover.
+local function fgSwitch(available)
+  local on = currentFg()
+  local x, y = lx, ui.getCursorY()
+  SIZE.x, SIZE.y = lw, L.switchH
+  local clicked = ui.invisibleButton(ID.toggle, SIZE, available and K.buttonNone or K.buttonDisabled)
+  local hovered = available and ui.itemHovered()
+  local pressed = available and ui.itemActive()
+  if hovered then ui.setMouseCursor(ui.MouseCursor.Hand) end
+  -- The hotkey toggles the same state.
+  if clicked and available then
+    sendRequest(not on, currentFlip(), currentNegate(), false, currentMult())
+    on = not on
+  end
+  local a = anim
+  if a.switchT < 0 then a.switchT = on and 1 or 0 end
+  a.switchT = ease(a.switchT, on and 1 or 0, 12)
+  a.switchHover = ease(a.switchHover, hovered and 1 or 0, 12)
+  a.switchPress = ease(a.switchPress, pressed and 1 or 0, 24)
+  local t = a.switchT
+  local alpha = available and 1 or 0.45
+
+  fillRect(x, y, x + lw, y + L.switchH, C.panel, 10)
+  strokeRect(x, y, x + lw, y + L.switchH, lerpColor(c1, C.line, C.redDeep, a.switchHover, 1), 10)
+  local textRight = x + lw - 84
+  label(WORDS.fg, FONT.semi, 15, x + 16, y + 10, textRight, y + 32, K.alignStart, faded(c1, C.text, alpha))
+  label(texts.fgHint, FONT.text, 12, x + 16, y + 32, textRight, y + 50, K.alignStart, faded(c1, C.muted, alpha))
+
+  local tw, th = 50, 28
+  local tx2 = x + lw - 16
+  local tx1 = tx2 - tw
+  local ty1 = y + (L.switchH - th) / 2
+  lerpColor(c1, C.switchOff, C.red, t, alpha)
+  local lift = 0.1 * a.switchHover
+  c1.r, c1.g, c1.b = mix(c1.r, 1, lift), mix(c1.g, 1, lift), mix(c1.b, 1, lift)
+  fillRect(tx1, ty1, tx2, ty1 + th, c1, th / 2)
+  local r = th / 2 - 3 - 1.5 * a.switchPress
+  local kx = mix(tx1 + th / 2, tx2 - th / 2, t)
+  local ky = ty1 + th / 2
+  fillCircle(kx, ky + 1, r + 1, faded(c1, C.shadow, alpha))
+  fillCircle(kx, ky, r, lerpColor(c1, C.knobOff, C.text, t, alpha))
+  finishBlock(x, y, L.switchH)
+end
+
+-- The 2X/3X/4X segments (spec 6.9): the red highlight slides to the one
+-- asked for; one above the maximum Streamline reported (fgMultMax, 0 while
+-- unknown) is dimmed and says why on hover. The bridge applies a click at
+-- its next frame.
+local function multiplierButtons(available)
+  local selected = currentMult()
+  local max = status.fgMultMax
+  local a = anim
+  sectionLabel(texts.mult)
+  local x, y = lx, ui.getCursorY()
+  local pad = 3
+  local segH = L.segH
+  local segW = (lw - pad * 2) / 3
+  fillRect(x, y, x + lw, y + segH, C.track, 9)
+  strokeRect(x, y, x + lw, y + segH, C.line, 9)
+  local target = (selected >= 2 and selected <= 4) and selected - 2 or -1
+  if target >= 0 then
+    if a.segPos < 0 then a.segPos = target end
+    a.segPos = ease(a.segPos, target, 14)
+    local hx = x + pad + a.segPos * segW
+    fillRect(hx, y + pad, hx + segW, y + segH - pad, faded(c1, C.red, available and 1 or 0.45), 7)
+  end
+  for m = 2, 4 do
+    local supported = max < 2 or m <= max
+    local usable = available and supported
+    local chosen = m == selected
+    local sx = x + pad + (m - 2) * segW
+    ui.setCursorX(sx)
+    ui.setCursorY(y + pad)
+    SIZE.x, SIZE.y = segW, segH - pad * 2
+    local clicked = ui.invisibleButton(MULT_LABELS[m], SIZE, usable and K.buttonNone or K.buttonDisabled)
+    local hovered = ui.itemHovered(ui.HoveredFlags.AllowWhenDisabled)
+    if not supported and hovered then
+      ui.setTooltip(TEXT_MULT_UNSUPPORTED)
+    end
+    if usable and hovered and not chosen then ui.setMouseCursor(ui.MouseCursor.Hand) end
+    local hover = ease(a.segHover[m], (usable and hovered and not chosen) and 1 or 0, 14)
+    a.segHover[m] = hover
+    if hover > 0 then
+      fillRect(sx, y + pad, sx + segW, y + segH - pad, faded(c1, C.hover, hover), 7)
+    end
+    -- The text turns white as the highlight arrives.
+    local near = target >= 0 and math.max(0, 1 - math.abs(a.segPos - (m - 2))) or 0
+    label(MULT_TEXTS[m], FONT.bold, 14, sx, y, sx + segW, y + segH, K.alignCenter,
+      lerpColor(c1, usable and C.muted or C.faint, C.text, near, 1))
+    if clicked and usable and not chosen then
+      sendRequest(currentFg(), currentFlip(), currentNegate(), false, m)
+    end
+  end
+  finishBlock(x, y, segH)
+  if texts.multNote ~= '' then wrappedText(texts.multNote, COLOR_WARN) end
+end
+
+-- Real and output fps: numbers that ease to each new value, an arrow whose
+-- chevrons run while frames are generated, and a bar of the real and the
+-- generated share of the output.
+local function fpsCard(running, now)
+  local s = status
+  local a = anim
+  local real, out = s.baseFps, s.presentedFps
+  if not (real >= 0) then real = 0 end
+  if not (out >= 0) then out = 0 end
+  if a.fpsReal < 0 then a.fpsReal, a.fpsOut = real, out end
+  a.fpsReal = ease(a.fpsReal, real, 6)
+  a.fpsOut = ease(a.fpsOut, out, 6)
+  a.fpsShare = ease(a.fpsShare, out > real and real / out or 1, 6)
+
+  local x, y = lx, ui.getCursorY()
+  local h = L.fpsH
+  fillRect(x, y, x + lw, y + h, C.panel, 10)
+  strokeRect(x, y, x + lw, y + h, C.line, 10)
+  local mid = x + lw / 2
+  label(numberText(a.fpsReal), FONT.digits, 30, x + 12, y + 8, mid - 24, y + 46, K.alignEnd, C.text)
+  label(numberText(a.fpsOut), FONT.digits, 30, mid + 24, y + 8, x + lw - 12, y + 46, K.alignStart,
+    running and C.red or C.text)
+  label(WORDS.fpsReal, FONT.text, 11, x + 12, y + 45, mid - 24, y + 59, K.alignEnd, C.muted)
+  label(WORDS.fpsOutput, FONT.text, 11, mid + 24, y + 45, x + lw - 12, y + 59, K.alignStart, C.muted)
+
+  -- Three chevrons between the numbers; a wave runs through them.
+  local ay = y + 28
+  local phase = (now * 1.4) % 1
+  for i = 0, 2 do
+    local cx = mid - 9 + i * 7
+    local glow = 0
+    if running then glow = math.max(0, math.cos((phase - i / 3) * math.pi * 2)) end
+    local col = lerpColor(c1, C.faint, C.red, glow, 1)
+    line(cx - 2.5, ay - 5, cx + 2.5, ay, col, 2)
+    line(cx + 2.5, ay, cx - 2.5, ay + 5, col, 2)
+  end
+
+  local bx1, bx2 = x + 14, x + lw - 14
+  local by = y + h - 17
+  fillRect(bx1, by, bx2, by + 5, C.track, 2.5)
+  local split = bx1 + (bx2 - bx1) * math.min(math.max(a.fpsShare, 0), 1)
+  fillRect(bx1, by, split, by + 5, C.barReal, 2.5)
+  if split < bx2 - 3 then fillRect(split + 2, by, bx2, by + 5, C.red, 2.5) end
+  finishBlock(x, y, h)
+end
+
+-- Video memory: used / budget as a bar that eases to each value, grey while
+-- it fits, amber from 90% of the budget and red above it.
+local function vramBlock()
+  local x, y = lx, ui.getCursorY()
+  local a = anim
+  a.vramShown = ease(a.vramShown, vramFill, 5)
+  a.vramLevel = ease(a.vramLevel, vramLevel, 6)
+  if a.vramLevel <= 1 then
+    lerpColor(c2, C.barNormal, COLOR_WARN, a.vramLevel, 1)
+  else
+    lerpColor(c2, COLOR_WARN, COLOR_BAD, a.vramLevel - 1, 1)
+  end
+  label(WORDS.vram, FONT.text, 12, x + 2, y, x + lw, y + 18, K.alignStart, C.muted)
+  label(texts.vramValue, FONT.semi, 12, x, y, x + lw - 2, y + 18, K.alignEnd, vramLevel > 0 and c2 or C.text)
+  local by = y + 22
+  fillRect(x, by, x + lw, by + 6, C.track, 3)
+  if a.vramShown > 0.002 then
+    fillRect(x, by, x + math.max(lw * math.min(a.vramShown, 1), 6), by + 6, c2, 3)
+  end
+  finishBlock(x, y, 28)
+end
+
+-- "Save as default": warms on hover, sinks while pressed, and says "Saved"
+-- for a moment in place of its label. A failed save stays under it.
+local function saveButton(now)
+  local usable = ctl ~= nil
+  local a = anim
+  local x, y = lx, ui.getCursorY()
+  local h = L.saveH
+  SIZE.x, SIZE.y = lw, h
+  local clicked = ui.invisibleButton(ID.save, SIZE, usable and K.buttonNone or K.buttonDisabled)
+  local hovered = usable and ui.itemHovered()
+  local pressed = usable and ui.itemActive()
+  if hovered then ui.setMouseCursor(ui.MouseCursor.Hand) end
+  if clicked and usable then
+    sendRequest(currentFg(), currentFlip(), currentNegate(), true, currentMult())
+    lastSaveRequest = requestCounter
+    a.lastSaveText = ''
+  end
+  if texts.save ~= a.lastSaveText then
+    a.lastSaveText = texts.save
+    if texts.save ~= '' and status.saveOk ~= 0 then a.savedAt = now end
+  end
+  local since = now - a.savedAt
+  local flash = since < L.savedHold and 1 or math.max(0, 1 - (since - L.savedHold) / L.savedFade)
+  a.saveHover = ease(a.saveHover, hovered and 1 or 0, 14)
+  a.savePress = ease(a.savePress, pressed and 1 or 0, 24)
+  local alpha = usable and 1 or 0.45
+  local inset = 1.5 * a.savePress
+  fillRect(x + inset, y + inset, x + lw - inset, y + h - inset,
+    lerpColor(c1, C.button, C.buttonHover, a.saveHover, alpha), 8)
+  strokeRect(x + inset, y + inset, x + lw - inset, y + h - inset, lerpColor(c1, C.line, C.red, a.saveHover, alpha), 8)
+  if flash > 0 then
+    label(texts.save, FONT.semi, 13, x, y, x + lw, y + h, K.alignCenter, faded(c1, COLOR_GOOD, flash * alpha))
+  end
+  if flash < 1 then
+    label(LABEL_SAVE, FONT.semi, 13, x, y, x + lw, y + h, K.alignCenter, faded(c1, C.text, (1 - flash) * alpha))
+  end
+  finishBlock(x, y, h)
+  if texts.save ~= '' and status.saveOk == 0 then wrappedText(texts.save, COLOR_BAD) end
+end
+
+-- "Details": a header row whose chevron turns, and a child window whose
+-- height eases between 0 and its content's, measured when it last drew.
+local function detailRow(name, value)
+  ui.pushStyleColor(ui.StyleColor.Text, C.muted)
+  ui.text(name)
+  ui.popStyleColor(1)
+  ui.sameLine(L.detailValueX)
+  ui.textWrapped(value)
+end
+
+-- The camera switches for checking the camera constants in game.
+local function debugSwitches()
+  local controls = anim.detailsControls
   if not controls then ui.pushDisabled() end
+  ui.pushStyleColor(ui.StyleColor.CheckMark, C.red)
+  ui.pushStyleColor(ui.StyleColor.FrameBg, C.track)
+  ui.pushStyleColor(ui.StyleColor.FrameBgHovered, C.buttonHover)
+  ui.pushStyleColor(ui.StyleColor.FrameBgActive, C.buttonHover)
   if ui.checkbox(LABEL_FLIP, currentFlip()) and controls then
     sendRequest(currentFg(), not currentFlip(), currentNegate(), false, currentMult())
   end
   if ui.checkbox(LABEL_NEGATE, currentNegate()) and controls then
     sendRequest(currentFg(), currentFlip(), not currentNegate(), false, currentMult())
   end
+  ui.popStyleColor(4)
   if not controls then ui.popDisabled() end
-  ui.text(texts.perSecond)
 end
 
--- The 2X/3X/4X buttons (spec 6.9): the one asked for is green; one above
--- the maximum Streamline reported (fgMultMax, 0 while unknown) is disabled
--- and says why on hover. The bridge applies a click at its next frame.
-local function multiplierButtons(available)
-  local selected = currentMult()
-  local max = status.fgMultMax
-  ui.text(texts.mult)
-  for m = 2, 4 do
-    ui.sameLine()
-    local supported = max < 2 or m <= max
-    local usable = available and supported
-    local chosen = m == selected
-    ui.pushStyleColor(ui.StyleColor.Button, chosen and COLOR_ON or COLOR_OFF)
-    ui.pushStyleColor(ui.StyleColor.ButtonHovered, chosen and COLOR_ON_HOVER or COLOR_OFF_HOVER)
-    ui.pushStyleColor(ui.StyleColor.ButtonActive, chosen and COLOR_ON_HOVER or COLOR_OFF_HOVER)
-    local clicked = ui.button(MULT_LABELS[m], multSize, usable and ui.ButtonFlags.None or ui.ButtonFlags.Disabled)
-    ui.popStyleColor(3)
-    if not supported and ui.itemHovered(ui.HoveredFlags.AllowWhenDisabled) then
-      ui.setTooltip(TEXT_MULT_UNSUPPORTED)
+local function detailsContent()
+  detailRow(WORDS.gpu, texts.gpu)
+  detailRow(WORDS.bridge, texts.mode)
+  detailRow(WORDS.gpuTime, texts.gpuMs)
+  detailRow(WORDS.hotkey, texts.hotkey)
+  detailRow(WORDS.perSecond, texts.perSecond)
+  ui.offsetCursorY(4)
+  debugSwitches()
+  anim.detailsH = ui.getCursorY()
+end
+
+local function detailsSection(controls)
+  local a = anim
+  a.detailsControls = controls
+  local x, y = lx, ui.getCursorY()
+  local rowH = L.detailsRowH
+  SIZE.x, SIZE.y = lw, rowH
+  if ui.invisibleButton(ID.details, SIZE, K.buttonNone) then a.detailsOpen = not a.detailsOpen end
+  local hovered = ui.itemHovered()
+  if hovered then ui.setMouseCursor(ui.MouseCursor.Hand) end
+  a.detailsHover = ease(a.detailsHover, hovered and 1 or 0, 14)
+  a.detailsT = ease(a.detailsT, a.detailsOpen and 1 or 0, 10)
+  local col = lerpColor(c1, C.muted, C.text, a.detailsHover, 1)
+  -- A triangle pointing right, turned by up to 90 degrees to point down.
+  local cx, cy = x + 8, y + rowH / 2
+  local turn = a.detailsT * math.pi / 2
+  local ca, sa = math.cos(turn), math.sin(turn)
+  P1.x, P1.y = cx + 4 * ca, cy + 4 * sa
+  P2.x, P2.y = cx - 3 * ca + 4 * sa, cy - 3 * sa - 4 * ca
+  P3.x, P3.y = cx - 3 * ca - 4 * sa, cy - 3 * sa + 4 * ca
+  ui.drawTriangleFilled(P1, P2, P3, col)
+  label(WORDS.details, FONT.semi, 13, x + 20, y, x + lw, y + rowH, K.alignStart, col)
+  if a.detailsT > 0 then
+    local h = (a.detailsH > 0 and a.detailsH or 120) * a.detailsT
+    if h >= 1 then
+      ui.setCursorX(x + 4)
+      CHILD_SIZE.x, CHILD_SIZE.y = lw - 4, h
+      -- pcall: a failing row cannot leave the child open.
+      if ui.beginChild(ID.detailsChild, CHILD_SIZE, false, K.childFlags) then
+        local ok, err = pcall(detailsContent)
+        if not ok and not a.detailsFailureLogged then
+          a.detailsFailureLogged = true
+          ac.error('AcDlssg: drawing the details failed: ' .. tostring(err))
+        end
+      end
+      ui.endChild()
     end
-    if clicked and usable and not chosen then
-      sendRequest(currentFg(), currentFlip(), currentNegate(), false, m)
-    end
-  end
-  if texts.multNote ~= '' then
-    ui.pushStyleColor(ui.StyleColor.Text, COLOR_WARN)
-    ui.textWrapped(texts.multNote)
-    ui.popStyleColor(1)
   end
 end
 
 function script.windowMain(dt)
   local now = os.preciseClock()
+  local frame = ui.deltaTime()
+  frameDt = (frame > 0 and frame < 0.1) and frame or 0.016
   refreshStatus(now)
   local problem = bridgeProblem(now)
+  lx, lw = ui.getCursorX(), ui.availableSpaceX()
+  drawHeader(problem, now)
   if problem == 3 then
-    ui.textColored(TEXT_VERSIONS_DIFFER, COLOR_BAD)
-    ui.textWrapped(texts.versions)
+    noteCard(cards.problem, TEXT_VERSIONS_DIFFER, texts.versions, COLOR_BAD)
     return
   end
   if problem ~= 0 then
-    ui.textColored(TEXT_NOT_RUNNING, COLOR_BAD)
-    ui.textWrapped(problem == 1 and TEXT_NOT_RUNNING_HINT or texts.stopped)
+    noteCard(cards.problem, TEXT_NOT_RUNNING, problem == 1 and TEXT_NOT_RUNNING_HINT or texts.stopped, COLOR_BAD)
     return
   end
   local s = status
   if s.bridgeState < STATE_PROXY_NO_FG then
-    ui.textColored(texts.state, COLOR_WARN)
-    ui.text(texts.gpu)
-    ui.text(texts.mode)
+    noteCard(cards.state, s.bridgeState == STATE_PASS_THROUGH and WORDS.passThrough or WORDS.waiting, texts.state,
+      COLOR_WARN)
+    detailsSection(false)
     return
   end
 
   -- A setting the bridge fixed by itself so that frame generation can run
   -- (a number as fg_vram_headroom_mib switched to auto), first of all.
   if texts.autoFixNote ~= '' then
-    ui.pushStyleColor(ui.StyleColor.Text, COLOR_GOOD)
-    ui.textWrapped(texts.autoFixNote)
-    ui.popStyleColor(1)
-    ui.offsetCursorY(4)
+    noteCard(cards.autoFix, nil, texts.autoFixNote, COLOR_GOOD)
+  else
+    cards.autoFix.alpha = 0
   end
 
   -- A change that applies only at the next start ("Save as default").
   if texts.restartNote ~= '' then
-    ui.textColored(TEXT_RESTART, COLOR_RESTART)
-    ui.textWrapped(texts.restartNote)
-    ui.offsetCursorY(4)
+    noteCard(cards.restart, TEXT_RESTART, texts.restartNote, COLOR_RESTART)
+  else
+    cards.restart.alpha = 0
   end
 
-  -- The big switch; the hotkey toggles the same state.
+  -- The big switch; under it, why frame generation is off or paused.
   local available = ctl ~= nil and s.bridgeState == STATE_FG_AVAILABLE
-  local on = currentFg()
-  toggleSize.x = ui.availableSpaceX()
-  ui.pushStyleColor(ui.StyleColor.Button, on and COLOR_ON or COLOR_OFF)
-  ui.pushStyleColor(ui.StyleColor.ButtonHovered, on and COLOR_ON_HOVER or COLOR_OFF_HOVER)
-  ui.pushStyleColor(ui.StyleColor.ButtonActive, on and COLOR_ON_HOVER or COLOR_OFF_HOVER)
-  local clicked = ui.button(on and LABEL_ON or LABEL_OFF, toggleSize,
-    available and ui.ButtonFlags.None or ui.ButtonFlags.Disabled)
-  ui.popStyleColor(3)
-  if clicked and available then sendRequest(not on, currentFlip(), currentNegate(), false, currentMult()) end
-  if not available then ui.textWrapped(texts.unavailable) end
-  -- An older bridge publishes no multiplier (0): no buttons.
+  local running = s.fgOn ~= 0 and s.fgPaused == 0
+  fgSwitch(available)
+  if not available then
+    wrappedText(texts.unavailable, COLOR_BAD)
+  elseif not running then
+    wrappedText(texts.status, s.fgUserOn ~= 0 and COLOR_WARN or C.muted)
+  end
+  -- An older bridge publishes no multiplier (0): no segments.
   if s.fgMultRequested ~= 0 then multiplierButtons(available) end
 
-  -- Wrapped: an off reason or the pause note is longer than the window is wide.
-  ui.pushStyleColor(ui.StyleColor.Text, (s.fgOn ~= 0 and s.fgPaused == 0) and COLOR_GOOD or COLOR_WARN)
-  ui.textWrapped(texts.status)
-  ui.popStyleColor(1)
-  ui.text(texts.fps)
-  ui.text(texts.gpuMs)
-  if vramLevel == 0 then
-    ui.text(texts.vram)
-  else
-    ui.textColored(texts.vram, vramLevel == 2 and COLOR_BAD or COLOR_WARN)
-  end
+  fpsCard(running, now)
+  vramBlock()
   -- The video memory guard's note: tight (on anyway), or not enough (off).
-  if texts.vramNote ~= '' then
-    ui.pushStyleColor(ui.StyleColor.Text, COLOR_WARN)
-    ui.textWrapped(texts.vramNote)
-    ui.popStyleColor(1)
-  end
-  ui.text(texts.gpu)
-  ui.text(texts.mode)
-  ui.text(texts.hotkey)
-  if s.vsyncNote ~= 0 then ui.textWrapped(TEXT_VSYNC) end
-  if s.driverWarning ~= 0 then
-    ui.pushStyleColor(ui.StyleColor.Text, COLOR_WARN)
-    ui.textWrapped(texts.warning)
-    ui.popStyleColor(1)
-  end
+  if texts.vramNote ~= '' then wrappedText(texts.vramNote, COLOR_WARN) end
+  if s.vsyncNote ~= 0 then noteCard(cards.vsync, nil, TEXT_VSYNC, C.muted) else cards.vsync.alpha = 0 end
+  if s.driverWarning ~= 0 then noteCard(cards.driver, nil, texts.warning, COLOR_WARN) else cards.driver.alpha = 0 end
 
-  ui.offsetCursorY(4)
-  if ui.button(LABEL_SAVE, saveSize, ctl ~= nil and ui.ButtonFlags.None or ui.ButtonFlags.Disabled) and ctl ~= nil then
-    sendRequest(currentFg(), currentFlip(), currentNegate(), true, currentMult())
-    lastSaveRequest = requestCounter
-  end
-  if texts.save ~= '' then
-    ui.sameLine()
-    ui.textDisabled(texts.save)
-  end
-  ui.offsetCursorY(4)
-  ui.treeNode('Debug', ui.TreeNodeFlags.Framed, debugContent)
+  saveButton(now)
+  detailsSection(ctl ~= nil)
 end

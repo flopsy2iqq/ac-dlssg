@@ -338,8 +338,8 @@ TEST(LuaApp_WindowSaysWhenBridgeAndWindowVersionsDiffer) {
     CHECK(acdb_test::LuaFunctionBody(lua, "bridgeProblem").find("return status.otherVersion ~= 0 and 3 or 1") !=
           std::string::npos);
     const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
-    CHECK(window.find("ui.textColored(TEXT_VERSIONS_DIFFER, COLOR_BAD)") != std::string::npos);
-    CHECK(window.find("texts.versions") != std::string::npos);
+    // The window's card for it: the title in the error colour, the hint below.
+    CHECK(window.find("noteCard(cards.problem, TEXT_VERSIONS_DIFFER, texts.versions, COLOR_BAD)") != std::string::npos);
     CHECK(acdb_test::LuaFunctionBody(lua, "refreshStatus").find("texts.versions = string.format(TEXT_VERSIONS_HINT") !=
           std::string::npos);
 }
@@ -355,9 +355,12 @@ TEST(LuaApp_WindowShowsTheAutoFixNoteAtTheTop) {
     const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
     const size_t note = window.find("if texts.autoFixNote ~= '' then");
     REQUIRE(note != std::string::npos);
-    CHECK(window.find("ui.textWrapped(texts.autoFixNote)", note) != std::string::npos);
+    // A note card in the "on" colour.
+    CHECK(window.find("noteCard(cards.autoFix, nil, texts.autoFixNote, COLOR_GOOD)", note) != std::string::npos);
     CHECK(note < window.find("texts.restartNote"));
-    CHECK(note < window.find("toggleSize.x = ui.availableSpaceX()"));
+    CHECK(note < window.find("fgSwitch(available)"));
+    // The card wraps its text inside its padding.
+    CHECK(acdb_test::LuaFunctionBody(lua, "noteCard").find("ui.textWrapped(text, wrapX)") != std::string::npos);
     // The window's texts table has it from the start.
     CHECK(std::regex_search(lua, std::regex("local texts = \\{[^}]*[{,\\s]autoFixNote = ''")));
 }
