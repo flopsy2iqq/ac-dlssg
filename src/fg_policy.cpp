@@ -181,8 +181,9 @@ VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& at
         if (wanted > 2) d.fallback = FallbackText(wanted, atWanted);
         return d;
     }
+    // With auto the actionable text is the reason too; a number keeps the
+    // refusal of before as its reason.
     d.note = NotEnoughText(d.check);
-    // A number keeps the refusal of before as the reason.
     if (autoHeadroom) d.check.reason = d.note;
     return d;
 }
