@@ -33,8 +33,10 @@ struct Config {
     // even while DLSS-G is unsupported or off (test app).
     bool tag_without_fg = false;  // tag_without_fg=0|1
     // Video memory guard (spec 6.11): free budget must cover the DLSS-G
-    // estimate plus this much. 0..65536.
-    unsigned fg_vram_headroom_mib = 512;  // fg_vram_headroom_mib=<MiB>
+    // estimate plus this much. 0..65536. 0 since 2026-09-29: on the 4 GB
+    // RTX 3050 Ti laptop 346 MiB were free for a 283 MiB estimate, and 512
+    // kept DLSS-G off.
+    unsigned fg_vram_headroom_mib = 0;  // fg_vram_headroom_mib=<MiB>
     // When the process bound VERSION.dll to System32 (Windows 11 25H2), the
     // bootstrap loads the game folder's version.dll itself only if it is the
     // pinned dlssg_for_sm86 release; 1 loads any version.dll there.

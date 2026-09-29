@@ -258,7 +258,7 @@ TEST(Config_M3KeyDefaults) {
     CHECK(!c.camera_negate_side);
     CHECK(!c.proxy_without_fg);
     CHECK(!c.tag_without_fg);
-    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK(c.warnings.empty());
 }
 
@@ -297,7 +297,7 @@ TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
     CHECK(!c.camera_negate_side);
     CHECK(!c.proxy_without_fg);
     CHECK(!c.tag_without_fg);
-    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     REQUIRE(c.warnings.size() == 5);
     const char* keys[] = {"camera_flip_handedness", "camera_negate_side", "proxy_without_fg", "tag_without_fg",
                           "fg_vram_headroom_mib"};
@@ -309,10 +309,10 @@ TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
     }
     // Above 64 GiB is refused as a typo; an empty value keeps the default quietly.
     c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=65537\n"));
-    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK_EQ(c.warnings.size(), 1u);
     c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=\n"));
-    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK(c.warnings.empty());
 }
 
