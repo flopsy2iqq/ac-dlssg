@@ -47,12 +47,12 @@
          them next to acs.exe. A pinned 0.3.5 file that is already in the game
          folder is not downloaded again; it is recorded as found, and
          uninstall.ps1 leaves it (one an earlier install put there stays
-         recorded as installed). A version.dll that an earlier install put
-         there and that no longer matches the pins is downloaded again and
-         replaced. Any other version.dll (another mod, another
-         dlssg_for_sm86 version) is left untouched with a warning, and the
-         spoof is not installed. A download that fails its checks is deleted
-         and stops the install with nothing changed.
+         recorded as installed). Any other version.dll (another mod, another
+         dlssg_for_sm86 version), also one put over the version.dll an
+         earlier install put there, is left untouched with a warning, and
+         the spoof is not installed (the earlier record stays). A download
+         that fails its checks is deleted and stops the install with nothing
+         changed.
        - RTX 40 and RTX 50: nothing is needed.
        - RTX 20: frame generation is not supported there; no spoof.
   4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll, the
@@ -167,21 +167,6 @@ function Copy-InstalledStreamline([string]$Game, [string]$To) {
     return [pscustomobject]@{ Dir = $To; From = $from; Problem = '' }
 }
 
-# The dlssg_for_sm86 files that the manifest of an earlier install records
-# as installed (names in lower case); none without a readable manifest.
-function Get-SpoofInstalledNames([string]$Game) {
-    $names = @{}
-    $path = Join-Path $Game "$($script:AcdbDataDirName)\install\dev-manifest.json"
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $names }
-    try {
-        $m = Read-Manifest $path
-        if ($m.PSObject.Properties['spoof'] -and $m.spoof) {
-            foreach ($f in @($m.spoof.files)) { if ([string]$f.origin -eq 'installed') { $names[([string]$f.path).ToLowerInvariant()] = $true } }
-        }
-    } catch { }
-    return $names
-}
-
 function Get-GpuArchText($Adapter) {
     switch ($Adapter.Arch) {
         'Ampere' { if ($Adapter.Sm86) { return 'RTX 30, Ampere SM86' } else { return 'Ampere SM80 (A100)' } }
@@ -259,16 +244,6 @@ function Get-SpoofInstallArgs([string]$Game) {
         else { $state[$n] = 'other' }
     }
     $versionDll = Join-Path $Game 'version.dll'
-    # A version.dll an earlier install put there is ours: when it no longer
-    # matches the pins it is fetched again and replaced (dev-install.ps1
-    # -AutoUpgrade keeps a copy of it in install\backup).
-    $ours = Get-SpoofInstalledNames $Game
-    if ($state['version.dll'] -eq 'other' -and $ours.ContainsKey('version.dll')) {
-        Say ("note: $versionDll is the dlssg_for_sm86 file an earlier install put there, but it no longer matches $what " +
-            "(SHA-256 $(Get-Sha256OfFile $versionDll)); it is downloaded again and replaced (a copy stays in " +
-            "$(Get-InstalledTool $Game 'install\backup')).")
-        $state['version.dll'] = 'absent'
-    }
     if ($state['version.dll'] -eq 'other') {
         Say ("WARNING: $versionDll is not $what (SHA-256 $(Get-Sha256OfFile $versionDll)); it is another mod's " +
             'version.dll or another dlssg_for_sm86 version. It was left untouched, and dlssg_for_sm86 was not installed. ' +

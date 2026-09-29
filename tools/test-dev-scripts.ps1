@@ -2753,7 +2753,7 @@ Invoke-Case 'IT8: a changed or missing installed Streamline file means a downloa
     }
 }
 
-Invoke-Case 'IT9: dlssg_for_sm86 already installed: no download; changed or missing: downloaded again' {
+Invoke-Case 'IT9: dlssg_for_sm86 already installed: no download; a missing file is downloaded again, a version.dll put over ours stays' {
     $pkg = New-PackageCopy 'IT9'
     $game = New-FakeGame 'IT9' -NoDxgi
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
@@ -2765,20 +2765,24 @@ Invoke-Case 'IT9: dlssg_for_sm86 already installed: no download; changed or miss
     $m = Get-Manifest $game
     Check ((Test-SpoofInstalled $game) -and @($spoofNames | Where-Object { (Get-SpoofRecord $m $_).origin -eq 'installed' }).Count -eq 2) 'both stay recorded as installed'
 
-    $vd = Join-Path $game 'version.dll'
-    [IO.File]::WriteAllBytes($vd, [byte[]]((Read-Bytes $vd) + [byte[]]@(1, 2, 3)))
-    $changed = Get-Sha $vd
-    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
-    Check ($r.Code -eq 0 -and $r.Text -match 'downloaded again and replaced' -and $r.Text -match 'copying .*version\.dll \(-SpoofSourceDir') 'a changed version.dll that the install put there is fetched again'
-    Check (Test-SpoofInstalled $game) 'and replaced'
-    $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Sha $_.FullName })
-    Check ($backups -contains $changed) 'a copy of the changed one stays in ac-dlssg\install\backup'
-    Check ((Get-SpoofRecord (Get-Manifest $game) 'version.dll').origin -eq 'installed') 'it stays recorded as installed'
-
     Remove-Item -LiteralPath (Join-Path $game 'dlssg_sm86.ini')
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
     Check ($r.Code -eq 0 -and $r.Text -match 'copying .*dlssg_sm86\.ini \(-SpoofSourceDir' -and $r.Text -notmatch 'copying .*version\.dll') 'a missing dlssg_sm86.ini is fetched again, version.dll is not'
     Check (Test-SpoofInstalled $game) 'both are in place again'
+
+    # Another version.dll put over ours since (another mod's proxy, another
+    # dlssg_for_sm86 build) is not ours to replace, as in 1.0.0 (spec 10).
+    $vd = Join-Path $game 'version.dll'
+    $otherMod = Join-Path $FakeRoot 'spoof\IT9-other\version.dll'
+    New-FakePeDll $otherMod @('GetFileVersionInfoW', 'VerQueryValueW') -Salt '-another-mod'
+    Copy-Item -LiteralPath $otherMod -Destination $vd -Force
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and $r.Text -match 'WARNING: .*version\.dll is not' -and $r.Text -notmatch 'copying .*version\.dll' -and
+        $r.Text -notmatch 'fetch-deps:') 'an upgrade leaves a version.dll put over ours untouched, with a warning, and downloads nothing'
+    Check ((Get-Sha $vd) -eq (Get-Sha $otherMod)) 'it is still the other version.dll'
+    Check ((Get-SpoofRecord (Get-Manifest $game) 'version.dll').sha256 -eq (Get-Sha (Join-Path $spoofSrc 'version.dll'))) 'the manifest still records the version.dll the install put there'
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and (Test-Path -LiteralPath $vd) -and (Get-Sha $vd) -eq (Get-Sha $otherMod)) 'the uninstall -RemoveData leaves the other version.dll in place'
 }
 
 # The state the installed uninstall.bat leaves when its window is closed at
