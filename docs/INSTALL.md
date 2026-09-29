@@ -7,7 +7,7 @@ It takes about 5 minutes.
 ## What you need
 
 - An **NVIDIA RTX 30, 40 or 50** graphics card. Laptops work too.
-- **Assetto Corsa** with **Custom Shaders Patch (CSP)**.
+- **Assetto Corsa** with a **Custom Shaders Patch (CSP) preview build** (0.3.0-preview or newer). You get it from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
 - An internet connection. The installer downloads NVIDIA's files by itself.
 
 ## Install

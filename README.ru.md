@@ -41,7 +41,7 @@ DLSS-G 2X в Assetto Corsa с CSP:
 
 ## Что нужно
 
-- **Assetto Corsa** из Steam с **Custom Shaders Patch 0.3.0** или новее. Проверено на preview622 и preview634.
+- **Assetto Corsa** из Steam с **preview-версией Custom Shaders Patch** (0.3.0-preview или новее). Проверено на preview622 и preview634. Preview-версии CSP можно получить у автора CSP на [Patreon](https://www.patreon.com/c/x4fab/home).
 - **DLSS-апскейл в CSP включён**, в любом режиме, включая DLAA. Генерация берёт из него глубину и векторы движения.
 - **Видеокарта NVIDIA RTX:**
   - RTX 40 и RTX 50 поддерживают DLSS-G сами.

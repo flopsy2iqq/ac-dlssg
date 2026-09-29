@@ -41,7 +41,7 @@ On a 4 GB card the video memory is tight: if the game stutters, lower CSP's text
 
 ## Requirements
 
-- **Assetto Corsa** from Steam with **Custom Shaders Patch 0.3.0** or newer. It was tested with preview622 and preview634.
+- **Assetto Corsa** from Steam with a **Custom Shaders Patch preview build** (0.3.0-preview or newer). It was tested with preview622 and preview634. CSP preview builds are available from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
 - **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it.
 - **An NVIDIA RTX GPU:**
   - RTX 40 and RTX 50 support DLSS-G themselves.

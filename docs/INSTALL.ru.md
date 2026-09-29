@@ -7,7 +7,7 @@
 ## Что нужно
 
 - Видеокарта **NVIDIA RTX 30, 40 или 50**. Ноутбуки тоже подходят.
-- **Assetto Corsa** с **Custom Shaders Patch (CSP)**.
+- **Assetto Corsa** с **preview-версией Custom Shaders Patch (CSP)** (0.3.0-preview или новее). Её можно получить у автора CSP на [Patreon](https://www.patreon.com/c/x4fab/home).
 - Интернет. Установщик сам скачает нужные файлы NVIDIA.
 
 ## Установка
