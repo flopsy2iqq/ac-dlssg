@@ -1,4 +1,4 @@
-[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md)
+[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Установка](https://img.shields.io/badge/-Установка-brightgreen)](docs/INSTALL.ru.md)
 
 # ac-dlssg
 
