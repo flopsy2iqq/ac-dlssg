@@ -1,0 +1,67 @@
+# Publishes a release for a pushed tag v<major.minor.patch>: build.yml builds
+# and tests the tag, then this workflow checks that the tag matches the
+# project VERSION and has a CHANGELOG.md section, attests the zip and
+# ac-dlssg.dll (GitHub build provenance), and creates the GitHub release with
+# the zip attached. The release notes are the version's CHANGELOG.md section,
+# the SHA-256 of both files and the command that verifies them.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the release zip
+        uses: actions/download-artifact@v4
+        with:
+          name: ac-dlssg-${{ needs.build.outputs.version }}
+          path: dist
+
+      # Fails, before anything is published, when the tag is not v<VERSION>,
+      # CHANGELOG.md has no section for VERSION, or the DLL in the zip is not
+      # the build's ac-dlssg.dll.
+      - name: Write the release notes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\release-notes.ps1 -Tag $env:GITHUB_REF_NAME `
+              -Zip "dist\package\ac-dlssg-$env:VERSION.zip" -Dll dist\Release\ac-dlssg.dll -OutFile dist\release-notes.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Attest the zip and ac-dlssg.dll
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/package/ac-dlssg-${{ needs.build.outputs.version }}.zip
+            dist/Release/ac-dlssg.dll
+
+      - name: Create the GitHub release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          gh release create $env:GITHUB_REF_NAME "dist\package\ac-dlssg-$env:VERSION.zip" --verify-tag `
+              --title "ac-dlssg $env:VERSION" --notes-file dist\release-notes.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
