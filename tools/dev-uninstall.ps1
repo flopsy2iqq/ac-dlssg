@@ -68,68 +68,6 @@ Set-StrictMode -Version 2.0
 function Say([string]$Message) { Write-Host "dev-uninstall: $Message" }
 function Step([string]$Message) { Write-Host "  $Message" }
 
-# Reverts the [PROXY] keys recorded in $Reshade (the manifest's "reshade"
-# object). Returns the lines to report.
-function Restore-ProxyKeys($Doc, $Reshade) {
-    $report = @()
-    $blocks = @(Get-IniSections $Doc 'PROXY')
-    if ($blocks.Count -ne 1) {
-        return @("ReShade.ini has $($blocks.Count) [PROXY] sections now; left unchanged")
-    }
-    $block = $blocks[0]
-    $proxyLines = @(Find-IniKeyLines $Doc $block 'ProxyLibrary')
-    $enableLines = @(Find-IniKeyLines $Doc $block 'EnableProxyLibrary')
-    $proxyWritten = [string]$Reshade.keys.ProxyLibrary.written
-    $enableWritten = [string]$Reshade.keys.EnableProxyLibrary.written
-
-    $proxyOurs = $proxyLines.Count -eq 1 -and
-        [string]::Equals((Get-IniValueAt $Doc $proxyLines[0]).Trim(), $proxyWritten, [System.StringComparison]::OrdinalIgnoreCase)
-    $enableOurs = $enableLines.Count -eq 1 -and (Get-IniValueAt $Doc $enableLines[0]).Trim() -eq $enableWritten
-
-    $restore = @()
-    if ($proxyOurs) {
-        $restore += [pscustomobject]@{ Key = 'ProxyLibrary'; Index = $proxyLines[0] }
-        if ($enableOurs) {
-            $restore += [pscustomobject]@{ Key = 'EnableProxyLibrary'; Index = $enableLines[0] }
-        } else {
-            $report += "EnableProxyLibrary is now $(Format-KeyLines $Doc $enableLines), not '$enableWritten'; left unchanged"
-        }
-    } else {
-        $report += "ProxyLibrary is now $(Format-KeyLines $Doc $proxyLines), not '$proxyWritten'; both keys left unchanged"
-    }
-
-    # Bottom-up, so that removing a line does not move the ones still to do.
-    foreach ($item in @($restore | Sort-Object Index -Descending)) {
-        $rec = $Reshade.keys.($item.Key)
-        if ($rec.present) {
-            $Doc.Lines[$item.Index].Text = $script:Latin1.GetString([Convert]::FromBase64String($rec.lineBase64))
-            $report += "line $($item.Index + 1): restored '$($rec.line)'"
-        } else {
-            Remove-IniLine $Doc $item.Index
-            $report += "line $($item.Index + 1): removed '$($item.Key)=$([string]$rec.written)' (it was not there before)"
-        }
-    }
-
-    if ($Reshade.sectionAdded -and $restore.Count -gt 0) {
-        $blocks = @(Get-IniSections $Doc 'PROXY')
-        if ($blocks.Count -eq 1 -and $blocks[0].End -eq $blocks[0].Header + 1) {
-            $header = $blocks[0].Header
-            Remove-IniLine $Doc $header
-            $report += "removed the empty [PROXY] section the install added"
-            if ($Reshade.blankLineAdded -and $header -gt 0 -and $header -le $Doc.Lines.Count -and
-                (Get-IniLineInfo $Doc.Lines[$header - 1].Text).Kind -eq 'blank') {
-                Remove-IniLine $Doc ($header - 1)
-            }
-        }
-    }
-    return $report
-}
-
-function Format-KeyLines($Doc, [int[]]$Indexes) {
-    if ($Indexes.Count -eq 0) { return '(missing)' }
-    return (($Indexes | ForEach-Object { "'$(Get-IniValueAt $Doc $_)'" }) -join ', ')
-}
-
 $exitCode = 0
 $game = $null
 try {

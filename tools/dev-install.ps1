@@ -55,8 +55,11 @@
   a failed upgrade puts it back; after a successful upgrade the copy is
   deleted when it was the version recorded in the manifest. A file whose hash
   matches neither that version nor the new one was changed outside this
-  script (or is not in the manifest): it is replaced only with -Force, and
-  its copy is kept.
+  script (or is not in the manifest): it is replaced only with -Force or
+  -AutoUpgrade, and its copy is kept. Files in ac-dlssg\sl and
+  apps\lua\AcDlssg that an earlier run installed and this one no longer
+  ships are removed, each only while it is the version installed (with
+  -Force or -AutoUpgrade also when it was changed; its copy is kept).
 
 .PARAMETER GameDir
   The Assetto Corsa folder (the one with acs.exe). Default: found through
@@ -93,6 +96,18 @@
 .PARAMETER Force
   Replace installed files that were changed outside this script.
 
+.PARAMETER AutoUpgrade
+  What the test package's install.ps1 passes, so that an upgrade never
+  stops for files that are ours: like -Force, and a mode other than the one
+  the manifest records is not refused but switched to in the same run. From
+  ReShade mode, the [PROXY] keys of the ReShade.ini the first install edited
+  go back to their recorded values and the old <game>\ac-dlssg.dll is
+  removed (each only while it is still ours) before the bridge becomes
+  <game>\dxgi.dll; from standalone mode (ReShade has replaced the bridge's
+  dxgi.dll) the ReShade-mode files are installed as on a first install. The
+  Streamline files, the Lua app and the dlssg_for_sm86 records carry over.
+  A foreign dxgi.dll or apps\lua\AcDlssg is still refused.
+
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-install.ps1
 
@@ -108,7 +123,8 @@ param(
     [string]$Mode = 'Auto',
     [string[]]$SpoofInstall = @(),
     [string[]]$SpoofFound = @(),
-    [switch]$Force
+    [switch]$Force,
+    [switch]$AutoUpgrade
 )
 
 $ErrorActionPreference = 'Stop'
@@ -298,7 +314,7 @@ function Install-PlannedFile($Plan, [string]$BackupDir, [string]$Stamp) {
         if ((Get-Sha256OfFile $backup) -ne $Plan.TargetHash) { throw "hash check of the backup $backup failed" }
         $script:rollback += @{ Kind = 'restorefile'; Path = $Plan.Target; Backup = $backup }
         if ($Plan.Foreign) {
-            Step "note: $($Plan.Target) was changed outside this script (-Force); the replaced file is kept as $backup"
+            Step "note: $($Plan.Target) was changed outside this script; the replaced file is kept as $backup"
         } else {
             $drop = $backup
         }
@@ -311,10 +327,38 @@ function Install-PlannedFile($Plan, [string]$BackupDir, [string]$Stamp) {
     return $drop
 }
 
+# A file an earlier run installed that this build no longer ships. $Dir is
+# the folder it must be in (the manifest names it relative to the game).
+function New-ObsoletePlan([string]$Rel, [string]$Recorded, [string]$Dir) {
+    $path = Join-Path $game $Rel
+    $inside = (Get-NormalizedPath $path).StartsWith((Get-NormalizedPath $Dir) + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    $hash = $null
+    if (Test-Path -LiteralPath $path -PathType Leaf) { $hash = Get-Sha256OfFile $path }
+    return [pscustomobject]@{ Rel = $Rel; Path = $path; Recorded = $Recorded; Hash = $hash; Inside = $inside }
+}
+
+# Removes one obsolete file, backed up first for the rollback; returns that
+# backup when it can go after a successful run (the file was unchanged).
+function Remove-ObsoleteFile($Item, [string]$BackupDir, [string]$Stamp, [string]$Why = 'which this build no longer ships') {
+    New-DirForInstall $BackupDir
+    $backup = Join-Path $BackupDir ('{0}.{1}' -f (Split-Path -Leaf $Item.Path), $Stamp)
+    Copy-Item -LiteralPath $Item.Path -Destination $backup -Force
+    if ((Get-Sha256OfFile $backup) -ne $Item.Hash) { throw "hash check of the backup $backup failed" }
+    $script:rollback += @{ Kind = 'restorefile'; Path = $Item.Path; Backup = $backup }
+    Remove-Item -LiteralPath $Item.Path -Force
+    if ($Item.Hash -eq $Item.Recorded) {
+        Step "removed $($Item.Rel), $Why"
+        return $backup
+    }
+    Step "removed $($Item.Rel), $Why; it was changed since it was installed, and a copy is kept as $backup"
+    return $null
+}
+
 # The mode this run installs in, from -Mode, what <game>\dxgi.dll is and the
 # mode a previous install recorded. Refuses every combination that would
-# replace a dxgi.dll that is not ours or mix the two modes.
-function Resolve-InstallMode([string]$Requested, [string]$Dxgi, [string]$RecordedMode, [string]$ManifestPath) {
+# replace a dxgi.dll that is not ours, and one that mixes the two modes
+# unless -AllowModeChange; then From is the recorded mode.
+function Resolve-InstallMode([string]$Requested, [string]$Dxgi, [string]$RecordedMode, [string]$ManifestPath, [switch]$AllowModeChange) {
     $kind = 'none'
     $product = ''
     if (Test-Path -LiteralPath $Dxgi -PathType Leaf) {
@@ -343,11 +387,15 @@ function Resolve-InstallMode([string]$Requested, [string]$Dxgi, [string]$Recorde
     } else {
         $why = "-Mode $Requested"
     }
+    $from = $null
     if ($RecordedMode -and $RecordedMode -ne $mode) {
-        Stop-Refused ("the existing developer install ($ManifestPath) is in $RecordedMode mode, but this run would " +
-            "install in $mode mode ($why). Run tools\dev-uninstall.ps1 first, then run this again.")
+        if (-not $AllowModeChange) {
+            Stop-Refused ("the existing developer install ($ManifestPath) is in $RecordedMode mode, but this run would " +
+                "install in $mode mode ($why). Run tools\dev-uninstall.ps1 first, then run this again.")
+        }
+        $from = $RecordedMode
     }
-    return [pscustomobject]@{ Mode = $mode; Why = $why }
+    return [pscustomobject]@{ Mode = $mode; Why = $why; From = $from }
 }
 
 $exitCode = 0
@@ -408,8 +456,11 @@ try {
         $recordedMode = 'reshade'
         if ($manifest.PSObject.Properties['mode'] -and $manifest.mode) { $recordedMode = [string]$manifest.mode }
     }
-    $chosen = Resolve-InstallMode $Mode $dxgi $recordedMode $manifestPath
+    $chosen = Resolve-InstallMode $Mode $dxgi $recordedMode $manifestPath -AllowModeChange:$AutoUpgrade
     $standalone = $chosen.Mode -eq 'standalone'
+    # With a mode change, the manifest's mode records (reshade, dll) are the
+    # old mode's; the rest carries over.
+    $modeSwitch = [bool]$chosen.From
     Step "mode: $($chosen.Mode) ($($chosen.Why))"
 
     $reshadeVersion = $null
@@ -432,11 +483,17 @@ try {
         $targetRel = $script:AcdbDllName
     }
 
-    if ($manifest) {
+    if ($manifest -and -not $modeSwitch) {
         if (-not $standalone -and -not (Test-SamePath $manifest.reshade.ini $ini)) {
             Stop-Refused "the first install edited $($manifest.reshade.ini), but ReShade now uses $ini. Run dev-uninstall.ps1 first."
         }
         Step "existing developer install found (since $($manifest.installedUtc)); this run is an upgrade"
+    } elseif ($manifest) {
+        Step ("existing developer install found (since $($manifest.installedUtc)) in $($chosen.From) mode; this run is an " +
+            "upgrade that switches to $($chosen.Mode) mode (-AutoUpgrade)")
+        if (-not $standalone -and (Test-Path -LiteralPath $target)) {
+            Stop-Refused "$target exists but the manifest does not record it. Remove the DLL, or set EnableProxyLibrary=0 in ReShade.ini and delete the DLL, then run this again."
+        }
     } elseif (-not $standalone -and (Test-Path -LiteralPath $target)) {
         Stop-Refused "$target exists but there is no $manifestPath. Remove the DLL, or set EnableProxyLibrary=0 in ReShade.ini and delete the DLL, then run this again."
     }
@@ -523,17 +580,51 @@ try {
         $luaPlans += New-FilePlan $file (Join-Path $game $rel) $rel $luaRecorded[$rel.ToLowerInvariant()]
     }
     $dllRecorded = $null
-    if ($manifest) { $dllRecorded = [string]$manifest.dll.sha256 }
+    if ($manifest -and -not $modeSwitch) { $dllRecorded = [string]$manifest.dll.sha256 }
     $dllPlan = New-FilePlan $source $target $targetRel $dllRecorded
     $plans = @($slPlans) + @($spoofPlans) + @($luaPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
     $foreign = @($plans | Where-Object { $_.Foreign })
-    if ($foreign.Count -gt 0 -and -not $Force) {
+    if ($foreign.Count -gt 0 -and -not ($Force -or $AutoUpgrade)) {
         $what = @($foreign | ForEach-Object {
                 $was = if ($_.Recorded) { "the recorded one is $($_.Recorded)" } else { 'the manifest has no record of it' }
                 "$($_.Target) was changed outside this script: its SHA-256 is $($_.TargetHash), $was"
             })
         Stop-Refused (($what -join '; ') + ". Run again with -Force to replace it; a copy is kept in $installDir\backup.")
+    }
+
+    # Files an earlier run installed that this build no longer ships go, each
+    # only while it is the version installed, or with -Force or -AutoUpgrade.
+    $obsolete = @()
+    foreach ($f in $slOldFiles) {
+        if (@($slPlans | Where-Object { $_.Rel -ieq [string]$f.path }).Count -eq 0) {
+            $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $slDir
+        }
+    }
+    foreach ($f in $luaOldFiles) {
+        if (@($luaPlans | Where-Object { $_.Rel -ieq [string]$f.path }).Count -eq 0) {
+            $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $luaDir
+        }
+    }
+    $obsoleteRemove = @($obsolete | Where-Object { $_.Inside -and $_.Hash -and ($_.Hash -eq $_.Recorded -or $Force -or $AutoUpgrade) })
+    $obsoleteKeep = @($obsolete | Where-Object { $_.Hash -and -not ($_.Inside -and ($_.Hash -eq $_.Recorded -or $Force -or $AutoUpgrade)) })
+
+    # From ReShade mode: that mode's [PROXY] keys go back and its
+    # ac-dlssg.dll goes, each only while it is still ours.
+    $oldIni = $null
+    $oldIniBytes = $null
+    $oldIniNewBytes = $null
+    $oldIniReport = @()
+    $oldDll = $null
+    if ($modeSwitch -and $chosen.From -eq 'reshade') {
+        $oldIni = [string]$manifest.reshade.ini
+        if ($oldIni -and (Test-Path -LiteralPath $oldIni -PathType Leaf)) {
+            $oldIniBytes = [System.IO.File]::ReadAllBytes($oldIni)
+            $oldDoc = ConvertFrom-IniBytes $oldIniBytes
+            $oldIniReport = @(Restore-ProxyKeys $oldDoc $manifest.reshade)
+            $oldIniNewBytes = ConvertTo-IniBytes $oldDoc
+        }
+        $oldDll = New-ObsoletePlan ([string]$manifest.dll.path) ([string]$manifest.dll.sha256) $game
     }
 
     $edit = $null
@@ -564,20 +655,19 @@ try {
 
     $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     $configExisted = Test-Path -LiteralPath $config -PathType Leaf
+    $installedUtc = $now
+    $configCreated = -not $configExisted
     if ($manifest) {
         $installedUtc = $manifest.installedUtc
-        $reshadeRecord = $null
-        if (-not $standalone) {
-            $reshadeRecord = $manifest.reshade
-            $reshadeRecord.iniSha256After = $iniHashAfter
-        }
         $configCreated = [bool]$manifest.config.created
-    } elseif ($standalone) {
-        $installedUtc = $now
+    }
+    $reshadeRecord = $null
+    if ($standalone) {
         $reshadeRecord = $null
-        $configCreated = -not $configExisted
+    } elseif ($manifest -and -not $modeSwitch) {
+        $reshadeRecord = $manifest.reshade
+        $reshadeRecord.iniSha256After = $iniHashAfter
     } else {
-        $installedUtc = $now
         $reshadeRecord = [ordered]@{
             productVersion  = $reshadeVersion
             basePath        = $base.BasePath
@@ -590,17 +680,14 @@ try {
             blankLineAdded  = $edit.Record.blankLineAdded
             keys            = $edit.Record.keys
         }
-        $configCreated = -not $configExisted
     }
-    # The files this run installs, plus earlier ones it no longer ships (the
-    # uninstaller still removes those).
+    # The files this run installs, plus earlier ones it no longer ships but
+    # keeps because they were changed (the uninstaller still knows them).
     $slFiles = @($slPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
-    foreach ($f in $slOldFiles) {
-        if (-not ($slPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $slFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
-    }
     $luaFiles = @($luaPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
-    foreach ($f in $luaOldFiles) {
-        if (-not ($luaPlans | Where-Object { $_.Rel -ieq [string]$f.path })) { $luaFiles += [ordered]@{ path = [string]$f.path; sha256 = [string]$f.sha256 } }
+    foreach ($o in $obsoleteKeep) {
+        $rec = [ordered]@{ path = $o.Rel; sha256 = $o.Recorded }
+        if (@($slOldFiles | Where-Object { [string]$_.path -ieq $o.Rel }).Count -gt 0) { $slFiles += $rec } else { $luaFiles += $rec }
     }
     # dlssg_for_sm86: a file copied now is installed, unless the same file was
     # already there and the manifest does not record it as ours; earlier
@@ -649,8 +736,28 @@ try {
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }
     }
 
-    # Changes start here. The manifest goes first so that an interrupted
-    # install can still be undone by dev-uninstall.ps1.
+    # Changes start here. A mode change from ReShade mode undoes that mode
+    # first, while the old manifest still describes it; then the manifest goes
+    # first so that an interrupted install can still be undone by
+    # dev-uninstall.ps1.
+    $backupDir = Join-Path $installDir 'backup'
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
+    $backupsToDrop = @()
+    if ($modeSwitch -and $chosen.From -eq 'reshade') {
+        foreach ($line in $oldIniReport) { Step "old ReShade.ini $line" }
+        if ($oldIniNewBytes -and (Get-Sha256OfBytes $oldIniNewBytes) -ne (Get-Sha256OfBytes $oldIniBytes)) {
+            $rollback += @{ Kind = 'restorebytes'; Path = $oldIni; Bytes = $oldIniBytes }
+            $tempFiles += "$oldIni.new"
+            [void](Write-BytesViaTemp $oldIni $oldIniNewBytes)
+            Step "wrote $oldIni (hash verified)"
+        }
+        if ($oldDll.Hash -and $oldDll.Hash -eq $oldDll.Recorded) {
+            $drop = Remove-ObsoleteFile $oldDll $backupDir $stamp 'the bridge of the ReShade-mode install (mode change)'
+            if ($drop) { $backupsToDrop += $drop }
+        } elseif ($oldDll.Hash) {
+            Step "note: $($oldDll.Path) is not the bridge the ReShade-mode install copied (SHA-256 $($oldDll.Hash)); left in place"
+        }
+    }
     New-DirForInstall $installDir
     if ($manifest) {
         $rollback += @{ Kind = 'restore'; Path = $manifestPath; Text = [System.IO.File]::ReadAllText($manifestPath) }
@@ -660,12 +767,16 @@ try {
     Write-Manifest $manifestPath $newManifest
     Step "wrote $manifestPath"
 
-    $backupDir = Join-Path $installDir 'backup'
-    $stamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmss')
-    $backupsToDrop = @()
     foreach ($plan in $plans) {
         $drop = Install-PlannedFile $plan $backupDir $stamp
         if ($drop) { $backupsToDrop += $drop }
+    }
+    foreach ($o in $obsoleteRemove) {
+        $drop = Remove-ObsoleteFile $o $backupDir $stamp
+        if ($drop) { $backupsToDrop += $drop }
+    }
+    foreach ($o in $obsoleteKeep) {
+        Step "note: $($o.Path) is a file an earlier run installed that this build no longer ships; it was changed since (SHA-256 $($o.Hash)), so it stays (-Force removes it)"
     }
 
     if ($configExisted) {
@@ -695,6 +806,12 @@ try {
 
     $newManifest.state = 'installed'
     Write-Manifest $manifestPath $newManifest
+    # Folders of the Lua app that the removed files leave empty.
+    if ($obsoleteRemove.Count -gt 0 -and (Test-Path -LiteralPath $luaDir -PathType Container)) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $luaDir -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending)) {
+            if (@(Get-ChildItem -LiteralPath $d.FullName -Force).Count -eq 0) { Remove-Item -LiteralPath $d.FullName -Force }
+        }
+    }
     # Previous versions of ours: only the rollback needed them.
     foreach ($drop in $backupsToDrop) { Remove-Item -LiteralPath $drop -Force }
     if ($backupsToDrop.Count -gt 0 -and @(Get-ChildItem -LiteralPath $backupDir -Force).Count -eq 0) {
@@ -723,6 +840,9 @@ try {
             try {
                 if ($item.Kind -eq 'restore') {
                     Write-Utf8NoBom $item.Path $item.Text
+                    Write-Host "  rolled back: restored $($item.Path)"
+                } elseif ($item.Kind -eq 'restorebytes') {
+                    [void](Write-BytesViaTemp $item.Path $item.Bytes)
                     Write-Host "  rolled back: restored $($item.Path)"
                 } elseif ($item.Kind -eq 'restorefile') {
                     [void](Copy-FileViaTemp $item.Backup $item.Path)
