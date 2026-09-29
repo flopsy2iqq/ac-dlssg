@@ -1,10 +1,10 @@
 # ac-dlssg: design
 
-Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done; M2 is built and waits for its in-game checks (see section 11). A hybrid laptop was added as a second target system on 2026-09-28, with a standalone mode for systems without ReShade (sections 2, 3, 5, 6.10, 6.11, 11 and 12).
+Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done; M2 is built and waits for its in-game checks (see section 11). A hybrid laptop was added as a second target system on 2026-09-28, with a standalone mode for systems without ReShade (sections 2, 3, 5, 6.10, 6.11, 11 and 12). Multi frame generation (3X and 4X) moved from section 15 into v1 on 2026-09-29, after DLSS-G 2X passed in game on both machines (sections 1, 3, 6.8, 6.10, 6.11, 8, 11 and 15).
 
 ## 1. Goal
 
-Bring NVIDIA DLSS Frame Generation (DLSS-G, 2X) to Assetto Corsa with Custom Shaders Patch (CSP). CSP renders with DirectX 11. The goal is to let players afford heavier graphics settings: a base rate of about 45-50 fps that DLSS-G presents as about 90 fps.
+Bring NVIDIA DLSS Frame Generation (DLSS-G, 2X, and 3X or 4X where Streamline allows it) to Assetto Corsa with Custom Shaders Patch (CSP). CSP renders with DirectX 11. The goal is to let players afford heavier graphics settings: a base rate of about 45-50 fps that DLSS-G presents as about 90 fps.
 
 The game keeps rendering in DirectX 11. Our DLL replaces CSP's swap chain with a proxy. At Present, the proxy copies the finished frame to a DirectX 12 swap chain created through NVIDIA Streamline, and DLSS-G inserts the generated frames there. Depth and motion vectors come from the DLSS upscaling pass that CSP already runs. Camera data comes from a small CSP Lua app.
 
@@ -29,6 +29,7 @@ Two machines must run it: the reference desktop (RTX 3080) and a friend's hybrid
 
 In scope for v1:
 - DLSS-G 2X (one generated frame per real frame) and NVIDIA Reflex Low Latency through Streamline.
+- Multi frame generation: 3X and 4X (two or three generated frames per real frame), chosen with `fg_multiplier` or at runtime, when Streamline reports `DLSSGState::numFramesToGenerateMax` > 1. That is RTX 50 natively, and RTX 30 through dlssg_for_sm86, which reports a Blackwell-class GPU (the reference RTX 3080 ran 3X and 4X in M0). RTX 40 reports 1 and stays at 2X (6.8).
 - CSP with its DLSS upscaler active (`[FSR] ACTIVE=1`, `OLD_IMPLEMENTATION=3`), in any DLSS quality mode including DLAA.
 - CSP's flip-model swap chain in a borderless window (`FULLSCREEN=1`, the CSP default), at a `video.ini` resolution with the same aspect ratio as the window. CSP renders at the `video.ini` resolution and scales down into a swap chain at desktop resolution. The user's "2560x1440 on a 1080p monitor" setup is therefore CSP supersampling, not driver DSR.
 - Two load modes. In ReShade mode, ReShade 6.8.0 or newer (the build with add-on support) is `dxgi.dll` and loads the bridge as its `ProxyLibrary`. In standalone mode, ReShade is absent and the bridge itself is the game folder's `dxgi.dll`.
@@ -39,7 +40,7 @@ In scope for v1:
 
 Out of scope for v1. Each case is refused or ignored with a logged reason; the planned follow-ups are in section 15.
 - A HUD-less colour buffer. CSP app windows and the ReShade overlay will show interpolation artifacts.
-- Multi frame generation (3X and above).
+- Multi frame generation above 4X (Streamline allows up to 6X) and dynamic multi frame generation (`DLSSGMode::eDynamic`).
 - RTX 20 series. The spoof has an SM75 route, but the user excluded RTX 20 and we have no card to test with.
 - HDR output, VR, triple-screen mode, MSAA (`AASAMPLES>1`), `OLD_SWAPCHAIN=1`, `EXCLUSIVE_FULLSCREEN=1`, and letterboxed output (a `video.ini` aspect ratio that differs from the window while `ALLOW_STRETCHING=0`).
 - Other CSP upscalers (FSR, XeSS, OptiScaler).
@@ -298,7 +299,13 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
   - A fixed `projectId` GUID and `engineVersion` set to the bridge version. Both must be non-empty, or production Streamline disables NGX features.
   - Streamline's log goes to our log through the log callback.
 - **Reflex.** `slReflexSetOptions({mode = eLowLatency})` is called once when `D3D12Presenter` is created, after the feature functions are resolved, and again only when the options change.
-- **DLSS-G mode.** `slDLSSGSetOptions(viewport 0, {eOn or eOff, numFramesToGenerate = 1, flags = eRetainResourcesWhenOff})` is called on the presenting thread, and only when the mode changes. The hotkey toggles `eOn` and `eOff` without recreating the swap chain. Issue #598 of dlssg_for_sm86 reports crashes on an RTX 3080 after repeated DLSS-G feature re-creation.
+- **DLSS-G mode.** `slDLSSGSetOptions(viewport 0, {eOn or eOff, numFramesToGenerate = multiplier - 1, flags = eRetainResourcesWhenOff})` is called on the presenting thread, and only when the mode changes or, while on, the size hints or the number of frames to generate change. The hotkey toggles `eOn` and `eOff` without recreating the swap chain. Issue #598 of dlssg_for_sm86 reports crashes on an RTX 3080 after repeated DLSS-G feature re-creation.
+- **Multi frame generation.** The multiplier is 2X, 3X or 4X (`fg_multiplier`, default 2; `D3D12Presenter::SetFgMultiplier` at runtime, for the panel).
+  - **Streamline's maximum.** `sl.dlss_g` 2.14.1 sets `DLSSGState::numFramesToGenerateMax` at plugin startup, from NGX's `DLSSG.MultiFrameCountMax` capped at 5, and to 1 with the log line "NGX parameter indicating multi-frame support not found or invalid" when NGX does not report it (RTX 40). `slDLSSGSetOptions` refuses a `numFramesToGenerate` above the maximum, and 0. Verified in the 2.14.1 binary with radare2 and Ghidra.
+  - **When it is read.** `slDLSSGGetState` without options (cheap) before the first options carry a count, which is before the first `eOn`, and again after every new request, before the next options or the next video memory check. The answer is logged: "fg: Streamline allows up to <m>X (numFramesToGenerateMax <k>)".
+  - **The clamp.** A request above the maximum uses the maximum; a maximum of 0 (also a failed query) or 1 means 2X. It is logged once per request, "fg: <n>X requested, Streamline allows up to <m>X; using <m>X", and is the status reason of the multiplier.
+  - **A runtime change** is applied on the presenting thread at the next frame, with the rules of a toggle: the next DLSS-G frame has `reset`, a failure status is retried, the options are re-sent only when the count changes (at once while on; while off the next `eOn` carries it), and the swap chain is never recreated. `eRetainResourcesWhenOff` stays. Whether Streamline re-creates its DLSS-G feature for a new count is not known; with issue #598 in mind the count is never changed without a request.
+  - **Logs.** "fg: multiplier <a>X -> <b>X requested"; "fg: DLSS-G options: <m>X (numFramesToGenerate <k>)" at the first `eOn` of each new count; the first DLSS-G Present after it logs the raw "numFramesActuallyPresented", so that its reading is confirmed at every multiplier in game. `generated` in the statistics line stays numFramesActuallyPresented - 1 per DLSS-G Present, whatever the multiplier.
 - **Status.** `slDLSSGGetState(viewport, state, nullptr)` is polled every 60 frames. Any failure status turns DLSS-G off and shows it in the panel, for example `eFailResolutionTooLow`, `eFailReflexNotDetectedAtRuntime`, `eFailCommonConstantsInvalid`, `eFailGetCurrentBackBufferIndexNotCalled` or `eFailHDRFormatNotSupported`. The poll also reads `bIsVsyncSupportAvailable` (section 7 step 6).
 - **Driver profile.** Before any device exists, NVAPI DRS reads two settings of the `acs.exe` profile and of the global profile:
   - `0x10308298` (the NVIDIA App's DLSS override): when set to 1, DLSS-G silently never interpolates;
@@ -337,14 +344,16 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
     - HAGS is read with `D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS)` for that adapter's LUID. The registry value `HwSchMode` can be absent while HAGS is on (the laptop is such a case), so it is only the fallback when the query fails. Streamline's `slIsFeatureSupported` stays the final word for DLSS-G.
     - The non-NVIDIA refusal names the adapter and tells the user to set `acs.exe` to High performance in Windows graphics settings, or to check CSP's `SELECT_ADAPTER`.
 - **Runtime-only switches.** The same aspect test is repeated with NGX `OutWidth/OutHeight` after every `ResizeBuffers` and every counted `CreateFeature`. The Lua flags (VR, triple screen) arrive after the swap chain exists. Both can only switch DLSS-G off; the proxy stays.
-- **Config.** `ac-dlssg\ac-dlssg.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`.
-- **Log.** `ac-dlssg\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates, and the render adapter's video memory usage and budget from `IDXGIAdapter3::QueryVideoMemoryInfo`); and every state change.
+- **Config.** `ac-dlssg\ac-dlssg.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`, and from multi frame generation on `fg_multiplier=2|3|4` (default 2; any other value keeps 2 with a config warning).
+- **Log.** `ac-dlssg\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates, the multiplier the DLSS-G options carry as `fg_mult`, and last the render adapter's video memory usage and budget from `IDXGIAdapter3::QueryVideoMemoryInfo`); and every state change.
 
 ### 6.11 Hybrid (Optimus) presentation
 - **Render GPU.** The render GPU is the adapter of CSP's D3D11 device, found by its LUID. The bridge never uses `EnumAdapters(0)` (the iGPU on a hybrid laptop) and never takes decisions from the NVIDIA adapter's outputs, which it does not have when the internal panel is used. Monitor data comes from the swap chain's `GetContainingOutput`.
 - **Presentation path.** DXGI presents the D3D12 flip chain across adapters, the way every D3D12 game on such a laptop presents: two copies through system memory, or one copy (CASO) on Windows 11 with a WDDM 3.x iGPU driver. `sl.dlss_g.dll` 2.14.1 contains its own hybrid swap-chain path; the bridge log review checks the Streamline lines `Failed to setup hybrid GPU for swapchain` and `isHybridGPU=`. NVIDIA documents DLSS-G on MS-Hybrid systems, with higher latency and Streamline enforcing VSync through its own pacing.
 - **VSync.** VSync with DLSS-G only when independent flip is active. The laptop default is VSync off with CSP's FPS cap near half the panel refresh rate.
 - **Video memory (M3).** Before DLSS-G is first enabled, the bridge queries `slDLSSGGetState` with `eRequestVRAMEstimate`. When the headroom in the video memory budget is below a threshold (about 0.5 GiB to start, tuned on the laptop), DLSS-G stays off and the panel says why.
+  - **Multi frame generation.** The estimate is asked with the chosen `numFramesToGenerate` (`sl.dlss_g` scales its colour buffers with it), before the first `eOn` and again whenever the wanted multiplier changes. When a higher multiplier does not fit but 2X does, DLSS-G runs at 2X, "fg: video memory: <m>X needs <n> MiB, free <f> MiB; falling back to 2X" is logged and becomes the status reason; a fallback is not retried until the multiplier changes again, so that the count does not flap with the budget. When 2X does not fit either, DLSS-G stays off with 2X's numbers and the check repeats every 60 frames.
+  - **Resources already held.** `eRetainResourcesWhenOff` keeps DLSS-G's resources from its last `eOn`, and the process's usage already contains them. So only the growth, the new estimate minus the estimate of the multiplier DLSS-G last ran at, plus the headroom, has to fit, and a lower or the same multiplier always fits. Without this, a change from 2X to 3X on the 4 GB laptop (346 MiB free before DLSS-G, 283 MiB for 2X) would count 2X twice and turn DLSS-G off.
 - **Testing.** The laptop runs every milestone checklist from M2 on, on the internal panel. One run on an external monitor on the HDMI port, which is wired to the NVIDIA GPU, separates hybrid-path problems from bridge problems.
 
 ## 7. Per-frame data flow
@@ -385,6 +394,7 @@ Bridge frame N. Test presents do not take part (6.3).
 - **Start.** The game starts. ReShade loads our DLL as its `ProxyLibrary`, and `Bootstrap` runs on the first factory call. When CSP creates its swap chain, the hook either returns a `ProxySwapChain` or passes through, and logs the decision. `start_with_fg` sets the initial DLSS-G mode.
 - **Resize, fullscreen change or target resize.** Handled by 6.3. DLSS-G is switched off, and one present is issued with it off before the change.
 - **Hotkey or panel toggle.** `slDLSSGSetOptions` switches between `eOn` and `eOff` on the next Present. The next DLSS-G frame has `reset = eTrue`.
+- **Multiplier change** (the panel, through `SetFgMultiplier`). Applied at the next Present like a toggle (6.8): the video memory guard checks the new multiplier, the options are re-sent with the new count, the next DLSS-G frame has `reset = eTrue`, and the swap chain stays.
 - **Focus loss.** Streamline pauses interpolation when the window loses independent flip, and the panel shows it.
 - **Shutdown.** The final `Release` of `ProxySwapChain` follows the order in 6.3. After `slShutdown`, the cached Bootstrap decision becomes "not possible (Streamline already shut down)". Every later `CreateSwapChainForHwnd` passes through, and no Streamline function is called for the rest of the process. `DLL_PROCESS_DETACH` tears nothing down, because ReShade frees the ProxyLibrary under the loader lock.
 
@@ -432,9 +442,10 @@ Bridge frame N. Test presents do not take part (6.3).
 - `ResizeBuffers`;
 - create, release and re-create of the main swap chain (from M2 on the second chain must be a pass-through, because the first one's release shuts Streamline down; in M1 both chains are proxied);
 - a forced D3D12 stall (the watchdog must release D3D11);
+- `fg_multiplier=3` in the `fg-pipeline` scenario: without DLSS-G nothing lowers the request, and every statistics line reports `fg_mult=3`;
 - standalone mode: the bridge copied next to the test app as `dxgi.dll` and bound by name, so that `d3d11.dll`, `d3d12.dll` and Streamline bind to it too.
 
-DLSS-G itself is exercised only in-game, by the user.
+DLSS-G itself is exercised only in-game, by the user. The multiplier's decisions (the clamp to `numFramesToGenerateMax`, the video memory fallback, when options are sent, the request tracking) are pure functions in `fg_policy` with unit tests; the runtime setter is tested on the plain D3D12 path, and a Streamline child-process test cannot reach `slDLSSGSetOptions` without a GPU that Streamline supports.
 
 **Milestones.** Each ends with a short in-game checklist run by the user, on both machines from M2 on (the laptop in standalone mode): launch, borderless window, Alt+Tab, a resolution change, pause menu, a replay, and a 15-minute drive. The bridge log is analysed afterwards.
 - **M0 (done).** dlssg_for_sm86 was verified in WheelMates on the reference machine.
@@ -457,6 +468,7 @@ DLSS-G itself is exercised only in-game, by the user.
   - VSync was not checked, because the user does not use it. The VSync queue depth is covered by the unit test `Presenter_TakesTheGamesFirstLatencyWait`.
 - **M2.** Streamline init, the proxy chain, Reflex, and the full PCL marker sequence, with DLSS-G off. The Streamline log is clean and Reflex is detected. For the laptop, M2 also brings per-adapter HAGS detection, the NVIDIA-adapter check, the hybrid and video memory logging, standalone mode, and a test package with install, uninstall and log-collection scripts. The package contains no NVIDIA file; its installer downloads the Streamline DLLs from NVIDIA on the target machine, as in section 12.
 - **M3.** NGX capture, the Lua camera app, and DLSS-G 2X on the RTX 3080 and on the laptop through the spoof, with the video memory guard (6.11). A debug overlay shows the motion vectors and the camera handedness. Success criteria 1 and 2 are met on both machines, and DLSS-G is off in menus and pause. Pacing is measured as displayed fps with PresentMon or FrameView, not as presents, because upstream issue #541 reports broken pacing for another DX11-to-D3D12 bridge with this spoof.
+- **Multi frame generation (after M3).** 3X and 4X on the RTX 3080 through the spoof, and on the laptop as far as its 4 GB allow. Checks: the log shows "fg: Streamline allows up to 4X" and "fg: DLSS-G options: 3X" and "4X", with the raw numFramesActuallyPresented of the first DLSS-G Present of each (M3 saw 1 on the first 2X Presents, so a single value is not a verdict); over a drive `generated` is near 2 and 3 times `fg_frames`; displayed fps measured with PresentMon or FrameView; a runtime change 2X -> 4X -> 2X from the panel without a swap-chain re-creation, freeze or crash; on the laptop, a 4X request that does not fit falls back to 2X with its log line. Needs `numFramesToGenerateMax` > 1: RTX 50 natively, or the spoof.
 - **M4.** Panel, hotkey, installer, uninstaller, README, CI with attestations, and release v0.1.0.
 
 ## 12. Build, packaging and release
@@ -539,7 +551,6 @@ DLSS-G itself is exercised only in-game, by the user.
 ## 15. Planned after v1
 
 - HUD-less colour and UI buffers.
-- Multi frame generation (3X and 4X). The reference RTX 3080 ran 3X and 4X through the spoof in M0.
 - A ring of shared back buffers to remove the per-frame D3D11 wait.
 - Letterboxed output, by tagging `kBufferTypeBackbuffer` with the letterbox rectangle.
 
