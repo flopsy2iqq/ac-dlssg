@@ -44,6 +44,11 @@ std::string PanelReason(bool fgOn, bool userOn, const std::string& userOffReason
     return "off";
 }
 
+std::string PanelGateReason(bool supported, bool stalled, const std::string& lastFrameReason) {
+    if (supported && stalled) return "D3D12 stall";
+    return lastFrameReason;
+}
+
 bool FgPausedInSecond(uint32_t presents, uint32_t fgFrames, uint64_t generated, bool stateAnswered) {
     return stateAnswered && fgFrames > 0 && uint64_t{fgFrames} * 2 >= presents && generated == 0;
 }

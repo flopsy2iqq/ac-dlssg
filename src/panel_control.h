@@ -55,6 +55,12 @@ IniKeyValues SavedDefaultKeys(const PanelSettings& settings);
 // last frame; else "off".
 std::string PanelReason(bool fgOn, bool userOn, const std::string& userOffReason, const std::string& gateReason);
 
+// PanelReason's gateReason: the gate's reason of the last decided frame,
+// except during a D3D12 stall (spec 6.4), which switches DLSS-G off outside
+// the gate and skips every frame's decision: then "D3D12 stall", unless the
+// adapter cannot run DLSS-G at all (supported false keeps that reason).
+std::string PanelGateReason(bool supported, bool stalled, const std::string& lastFrameReason);
+
 // StatusLayout::fgPaused for one statistics second: DLSS-G was on for at
 // least half of its Presents (so not the second of an enable), slDLSSGGetState
 // has answered (stateAnswered), and Streamline generated no frame. Streamline

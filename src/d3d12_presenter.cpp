@@ -854,7 +854,8 @@ void D3D12Presenter::Impl::PublishStatus() {
     published_mode_on = mode_on;
     published_user_on = fg_user_on;
     status_due = false;
-    const std::string reason = PanelReason(mode_on, fg_user_on, UserOffReason(user_source), gate_reason);
+    const std::string gate = PanelGateReason(fg_supported, stalled, gate_reason);
+    const std::string reason = PanelReason(mode_on, fg_user_on, UserOffReason(user_source), gate);
     const std::string hotkey = HotkeyText(config.hotkey);
     const PanelNumbers& n = panel_numbers;
     panel_status->Update([&](StatusLayout& s) {

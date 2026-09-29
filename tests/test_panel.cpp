@@ -748,6 +748,19 @@ TEST(PanelStatus_DlssgOnWithoutGeneratedFramesIsAPause) {
     CHECK(!FgPausedInSecond(0, 0, 0, true));
 }
 
+// A D3D12 stall switches DLSS-G off outside the gate (EnterStall) and skips
+// every frame's decision, so the last frame's gate reason is stale, and
+// empty when DLSS-G was on: the status said "off" without a reason. While
+// stalled the reason is the stall, unless the adapter cannot run DLSS-G at all.
+TEST(PanelReason_AStallIsTheReasonWhileItLasts) {
+    CHECK(PanelGateReason(true, true, "") == "D3D12 stall");
+    CHECK(PanelGateReason(true, true, "camera not fresh") == "D3D12 stall");
+    CHECK(PanelGateReason(false, true, "not supported on this adapter") == "not supported on this adapter");
+    CHECK(PanelGateReason(true, false, "game paused") == "game paused");
+    CHECK(PanelGateReason(true, false, "") == "");
+    CHECK(PanelReason(false, true, "off by the user (panel)", PanelGateReason(true, true, "")) == "D3D12 stall");
+}
+
 TEST(PanelText_HotkeyTextNamesTheChord) {
     Hotkey hk;  // ctrl+f10
     CHECK(HotkeyText(hk) == "Ctrl+F10");
