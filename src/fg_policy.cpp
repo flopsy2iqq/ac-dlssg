@@ -71,33 +71,87 @@ VramCheck CheckVideoMemory(uint64_t budgetBytes, uint64_t usageBytes, uint64_t e
     const uint64_t free = budgetBytes > usageBytes ? budgetBytes - usageBytes : 0;
     const uint64_t need = estimateBytes + static_cast<uint64_t>(headroomMib) * kMiB;
     VramCheck r;
+    r.needMib = (need + kMiB - 1) / kMiB;
+    r.freeMib = free / kMiB;
     if (free >= need) return r;
     char buf[96];
     std::snprintf(buf, sizeof(buf), "video memory: need %llu MiB, free %llu MiB",
-                  static_cast<unsigned long long>((need + kMiB - 1) / kMiB),
-                  static_cast<unsigned long long>(free / kMiB));
+                  static_cast<unsigned long long>(r.needMib), static_cast<unsigned long long>(r.freeMib));
     r.ok = false;
     r.reason = buf;
     return r;
 }
 
-bool VramGuard::CheckDue(uint64_t frame) const {
+bool VramGuard::CheckDue(uint64_t frame, unsigned wanted) const {
+    if (!checked_ || wanted != wanted_) return true;
     if (passed_) return false;
-    return !checked_ || frame - last_ >= kRecheckFrames;
+    return frame - last_ >= kRecheckFrames;
 }
 
 VramCheck DecideVram(const VramInputs& in) {
     if (!in.budgetKnown) return VramCheck{};
-    return CheckVideoMemory(in.budgetBytes, in.usageBytes, in.estimateOk ? in.estimateBytes : 0, in.headroomMib);
+    if (!in.estimateOk) return CheckVideoMemory(in.budgetBytes, in.usageBytes, 0, in.headroomMib);
+    // The usage already contains what DLSS-G holds; only the growth is new.
+    if (in.heldBytes > 0 && in.estimateBytes <= in.heldBytes) return VramCheck{};
+    return CheckVideoMemory(in.budgetBytes, in.usageBytes, in.estimateBytes - in.heldBytes, in.headroomMib);
 }
 
-bool VramGuard::Record(uint64_t frame, const VramCheck& result) {
-    const bool changed = !checked_ || passed_ != result.ok;
+VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x) {
+    VramMultiplierDecision d;
+    d.multiplier = wanted;
+    d.check = atWanted;
+    if (atWanted.ok || wanted <= 2 || !at2x) return d;
+    d.multiplier = 2;
+    d.check = *at2x;
+    if (!at2x->ok) return d;
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "video memory: %uX needs %llu MiB, free %llu MiB; falling back to 2X", wanted,
+                  static_cast<unsigned long long>(atWanted.needMib), static_cast<unsigned long long>(atWanted.freeMib));
+    d.fallback = buf;
+    return d;
+}
+
+bool VramGuard::Record(uint64_t frame, const VramCheck& result, unsigned wanted, unsigned granted) {
+    const bool changed =
+        !checked_ || passed_ != result.ok || wanted != wanted_ || (result.ok && granted != granted_);
     checked_ = true;
     last_ = frame;
     passed_ = result.ok;
+    wanted_ = wanted;
+    granted_ = granted;
     refusal_ = result.ok ? std::string() : result.reason;
     return changed;
+}
+
+bool ValidFgMultiplier(int multiplier) { return multiplier >= 2 && multiplier <= 4; }
+
+uint32_t FramesToGenerate(unsigned multiplier) { return multiplier > 2 ? multiplier - 1 : 1; }
+
+FgMultiplierChoice ChooseFgMultiplier(unsigned requested, uint32_t numFramesToGenerateMax) {
+    FgMultiplierChoice c;
+    if (!ValidFgMultiplier(static_cast<int>(requested))) return c;  // 2X
+    // numFramesToGenerateMax + 1, without overflow: nothing above 4X is ever requested.
+    const unsigned allowed = numFramesToGenerateMax >= 3 ? 4u : numFramesToGenerateMax == 2 ? 3u : 2u;
+    c.multiplier = requested < allowed ? requested : allowed;
+    c.numFramesToGenerate = FramesToGenerate(c.multiplier);
+    if (c.multiplier < requested) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%uX requested, Streamline allows up to %uX; using %uX", requested,
+                      c.multiplier, c.multiplier);
+        c.note = buf;
+    }
+    return c;
+}
+
+std::string FgMultiplierNote(const std::string& clampNote, const std::string& vramFallback) {
+    if (clampNote.empty()) return vramFallback;
+    if (vramFallback.empty()) return clampNote;
+    return clampNote + "; " + vramFallback;
+}
+
+bool DlssgOptionsDue(bool known, bool lastOn, uint32_t lastFrames, bool sameHints, bool on, uint32_t frames) {
+    if (!known || on != lastOn) return true;
+    return on && (!sameHints || frames != lastFrames);
 }
 
 bool HotkeyChordDown(const Hotkey& hotkey, bool keyDown, bool ctrlDown, bool shiftDown, bool altDown) {
