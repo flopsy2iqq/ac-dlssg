@@ -1,0 +1,115 @@
+ac-dlssg - third-party notices
+==============================
+
+ac-dlssg is licensed under GPL-3.0 with the exceptions in EXCEPTIONS.md. It
+uses or adapts the following third-party material. None of NVIDIA's binaries
+and none of dlssg_for_sm86's files are part of this repository or of its
+release zip: the installer downloads them on the user's PC from their
+publishers.
+
+-------------------------------------------------------------------------------
+1. NVIDIA Streamline SDK 2.14.1 (headers, compiled in)
+   https://github.com/NVIDIA-RTX/Streamline
+   The headers in include/ are used at build time under the MIT license below.
+   The runtime DLLs (sl.interposer, sl.common, sl.dlss_g, sl.reflex, sl.pcl,
+   nvngx_dlssg) are downloaded by the installer from NVIDIA's GitHub release
+   and are covered by NVIDIA's own licenses shipped with them
+   (license.txt, bin/x64/nvngx_dlss.license.txt, bin/x64/reflex.license.txt).
+
+Copyright (c) 2023 NVIDIA CORPORATION. All rights reserved
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+2. NVIDIA NVAPI headers (compiled in)
+   https://github.com/NVIDIA/nvapi
+
+SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: MIT
+
+Permission is hereby granted, free of charge, to any person obtaining a 
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+3. dlss5-bridge by NIGos (adapted code)
+   https://github.com/NIGos/dlss5-bridge
+   The approach for hooking CSP's NGX D3D11 DLSS entry points, the parameter
+   interface declaration technique and the denoiser key list were adapted in
+   src/ngx_hook.cpp and src/ngx_params.h.
+
+MIT License
+
+Copyright (c) 2026 NIGos
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+4. NVIDIA DLSS SDK (parameter names only)
+   https://github.com/NVIDIA/DLSS
+   No DLSS SDK header is included. src/ngx_params.h declares the NGX parameter
+   interface, entry point signatures and parameter key strings independently.
+
+-------------------------------------------------------------------------------
+5. dlssg_for_sm86 by sdli1995 (with Coldwood1026's RTX 20 work)
+   https://github.com/sdli1995/dlssg_for_sm86
+   Not included. On RTX 30 GPUs the installer downloads version.dll and
+   dlssg_sm86.ini of the pinned release 0.3.5 (commit
+   9621db573e07ed54f50c15bbb585ed9a7bdfac28) from the author's repository and
+   checks their hashes. That repository has no LICENSE file; its README says
+   the source is GPLv3, but no source is published. It embeds NVIDIA's
+   nvngx_dlssg.dll, which is not relicensed. Using it on RTX 30 circumvents a
+   technical limitation, which section 4.d of the NVIDIA RTX SDKs License
+   forbids for that license's licensees.
+
+-------------------------------------------------------------------------------
+6. Design references (no code copied)
+   open-shaders by alandtse, https://github.com/alandtse/open-shaders
+   Community Shaders, https://github.com/doodlum/skyrim-community-shaders
+   Custom Shaders Patch Lua SDK, https://github.com/ac-custom-shaders-patch/acc-lua-sdk
