@@ -188,6 +188,34 @@ struct VramMultiplierDecision {
 VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x,
                                             bool autoHeadroom = false);
 
+// A number that keeps DLSS-G off (spec 6.11): the bridge switches the
+// session to auto and saves auto in ac-dlssg.ini.
+enum class VramHeadroomAction {
+    Keep,          // auto already, the number lets DLSS-G run, or auto would keep it off too
+    SwitchToAuto,  // the number keeps DLSS-G off, and auto runs it (it fits, falls back to 2X or is tight)
+};
+
+// withNumber: DecideVramMultiplier for fg_vram_headroom_mib=<number>;
+// withAuto: DecideVramMultiplier with auto for the same estimates, budget
+// and usage (AutoVramHeadroomMib of the budget). SwitchToAuto only when
+// autoHeadroom is false, withNumber keeps DLSS-G off (check not ok) and
+// withAuto's check is ok.
+VramHeadroomAction DecideVramHeadroom(bool autoHeadroom, const VramMultiplierDecision& withNumber,
+                                      const VramMultiplierDecision& withAuto);
+
+// The texts of a switch from the number <h> to auto. The log line, after
+// "fg: ": saved, "fg_vram_headroom_mib=<h> kept frame generation off;
+// switched to auto and saved it to ac-dlssg.ini"; not saved, "...; switched
+// to auto until the game is closed; could not save ac-dlssg.ini:
+// <saveError>".
+std::string VramHeadroomSwitchLog(unsigned headroomMib, bool saved, const std::string& saveError);
+// The panel's autoFixNote: saved, "Video memory setting fixed:
+// fg_vram_headroom_mib was <h>, now auto (saved). Frame generation is on.";
+// not saved, "Video memory setting fixed: fg_vram_headroom_mib was <h>, now
+// auto. Frame generation is on; this applies until the game is closed; could
+// not save ac-dlssg.ini: <saveError>".
+std::string VramHeadroomSwitchNote(unsigned headroomMib, bool saved, const std::string& saveError);
+
 // When the guard runs: before DLSS-G is first enabled, whenever the wanted
 // multiplier is not the one it last checked, and every 60 frames while it
 // refuses; once a check for the wanted multiplier passed (a fallback to 2X

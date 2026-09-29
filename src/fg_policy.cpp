@@ -208,6 +208,27 @@ VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& at
     return d;
 }
 
+VramHeadroomAction DecideVramHeadroom(bool autoHeadroom, const VramMultiplierDecision& withNumber,
+                                      const VramMultiplierDecision& withAuto) {
+    if (autoHeadroom || withNumber.check.ok || !withAuto.check.ok) return VramHeadroomAction::Keep;
+    return VramHeadroomAction::SwitchToAuto;
+}
+
+std::string VramHeadroomSwitchLog(unsigned headroomMib, bool saved, const std::string& saveError) {
+    const std::string head =
+        "fg_vram_headroom_mib=" + std::to_string(headroomMib) + " kept frame generation off; switched to auto";
+    if (saved) return head + " and saved it to ac-dlssg.ini";
+    return head + " until the game is closed; could not save ac-dlssg.ini: " + saveError;
+}
+
+std::string VramHeadroomSwitchNote(unsigned headroomMib, bool saved, const std::string& saveError) {
+    const std::string head = "Video memory setting fixed: fg_vram_headroom_mib was " + std::to_string(headroomMib);
+    if (saved) return head + ", now auto (saved). Frame generation is on.";
+    return head +
+           ", now auto. Frame generation is on; this applies until the game is closed; could not save ac-dlssg.ini: " +
+           saveError;
+}
+
 bool VramGuard::Record(uint64_t frame, const VramCheck& result, unsigned wanted, unsigned granted, bool tight) {
     tight = tight && result.ok;
     const bool changed = !checked_ || passed_ != result.ok || wanted != wanted_ ||
