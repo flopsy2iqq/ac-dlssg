@@ -2,9 +2,9 @@
 
 # ac-dlssg
 
-NVIDIA DLSS Frame Generation (DLSS-G 2X) for **Assetto Corsa** with **Custom Shaders Patch**.
+NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X and 4X) for **Assetto Corsa** with **Custom Shaders Patch**.
 
-**Status: test build. Frame generation works in game.** On the test PC the frame rate doubles with no ghosting and no blur. The pictures are in [Screenshots](#screenshots).
+**Version 1.0.0. Frame generation works in game.** On the test PC the frame rate doubles with no ghosting and no blur. The pictures are in [Screenshots](#screenshots).
 
 Assetto Corsa renders with DirectX 11. DLSS Frame Generation runs only on DirectX 12 and Vulkan, through NVIDIA Streamline. ac-dlssg connects the two:
 
@@ -135,6 +135,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 - [NVIDIA Streamline](https://github.com/NVIDIA-RTX/Streamline): the SDK that delivers DLSS Frame Generation and Reflex. Its DLLs are downloaded from NVIDIA's release on your PC.
 - [dlss5-bridge](https://github.com/NIGos/dlss5-bridge) (MIT): the approach for hooking CSP's DLSS call.
 - [open-shaders](https://github.com/alandtse/open-shaders) and [Community Shaders](https://github.com/doodlum/skyrim-community-shaders): the DirectX 11 game plus DirectX 12 Streamline swap chain design.
+
+## Verify a download
+
+Every release zip is built by GitHub Actions from this repository, and the zip and `ac-dlssg.dll` carry build provenance attestations. The release notes list the SHA-256 of both. To check a downloaded file with the GitHub CLI:
+
+```
+gh attestation verify ac-dlssg-1.0.0.zip --repo flopsy2iqq/ac-dlssg
+```
 
 ## Support
 

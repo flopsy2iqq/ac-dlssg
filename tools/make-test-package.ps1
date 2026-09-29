@@ -72,7 +72,9 @@ Set-StrictMode -Version 2.0
 
 $repo = Split-Path -Parent $PSScriptRoot
 # Copied from the repository root into docs\ of the package.
-$script:PackageDocs = @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt')
+# Repository paths; each lands in the package's docs\ under its file name.
+$script:PackageDocs = @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt',
+    'docs\INSTALL.md', 'docs\INSTALL.ru.md')
 if (-not $Dll) { $Dll = Join-Path $repo 'build\Release\ac-dlssg.dll' }
 if (-not $OutDir) { $OutDir = Join-Path $repo 'build\package' }
 
@@ -150,7 +152,7 @@ try {
     foreach ($f in $script:PackageDocs) {
         $from = Join-Path $repo $f
         if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { throw "$from is missing; the package must carry it" }
-        Copy-Item -LiteralPath $from -Destination (Join-Path $docsDir $f)
+        Copy-Item -LiteralPath $from -Destination (Join-Path $docsDir (Split-Path -Leaf $f))
     }
 
     # The root holds only install.bat and the four folders; docs\ holds its files.
@@ -158,7 +160,7 @@ try {
     if (($rootFiles -join '|') -ne 'install.bat') { throw "the package root would hold more than install.bat: $($rootFiles -join ', ')" }
     $rootDirs = @(Get-ChildItem -LiteralPath $pkg -Directory -Force | ForEach-Object { $_.Name } | Sort-Object)
     if (($rootDirs -join '|') -ne 'docs|files|scripts|tools') { throw "the package root would hold other folders than docs, files, scripts, tools: $($rootDirs -join ', ')" }
-    $missingDocs = @(@($script:PackageDocs) + 'README-test.txt' | Where-Object { -not (Test-Path -LiteralPath (Join-Path $docsDir $_) -PathType Leaf) })
+    $missingDocs = @(@($script:PackageDocs) + 'README-test.txt' | Where-Object { -not (Test-Path -LiteralPath (Join-Path $docsDir (Split-Path -Leaf $_)) -PathType Leaf) })
     if ($missingDocs.Count -gt 0) { throw "docs\ lacks $($missingDocs -join ', ')" }
 
     # Project rule: no NVIDIA DLL and no dlssg_for_sm86 file is ever re-hosted.

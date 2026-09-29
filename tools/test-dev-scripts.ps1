@@ -1794,7 +1794,8 @@ Invoke-Case 'PK: the friend test package' {
     $expected = @('install.bat', 'files/ac-dlssg.dll', 'scripts/install.ps1', 'scripts/uninstall.ps1', 'scripts/collect-logs.ps1',
         'scripts/collect-sysinfo.ps1', 'scripts/dev-common.ps1', 'scripts/dev-install.ps1', 'scripts/dev-uninstall.ps1',
         'scripts/fetch-deps.ps1', 'tools/uninstall.bat', 'tools/collect-logs.bat', 'docs/README-test.txt', 'docs/README.md',
-        'docs/README.ru.md', 'docs/LICENSE', 'docs/EXCEPTIONS.md', 'docs/THIRD_PARTY_NOTICES.txt') +
+        'docs/README.ru.md', 'docs/LICENSE', 'docs/EXCEPTIONS.md', 'docs/THIRD_PARTY_NOTICES.txt', 'docs/INSTALL.md',
+        'docs/INSTALL.ru.md') +
         @($luaRealFiles | ForEach-Object { 'files/apps/lua/AcDlssg/' + $_.Replace('\', '/') })
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | ForEach-Object { $_.FullName.Substring($pkg.Length + 1).Replace('\', '/') } | Sort-Object)
     Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
@@ -1803,8 +1804,10 @@ Invoke-Case 'PK: the friend test package' {
     $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })
     $rootDirs = @(Get-ChildItem -LiteralPath $pkg -Directory -Force | ForEach-Object { $_.Name } | Sort-Object)
     Check (($rootFiles -join '|') -eq 'install.bat' -and ($rootDirs -join '|') -eq 'docs|files|scripts|tools') "the package root holds only install.bat and the folders docs, files, scripts, tools ($(@($rootFiles + $rootDirs) -join ', '))"
-    foreach ($f in @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt')) {
-        Check ((Get-Sha (Join-Path $pkg "docs\$f")) -eq (Get-Sha (Join-Path $tools "..\$f"))) "docs\$f is the repository's $f"
+    foreach ($f in @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt', 'docs\INSTALL.md',
+            'docs\INSTALL.ru.md')) {
+        $leaf = Split-Path -Leaf $f
+        Check ((Get-Sha (Join-Path $pkg "docs\$leaf")) -eq (Get-Sha (Join-Path $tools "..\$f"))) "docs\$leaf is the repository's $f"
     }
     Check ((Test-Path -LiteralPath $zip -PathType Leaf) -and (Split-Path -Leaf $zip) -eq 'ac-dlssg-9.8.7.zip') 'the zip is ac-dlssg-<version>.zip, without -test'
     $bats = @(Get-ChildItem -LiteralPath $pkg -Recurse -File -Filter '*.bat')
@@ -1827,7 +1830,7 @@ Invoke-Case 'PK: the friend test package' {
     Check ($readmeText -match 'RTX 30' -and $readmeText -match 'dlssg_for_sm86' -and $readmeText -match '(?i)ctrl\s*\+\s*f10' -and
         $readmeText -match 'apps\\lua\\AcDlssg') 'README-test.txt covers RTX 30, dlssg_for_sm86, Ctrl+F10 and the Lua app'
     $urls = @([regex]::Matches($readmeText, 'https?://[^\s)\u00bb"]+') | ForEach-Object { $_.Value.TrimEnd('.', ',') } | Sort-Object -Unique)
-    Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86') "the only link is the dlssg_for_sm86 repository, no binary ($($urls -join ', '))"
+    Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86 https://www.patreon.com/c/x4fab/home') "the only links are the dlssg_for_sm86 repository and CSP's Patreon (for the preview build), no binary ($($urls -join ', '))"
     Check ($readmeText -notmatch '(?i)defender|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438|\u043e\u0442\u043a\u043b\u044e\u0447|smartscreen|smart app control') 'README-test.txt asks for no security feature to be turned off'
 
     # install.ps1 from the package layout, standalone, Streamline from
