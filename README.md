@@ -1,10 +1,10 @@
+[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md)
+
 # ac-dlssg
 
 NVIDIA DLSS Frame Generation (DLSS-G 2X) for **Assetto Corsa** with **Custom Shaders Patch**.
 
 **Status: test build. Frame generation works in game.** On the test PC the frame rate doubles with no ghosting and no blur. The pictures are in [Screenshots](#screenshots).
-
-**[Инструкция по установке на русском](#по-русски)**
 
 Assetto Corsa renders with DirectX 11. DLSS Frame Generation runs only on DirectX 12 and Vulkan, through NVIDIA Streamline. ac-dlssg connects the two:
 
@@ -23,7 +23,7 @@ DLSS-G 2X in Assetto Corsa with CSP:
 Test PC: Intel Core i9-9900 (8 cores, 16 threads), GeForce RTX 3080 10 GB (driver 616.64), 16 GB DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, dlssg_for_sm86 0.3.5.
 
 ![DLSS-G 2X, cockpit view: 62 real fps, 124 fps on screen](docs/screenshots/fg2x-1.jpg)
-![DLSS-G 2X, chase view: 57 real fps, 112 fps on screen](docs/screenshots/fg2x-2.jpg)
+![DLSS-G 2X, chase view: 55 real fps, 112 fps on screen](docs/screenshots/fg2x-2.jpg)
 ![DLSS-G 2X, night: 53 real fps, 105 fps on screen](docs/screenshots/fg2x-3.jpg)
 ![DLSS-G 2X, side view at sunset: 58 real fps, 116 fps on screen](docs/screenshots/fg2x-4.jpg)
 ![DLSS-G 2X, cockpit in rain: 46 real fps, 90 fps on screen](docs/screenshots/fg2x-5.jpg)
@@ -124,71 +124,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
-
----
-
-## По-русски
-
-Генерация кадров NVIDIA DLSS Frame Generation (DLSS-G 2X) для **Assetto Corsa** с **Custom Shaders Patch**.
-
-**Статус: тестовая сборка, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Скриншоты выше: слева вверху счётчик CSP, это **настоящие** кадры; справа вверху оверлей NVIDIA, это кадры **на экране после генерации**. Тестовый ПК: Intel Core i9-9900 (8 ядер, 16 потоков), RTX 3080 10 ГБ (драйвер 616.64), 16 ГБ DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, dlssg_for_sm86 0.3.5.
-
-### Что нужно
-
-- **Assetto Corsa** из Steam с **Custom Shaders Patch 0.3.0** или новее. Проверено на preview622 и preview634.
-- **DLSS-апскейл в CSP включён**, в любом режиме, включая DLAA. Генерация берёт из него глубину и векторы движения.
-- **Видеокарта NVIDIA RTX:**
-  - RTX 40 и RTX 50 поддерживают DLSS-G сами.
-  - RTX 30, в том числе ноутбучные вроде 3050 Ti, требует сторонний [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). Он не входит в этот проект, ставите его сами по инструкции с его страницы. Нужен драйвер NVIDIA R580 или новее.
-  - RTX 20 этот проект не поддерживает.
-- **Windows 10 2004+ или Windows 11.** Аппаратное планирование GPU должно быть включено: Параметры > Система > Дисплей > Графика > Изменить стандартные параметры графики.
-- **Ноутбук:** там же, в настройках графики, поставьте `acs.exe` в «Высокая производительность», чтобы игра шла на NVIDIA.
-- **Интернет при первой установке.** Установщик скачивает NVIDIA Streamline 2.14.1 (около 276 МБ) с GitHub NVIDIA и проверяет хеш и подписи. Файлов NVIDIA в проекте нет.
-- **ReShade не обязателен.** Если стоит ReShade 6.8+ (версия с аддонами), мост грузится через него. Если нет, мост ставится как `dxgi.dll` сам. Установщик выбирает режим сам.
-
-### Установка
-
-1. Закройте Assetto Corsa.
-2. **Только RTX 30:** поставьте dlssg_for_sm86 по инструкции с его страницы: `version.dll` и `dlssg_sm86.ini` кладутся рядом с `acs.exe`.
-3. Скачайте `ac-dlssg-<версия>-test.zip` из [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) и распакуйте в любую папку.
-4. Щёлкните правой кнопкой по `install.ps1` и выберите **«Выполнить с помощью PowerShell»**. Если не запускается, откройте PowerShell в этой папке и выполните:
-   ```
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-   ```
-   Скрипт сам найдёт игру через Steam и скачает Streamline. Он покажет лицензии NVIDIA, введите `y`. Если игра стоит в `C:\Program Files (x86)` и скрипт пишет «доступ запрещён», выполните ту же команду в PowerShell, открытом от имени администратора.
-5. Запустите игру как обычно. В графических настройках CSP апскейлером должен быть DLSS.
-6. Выезжайте. Генерация включается сама, как только заработает DLSS в CSP. В паузе и в меню она выключена.
-
-### Как пользоваться
-
-- **Ctrl+F10** включает и выключает генерацию, так удобно сравнить одну и ту же сцену.
-- Счётчик FPS в CSP показывает настоящие кадры. Чтобы видеть кадры на экране, нужен внешний счётчик: оверлей NVIDIA (Alt+R), RTSS и т. п.
-- Настройки лежат в `<игра>\ac-dlssg\ac-dlssg.ini`: `start_with_fg`, `hotkey`, `log_level`.
-- Окно настроек прямо в игре будет в следующей сборке.
-
-### Удаление
-
-Запустите `uninstall.ps1` из той же папки. Он вернёт всё, что поменял установщик, и уберёт мост, Streamline и Lua-приложение. Логи и настройки остаются в `<игра>\ac-dlssg`. Чтобы удалить и их, добавьте `-RemoveData`.
-
-### Если что-то не так
-
-- **Игра запускается, но FPS не меняется.** Посмотрите `<игра>\ac-dlssg\logs\bridge.log`. Строка `fg: DLSS-G on` значит, что генерация работает. Строки `fg: frame without DLSS-G: <причина>` или `DLSS-G is not supported on this adapter (...)` объясняют, почему нет.
-- **Игра вылетает или не запускается.** Запустите `uninstall.ps1`, игра вернётся в прежнее состояние.
-- **Сообщить о проблеме:** после закрытия игры запустите `collect-logs.ps1`. Он только читает файлы и кладёт рядом с собой один zip. Приложите этот zip к [issue на GitHub](https://github.com/flopsy2iqq/ac-dlssg/issues).
-
-### Ограничения
-
-- Только 2X: один сгенерированный кадр на один настоящий.
-- Окна приложений CSP и интерфейс на экране при быстром движении могут давать мелкие артефакты. Буфер без интерфейса запланирован.
-- Не поддерживаются: VR, тройные мониторы, HDR, MSAA, `EXCLUSIVE_FULLSCREEN=1`, вывод с чёрными полосами.
-
-### Про dlssg_for_sm86
-
-NVIDIA разрешает DLSS-G только на RTX 40 и новее. Сторонний [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) от sdli1995 (с работой Coldwood1026) снимает это ограничение на RTX 30. Автор согласен, что этот проект ссылается на него.
-
-- ac-dlssg его не содержит, не скачивает и не меняет.
-- У того репозитория нет файла LICENSE. В README сказано, что исходники под GPLv3, но они не опубликованы.
-- Он содержит `nvngx_dlssg.dll` от NVIDIA, лицензия на который не менялась.
-- Его использование на RTX 30 обходит техническое ограничение, что запрещает пункт 4.d лицензии NVIDIA RTX SDKs для её лицензиатов.
-
-Ставить его или нет, решаете вы.
