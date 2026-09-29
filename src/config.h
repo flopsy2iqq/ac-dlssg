@@ -35,6 +35,10 @@ struct Config {
     // Video memory guard (spec 6.11): free budget must cover the DLSS-G
     // estimate plus this much. 0..65536.
     unsigned fg_vram_headroom_mib = 512;  // fg_vram_headroom_mib=<MiB>
+    // When the process bound VERSION.dll to System32 (Windows 11 25H2), the
+    // bootstrap loads the game folder's version.dll itself only if it is the
+    // pinned dlssg_for_sm86 release; 1 loads any version.dll there.
+    bool spoof_load_any = false;  // spoof_load_any=0|1
     std::vector<std::string> warnings;    // human-readable parse problems
 };
 

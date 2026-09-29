@@ -107,6 +107,7 @@ add_library(acdb_core STATIC
     src/d3d12_presenter.cpp
     src/proxy_swapchain.cpp
     src/pcl_sequencer.cpp
+    src/spoof_loader.cpp
     src/streamline_runtime.cpp
     src/driver_profile.cpp
     src/camera_channel.cpp
@@ -154,6 +155,7 @@ add_executable(acdb_tests
     tests/test_proxy_swapchain.cpp
     tests/test_module_version.cpp
     tests/test_pcl_sequencer.cpp
+    tests/test_spoof_loader.cpp
     tests/test_streamline_prefs.cpp
     tests/test_streamline_runtime.cpp
     tests/test_driver_profile.cpp
@@ -182,6 +184,12 @@ add_library(acdb_unsigned_fixture SHARED tests/unsigned_fixture.cpp)
 target_compile_definitions(acdb_tests PRIVATE
     ACDB_UNSIGNED_FIXTURE_PATH="$<TARGET_FILE:acdb_unsigned_fixture>")
 add_dependencies(acdb_tests acdb_unsigned_fixture)
+# A harmless DLL the spoof-loader tests copy as version.dll; its DllMain
+# leaves a mark so a test can prove it was loaded by full path.
+add_library(acdb_spoof_fixture SHARED tests/spoof_fixture.cpp)
+target_compile_definitions(acdb_tests PRIVATE
+    ACDB_SPOOF_FIXTURE_PATH="$<TARGET_FILE:acdb_spoof_fixture>")
+add_dependencies(acdb_tests acdb_spoof_fixture)
 
 # A fake NGX module for the NgxHook tests: it exports the three D3D11 entry
 # points with NVIDIA's signatures and records what its "original" was called
