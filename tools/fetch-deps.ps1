@@ -82,11 +82,13 @@ $ProgressPreference = 'SilentlyContinue'
 
 # --- Pinned sources -------------------------------------------------------
 
-$SlVersion = '2.14.1'
+# The zip's size and SHA-256, and the SHA-256 of each file the install
+# copies from its bin\x64, are pinned in dev-common.ps1.
+$SlVersion = $script:AcdbSlVersion
 $SlZipName = "streamline-sdk-v$SlVersion.zip"
 $SlZipUrl = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v$SlVersion/$SlZipName"
-$SlZipSize = 275994000
-$SlZipSha256 = '92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b'
+$SlZipSize = $script:AcdbSlZipSize
+$SlZipSha256 = $script:AcdbSlZipSha256
 $SlDlls = @('sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll')
 # Paths in the zip, relative to the SDK root; bin/x64 ones stay in bin\x64.
 $SlLicenses = @('license.txt', '3rd-party-licenses.md', 'bin/x64/nvngx_dlss.license.txt', 'bin/x64/reflex.license.txt')
@@ -270,6 +272,12 @@ function Invoke-StreamlineFetch {
             if ($problem) { $problems += "$dll`: $problem" } else { Write-Host "  $dll signed by $SlSignerCn" }
         }
         if ($problems.Count -gt 0) { Stop-Fetch ("signature check failed: " + ($problems -join '; ')) }
+        # The pinned zip holds exactly the pinned runtime files.
+        foreach ($name in $script:AcdbSlRuntimeSha256.Keys) {
+            $sha = Get-Sha256Hex (Join-Path $stage "bin\x64\$name")
+            if ($sha -ne $script:AcdbSlRuntimeSha256[$name]) { $problems += "bin\x64\$name has SHA-256 $sha, pinned $($script:AcdbSlRuntimeSha256[$name])" }
+        }
+        if ($problems.Count -gt 0) { Stop-Fetch ("the extracted files differ from their pins in dev-common.ps1: " + ($problems -join '; ')) }
 
         $stageRoot = (Resolve-Path -LiteralPath $stage).Path.TrimEnd('\') + '\'
         $manifestLines = @("# zip $SlZipSha256")

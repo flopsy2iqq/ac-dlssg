@@ -87,9 +87,10 @@ inline std::string LuaFunctionBody(const std::string& lua, const std::string& na
 }
 
 // The Lua source without comments and string literals, so that keywords can
-// be counted: `--[[ ]]`/`--[=[ ]=]` and `--` comments, `[[ ]]` long strings
-// and quoted strings (with escapes) become one space each.
-inline std::string LuaCodeOnly(const std::string& lua) {
+// be counted: `--[[ ]]`/`--[=[ ]=]` and `--` comments become one space each,
+// and `[[ ]]` long strings and quoted strings (with escapes) one
+// stringStandIn each (a space unless the caller needs to see where they were).
+inline std::string LuaCodeOnly(const std::string& lua, char stringStandIn = ' ') {
     std::string out;
     size_t i = 0;
     const auto longBracketEnd = [&](size_t at, size_t* level) -> bool {
@@ -124,14 +125,14 @@ inline std::string LuaCodeOnly(const std::string& lua) {
         size_t level = 0;
         if (c == '[' && longBracketEnd(i, &level)) {
             i = skipLong(i, level);
-            out.push_back(' ');
+            out.push_back(stringStandIn);
             continue;
         }
         if (c == '\'' || c == '"') {
             ++i;
             while (i < lua.size() && lua[i] != c && lua[i] != '\n') i += lua[i] == '\\' ? 2 : 1;
             ++i;
-            out.push_back(' ');
+            out.push_back(stringStandIn);
             continue;
         }
         out.push_back(c);

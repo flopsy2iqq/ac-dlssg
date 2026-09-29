@@ -8,8 +8,9 @@
   neither the repository nor any build tool. It asks nothing: it prints what
   it finds and decides, and runs to the end. The package layout:
     install.bat          starts this script
-    files\               ac-dlssg.dll, apps\lua\AcDlssg, and deps\ for the
-                         downloads
+    files\               ac-dlssg.dll, apps\lua\AcDlssg, ac-dlssg\ (the
+                         uninstaller and the log collector for the game
+                         folder), and deps\ for the downloads
     scripts\             this script and the ones it runs
     tools\               uninstall.bat, collect-logs.bat
     docs\                READMEs, LICENSE, EXCEPTIONS.md, THIRD_PARTY_NOTICES.txt,
@@ -22,11 +23,19 @@
      Windows UAC prompt is the only question. It refuses when Windows Smart
      App Control is on, because that blocks the unsigned bridge DLL (in
      evaluation mode it only warns).
-  2. Without -StreamlineDir it gets NVIDIA Streamline 2.14.1 with
-     scripts\fetch-deps.ps1 into files\deps\: downloaded from NVIDIA's GitHub
-     release only when not already there, SHA-256 and NVIDIA signatures
-     verified. It prints where NVIDIA's license files are; installing means
-     accepting them.
+  2. Without -StreamlineDir it gets NVIDIA Streamline 2.14.1. An earlier
+     install's copy in <game>\ac-dlssg\sl is used again when each file the
+     install copies is there with its pinned SHA-256 and each DLL carries
+     NVIDIA's signature (the checks a download gets; the pins are in
+     scripts\dev-common.ps1): the files are copied into
+     files\deps\streamline-2.14.1-installed, checked again there, installed
+     from there (they are already this version, so nothing in the game
+     folder is rewritten), and that copy is deleted afterwards; it says
+     "Streamline 2.14.1 is already installed and verified; not downloaded
+     again". Otherwise scripts\fetch-deps.ps1 gets it into files\deps\:
+     downloaded from NVIDIA's GitHub release only when not already there,
+     SHA-256 and NVIDIA signatures verified. It prints where NVIDIA's license
+     files are; installing means accepting them.
   3. dlssg_for_sm86 (spec 10), unless -NoSpoof is given. It reads every
      display adapter (the PNPDeviceID of each Win32_VideoController) and
      looks only at the NVIDIA ones:
@@ -37,14 +46,21 @@
          (version.dll also its size and SHA-256), and has dev-install.ps1 put
          them next to acs.exe. A pinned 0.3.5 file that is already in the game
          folder is not downloaded again; it is recorded as found, and
-         uninstall.ps1 leaves it. Any other version.dll (another mod, another
-         dlssg_for_sm86 version) is left untouched with a warning, and the
-         spoof is not installed. A download that fails its checks is deleted
-         and stops the install with nothing changed.
+         uninstall.ps1 leaves it (one an earlier install put there stays
+         recorded as installed). Any other version.dll (another mod, another
+         dlssg_for_sm86 version), also one put over the version.dll an
+         earlier install put there, is left untouched with a warning, and
+         the spoof is not installed (the earlier record stays). A download
+         that fails its checks is deleted and stops the install with nothing
+         changed.
        - RTX 40 and RTX 50: nothing is needed.
        - RTX 20: frame generation is not supported there; no spoof.
-  4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll and the
-     CSP Lua app files\apps\lua\AcDlssg. -Mode Auto (the default) installs
+  4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll, the
+     CSP Lua app files\apps\lua\AcDlssg and, as -Tools, files\ac-dlssg: the
+     uninstaller and the log collector go into <game>\ac-dlssg
+     (uninstall.bat, collect-logs.bat, and the scripts they run in
+     scripts\), so that the unpacked package and its zip can be deleted
+     after the install. -Mode Auto (the default) installs
      standalone (the bridge as <game>\dxgi.dll) when the game has no dxgi.dll,
      and next to ReShade when ReShade is the game's dxgi.dll; it refuses any
      other dxgi.dll. The Lua app goes to <game>\apps\lua\AcDlssg; a folder of
@@ -56,7 +72,8 @@
      ships are removed, and when the mode has to change (ReShade was
      installed or removed since) the old mode's files are undone and the new
      mode installed in the same run.
-  Undo with tools\uninstall.bat.
+  Undo with <game>\ac-dlssg\uninstall.bat (or this package's
+  tools\uninstall.bat).
 
   The last line is "Press Enter to exit", so that a double-clicked window
   stays open; not with -NoPause or when the input is redirected.
@@ -123,6 +140,33 @@ function Wait-BeforeClose {
     try { [void](Read-Host 'Press Enter to exit') } catch { }
 }
 
+# The uninstaller and the log collector that the install puts into the game folder.
+function Get-InstalledTool([string]$Game, [string]$Name) { return Join-Path (Join-Path $Game $script:AcdbDataDirName) $Name }
+
+# The installed Streamline of an earlier install, copied into $To and
+# checked there with the checks a download gets: the folder to install
+# from, or the reason it cannot be used (then $To is gone again). The copy
+# keeps dev-install.ps1 from reading and writing the same files.
+function Copy-InstalledStreamline([string]$Game, [string]$To) {
+    if (Test-Path -LiteralPath $To) { Remove-Item -LiteralPath $To -Recurse -Force }
+    $data = Join-Path $Game $script:AcdbDataDirName
+    $from = Join-Path $data $script:AcdbSlDirName
+    $problem = ''
+    if (-not (Test-Path -LiteralPath (Join-Path $data 'install\dev-manifest.json') -PathType Leaf)) { $problem = 'there is no install to take them from' }
+    if (-not $problem) { $problem = Get-StreamlineRuntimeProblem $from }
+    if (-not $problem) {
+        New-Item -ItemType Directory -Path $To -Force | Out-Null
+        foreach ($name in $script:AcdbSlRuntimeSha256.Keys) { Copy-Item -LiteralPath (Join-Path $from $name) -Destination (Join-Path $To $name) }
+        $problem = Get-StreamlineRuntimeProblem $To
+        if ($problem) { $problem = "their copy in $To`: $problem" }
+    }
+    if ($problem) {
+        if (Test-Path -LiteralPath $To) { Remove-Item -LiteralPath $To -Recurse -Force }
+        return [pscustomobject]@{ Dir = $null; From = $from; Problem = $problem }
+    }
+    return [pscustomobject]@{ Dir = $To; From = $from; Problem = '' }
+}
+
 function Get-GpuArchText($Adapter) {
     switch ($Adapter.Arch) {
         'Ampere' { if ($Adapter.Sm86) { return 'RTX 30, Ampere SM86' } else { return 'Ampere SM80 (A100)' } }
@@ -135,7 +179,7 @@ function Get-GpuArchText($Adapter) {
 }
 
 # Printed before the download, from spec 10; the install goes on without a question.
-function Write-SpoofNotice {
+function Write-SpoofNotice([string]$Game) {
     $v = $script:AcdbSpoofVersion
     Say ('This PC has an RTX 30 GPU. NVIDIA allows DLSS Frame Generation only on RTX 40 and newer; on RTX 30 it runs ' +
         "through dlssg_for_sm86, which the installer now downloads and puts next to acs.exe:")
@@ -150,7 +194,7 @@ function Write-SpoofNotice {
     Write-Host '    circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you'
     Write-Host '    are that license''s licensee.'
     Write-Host '  - Risk: it runs inside the game and changes the GPU architecture that NVIDIA''s driver interface reports'
-    Write-Host '    to it (CSP sees that too). If the game misbehaves, tools\uninstall.bat removes it again.'
+    Write-Host "    to it (CSP sees that too). If the game misbehaves, $(Get-InstalledTool $Game 'uninstall.bat') removes it again."
     Write-Host '  - To install without it: install.bat -NoSpoof.'
 }
 
@@ -218,7 +262,7 @@ function Get-SpoofInstallArgs([string]$Game) {
     }
     $fetch = @($script:AcdbSpoofNames | Where-Object { $state[$_] -eq 'absent' })
     if ($fetch.Count -gt 0) {
-        Write-SpoofNotice
+        Write-SpoofNotice $Game
         $deps = $depsDir
         $fetchArgs = @{ Only = 'Spoof'; SpoofFiles = $fetch; DepsDir = $deps }
         if ($SpoofSourceDir) { $fetchArgs.SpoofSourceDir = $SpoofSourceDir }
@@ -239,6 +283,7 @@ function Get-SpoofInstallArgs([string]$Game) {
 }
 
 $code = 1
+$reusedSl = $null
 try {
     Say "ac-dlssg from $packageRoot"
     $running = @(Get-RunningGame)
@@ -275,18 +320,30 @@ try {
     if ($sac -eq 1) {
         Stop-Refused 'Windows Smart App Control is on. It blocks the unsigned ac-dlssg.dll, and the game would not start. Nothing was installed.'
     } elseif ($sac -eq 2) {
-        Say 'WARNING: Windows Smart App Control is in evaluation mode. If Windows switches it on later, it blocks the bridge and the game no longer starts; then run tools\uninstall.bat.'
+        Say "WARNING: Windows Smart App Control is in evaluation mode. If Windows switches it on later, it blocks the bridge and the game no longer starts; then run $(Get-InstalledTool $game 'uninstall.bat')."
     }
 
     $licenses = @()
     if (-not $StreamlineDir) {
         $deps = $depsDir
-        Say "NVIDIA Streamline 2.14.1 goes to $deps (a download of about 276 MB from github.com/NVIDIA-RTX/Streamline the first time; this can take several minutes without progress output)"
-        & (Join-Path $scripts 'fetch-deps.ps1') -Only Streamline -DepsDir $deps
-        if ($LASTEXITCODE -ne 0) { Stop-Refused 'getting Streamline failed (see above). Nothing was installed.' }
-        $slRoot = Join-Path $deps 'streamline-2.14.1'
-        $StreamlineDir = Join-Path $slRoot 'bin\x64'
-        $licenses = @(foreach ($license in @('license.txt', 'bin\x64\nvngx_dlss.license.txt', 'bin\x64\reflex.license.txt')) { Join-Path $slRoot $license })
+        $v = $script:AcdbSlVersion
+        $reuse = Copy-InstalledStreamline $game (Join-Path $deps "streamline-$v-installed")
+        if ($reuse.Dir) {
+            $reusedSl = $reuse.Dir
+            $StreamlineDir = $reuse.Dir
+            Say "Streamline $v is already installed and verified; not downloaded again ($($reuse.From))."
+            $licenses = @($script:AcdbSlRuntimeSha256.Keys | Where-Object { $_ -like '*license*' } | Sort-Object | ForEach-Object { Join-Path $reuse.From $_ })
+        } else {
+            if (Test-Path -LiteralPath $reuse.From -PathType Container) {
+                Say "the Streamline $v files in $($reuse.From) cannot be used again ($($reuse.Problem)); Streamline is downloaded again."
+            }
+            Say "NVIDIA Streamline $v goes to $deps (a download of about 276 MB from github.com/NVIDIA-RTX/Streamline the first time; this can take several minutes without progress output)"
+            & (Join-Path $scripts 'fetch-deps.ps1') -Only Streamline -DepsDir $deps
+            if ($LASTEXITCODE -ne 0) { Stop-Refused 'getting Streamline failed (see above). Nothing was installed.' }
+            $slRoot = Join-Path $deps "streamline-$v"
+            $StreamlineDir = Join-Path $slRoot 'bin\x64'
+            $licenses = @(foreach ($license in @('license.txt', 'bin\x64\nvngx_dlss.license.txt', 'bin\x64\reflex.license.txt')) { Join-Path $slRoot $license })
+        }
     } elseif (Test-Path -LiteralPath $StreamlineDir -PathType Container) {
         $licenses = @(Get-ChildItem -LiteralPath $StreamlineDir -File -Filter '*license*' | Sort-Object Name | ForEach-Object { $_.FullName })
     }
@@ -301,6 +358,7 @@ try {
         Dll           = (Join-Path $filesDir 'ac-dlssg.dll')
         LuaApp        = (Join-Path $filesDir 'apps\lua\AcDlssg')
         StreamlineDir = $StreamlineDir
+        Tools         = (Join-Path $filesDir $script:AcdbDataDirName)
         Mode          = $Mode
         AutoUpgrade   = $true
     }
@@ -309,7 +367,9 @@ try {
     & (Join-Path $scripts 'dev-install.ps1') @installArgs
     $code = $LASTEXITCODE
     if ($code -eq 0) {
-        Say 'installed. Start the game as usual, drive a few minutes, close it, then run tools\collect-logs.bat and send the zip it writes. To undo, run tools\uninstall.bat.'
+        Say 'installed. Nothing in the game folder needs this unpacked folder: it and the zip can be deleted now.'
+        Say "Start the game as usual, drive a few minutes, close it, then run $(Get-InstalledTool $game 'collect-logs.bat') and send the zip it writes next to it."
+        Say "To undo, run $(Get-InstalledTool $game 'uninstall.bat')."
     } else {
         Say 'nothing was installed, or it was rolled back (see the lines above).'
     }
@@ -320,6 +380,14 @@ try {
     } else {
         Say "FAILED: $($_.Exception.Message)"
         if (Test-AccessDenied $_) { Write-AccessDeniedHint $null }
+    }
+} finally {
+    # The copy of the installed Streamline was only the source of this run.
+    if ($reusedSl -and (Test-Path -LiteralPath $reusedSl)) {
+        Remove-Item -LiteralPath $reusedSl -Recurse -Force -ErrorAction SilentlyContinue
+        if ((Test-Path -LiteralPath $depsDir) -and @(Get-ChildItem -LiteralPath $depsDir -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $depsDir -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 Wait-BeforeClose

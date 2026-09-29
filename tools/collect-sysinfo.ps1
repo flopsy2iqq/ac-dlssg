@@ -5,8 +5,10 @@
 .DESCRIPTION
   Read-only: nothing on the system is changed and nothing is sent anywhere.
   The report (ac-dlssg-sysinfo.txt) and the DirectX diagnostic it is built
-  from (dxdiag.txt) are written into a folder "ac-dlssg-sysinfo" next to this
-  script. Send ac-dlssg-sysinfo.txt to whoever asked for it.
+  from (dxdiag.txt) are written into -OutDir, by default a folder
+  "ac-dlssg-sysinfo" next to this script (collect-logs.ps1 passes a folder
+  in its own staging folder, which it deletes after zipping). Send
+  ac-dlssg-sysinfo.txt to whoever asked for it.
 
   It records: computer model, BIOS, Windows version, CPU, every GPU (driver,
   hybrid-graphics role, hardware-accelerated GPU scheduling per GPU from
@@ -18,8 +20,13 @@
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File collect-sysinfo.ps1
 #>
+param(
+    # Where the report goes; default: the folder ac-dlssg-sysinfo next to this script.
+    [string]$OutDir
+)
 $ErrorActionPreference = 'Continue'
 $out = Join-Path $PSScriptRoot 'ac-dlssg-sysinfo'
+if ($OutDir) { $out = $OutDir }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $report = New-Object System.Collections.Generic.List[string]
 function Add([string]$line) { $report.Add($line); Write-Host $line }

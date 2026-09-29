@@ -68,18 +68,20 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
   - RTX 20 is not supported by this project.
 - **Windows 10 version 2004 or newer, or Windows 11.** Hardware-accelerated GPU scheduling must be on: Settings > System > Display > Graphics > Change default graphics settings.
 - **Laptops:** set `acs.exe` to "High performance" in the same Graphics settings, so the game runs on the NVIDIA GPU.
-- **Internet on the first install.** The installer downloads NVIDIA Streamline 2.14.1 (about 276 MB) from NVIDIA's GitHub release and checks its hash and NVIDIA's signatures, and on an RTX 30 also dlssg_for_sm86 (about 30 MB). This project never ships NVIDIA files or dlssg_for_sm86.
+- **Internet on the first install.** The installer downloads NVIDIA Streamline 2.14.1 (about 276 MB) from NVIDIA's GitHub release and checks its hash and NVIDIA's signatures, and on an RTX 30 also dlssg_for_sm86 (about 30 MB). An update does not download them again while the installed copies are intact. This project never ships NVIDIA files or dlssg_for_sm86.
 - **ReShade is optional.** With ReShade 6.8+ (add-on build) installed as `dxgi.dll`, the bridge loads through ReShade. Without it, the bridge itself is installed as `dxgi.dll`. The installer picks the mode.
 
 ## Install
 
 1. Close Assetto Corsa and Content Manager's game session.
 2. Download `ac-dlssg-<version>.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `docs`, `files`, `scripts` and `tools`.
-3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30 dlssg_for_sm86), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. At the end the window waits for Enter.
+3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30 dlssg_for_sm86), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. At the end the window waits for Enter. Afterwards you can delete the unpacked folder and the zip: the uninstaller and the log collector are in the game folder, in `ac-dlssg`.
 4. Before you start the game, turn on DLSS in CSP: in Content Manager, Settings, Custom Shaders Patch, ADJUSTMENTS (under Graphics), Upscaling: tick Active and set Method to NVIDIA DLSS (EXTRA FX must be active too). With DLAA (Quality: DLAA (100%)), also set MSAA to Off and untick FXAA in Settings, Assetto Corsa, Video, and keep post-processing on, or moving things ghost. Then start the game as usual.
 5. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.
 
-**Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`.
+**Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, the uninstaller in `ac-dlssg` included, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`. It does not download Streamline again when the installed files are intact (each matches its pinned SHA-256 and carries NVIDIA's signature; it then says "Streamline 2.14.1 is already installed and verified; not downloaded again"), and the same goes for dlssg_for_sm86 on an RTX 30.
+
+**What changes in the game folder:** `dxgi.dll` (the bridge; with ReShade, `ac-dlssg.dll` and two lines in `ReShade.ini` instead), the folder `ac-dlssg` (Streamline in `sl`, `ac-dlssg.ini`, `logs`, the install record in `install`, and `uninstall.bat`, `collect-logs.bat` and the `scripts` they run), the CSP Lua app in `apps\lua\AcDlssg`, and on an RTX 30 `version.dll` and `dlssg_sm86.ini` next to `acs.exe` and the folder `dlssg_sm86` with dlssg_for_sm86's logs. `collect-logs.bat` writes its zips into `ac-dlssg`. Nothing else.
 
 **Advanced:** `install.bat -NoSpoof` installs without dlssg_for_sm86; on an RTX 30 frame generation then does not run.
 
@@ -97,15 +99,15 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 
 ## Uninstall
 
-Double-click `tools\uninstall.bat`. It restores every file the installer changed, and removes the bridge, the Streamline files, the Lua app and the dlssg_for_sm86 files the installer put there; a dlssg_for_sm86 you had before stays. Logs and settings stay in `<game>\ac-dlssg` unless you run `tools\uninstall.bat -RemoveData`, which also deletes dlssg_for_sm86's logs and cache when the installer installed it.
+Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local files), open `ac-dlssg` and double-click `uninstall.bat`. It restores every file the installer changed, and removes the bridge, the Streamline files, the Lua app and the dlssg_for_sm86 files the installer put there; a dlssg_for_sm86 you had before stays. After the Enter at its end it removes itself, `collect-logs.bat` and `scripts` too. Logs and settings stay in `<game>\ac-dlssg`; after the uninstall you can simply delete that folder. To remove them in the same run, start `uninstall.bat -RemoveData` there instead, which deletes all of `<game>\ac-dlssg` and also dlssg_for_sm86's logs and cache when the installer installed it. The package's `tools\uninstall.bat` does the same, if you still have the unpacked folder; version 1.0.0 has only that one.
 
 ## If something goes wrong
 
 - **The game starts but the frame rate does not change.** Look at `<game>\ac-dlssg\logs\bridge.log`. The line `fg: DLSS-G on` means frame generation runs. A line `fg: frame without DLSS-G: <reason>`, or `DLSS-G is not supported on this adapter (...)`, says why it does not.
 - **"Not enough video memory" in the window.** Frame generation needs the memory the window names. Lower CSP's texture quality, shadows or the render resolution; the bridge checks again every 60 frames and turns frame generation on when it fits.
 - **"Bridge and window versions differ" in the window.** The bridge and the AC DLSS-G app come from different releases. Close the game and run `install.bat` of one release again.
-- **The game crashes or does not start.** Run `tools\uninstall.bat`; the game is then back to how it was.
-- **Reporting a problem:** double-click `tools\collect-logs.bat` after the game is closed. It only reads files and writes one zip into the `tools` folder. Attach that zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
+- **The game crashes or does not start.** First double-click `<game>\ac-dlssg\collect-logs.bat` and keep the zip (see the next point), then run `<game>\ac-dlssg\uninstall.bat`; the game is then back to how it was. The zip stays in `<game>\ac-dlssg`.
+- **Reporting a problem:** double-click `<game>\ac-dlssg\collect-logs.bat` after the game is closed. It only reads files and writes one zip into `<game>\ac-dlssg`; the window prints its full path. Attach that zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
 
 ## Known limitations
 
@@ -118,12 +120,12 @@ Double-click `tools\uninstall.bat`. It restores every file the installer changed
 
 NVIDIA locks DLSS Frame Generation to RTX 40 and newer. [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) by sdli1995, which includes Coldwood1026's RTX 20 work, lifts that lock on RTX 30. The author agreed to this project pointing to it.
 
-- ac-dlssg does not contain or modify it. On an RTX 30 the installer downloads exactly `version.dll` and `dlssg_sm86.ini` of release 0.3.5 (commit `9621db5`) from the author's repository on your PC, checks their git hashes (and the SHA-256 of `version.dll`) before it installs anything, and prints this notice first. A `version.dll` that is already in the game folder is never replaced.
+- ac-dlssg does not contain or modify it. On an RTX 30 the installer downloads exactly `version.dll` and `dlssg_sm86.ini` of release 0.3.5 (commit `9621db5`) from the author's repository on your PC, checks their git hashes (and the SHA-256 of `version.dll`) before it installs anything, and prints this notice first. A `version.dll` that was in the game folder before the install is never replaced.
 - That repository has no LICENSE file. Its README says the source is GPLv3, but no source is published.
 - It embeds NVIDIA's `nvngx_dlssg.dll`, which is not relicensed.
 - Using it on RTX 30 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids for that license's licensees.
 
-Whether to use it is your decision: `install.bat -NoSpoof` installs without it, and `tools\uninstall.bat` removes it again.
+Whether to use it is your decision: `install.bat -NoSpoof` installs without it, and `<game>\ac-dlssg\uninstall.bat` removes it again.
 
 ## How it works (short)
 

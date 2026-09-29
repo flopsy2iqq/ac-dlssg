@@ -26,9 +26,11 @@
       <game>\ac-dlssg\sl, then the dlssg_for_sm86 files given with
       -SpoofInstall next to acs.exe, then the CSP Lua app (apps\lua\AcDlssg,
       which publishes the camera to the bridge) into <game>\apps\lua\AcDlssg,
-      then the bridge DLL, each file through a .new file, a hash check and a
-      rename (spec 12 order). A <game>\apps\lua\AcDlssg that no previous run
-      of this script installed is refused in every mode, even with -Force;
+      then the uninstaller and the log collector given with -Tools into
+      <game>\ac-dlssg, then the bridge DLL, each file through a .new file, a
+      hash check and a rename (spec 12 order). A <game>\apps\lua\AcDlssg that
+      no previous run of this script installed is refused in every mode, even
+      with -Force;
     - records the dlssg_for_sm86 files: the ones it copied as installed, the
       ones named with -SpoofFound as found (dev-uninstall.ps1 leaves those);
     - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults, the M3 keys,
@@ -62,10 +64,11 @@
   deleted when it was the version recorded in the manifest. A file whose hash
   matches neither that version nor the new one was changed outside this
   script (or is not in the manifest): it is replaced only with -Force or
-  -AutoUpgrade, and its copy is kept. Files in ac-dlssg\sl and
-  apps\lua\AcDlssg that an earlier run installed and this one no longer
-  ships are removed, each only while it is the version installed (with
-  -Force or -AutoUpgrade also when it was changed; its copy is kept).
+  -AutoUpgrade, and its copy is kept. Files in ac-dlssg\sl,
+  apps\lua\AcDlssg and (with -Tools) the tools in ac-dlssg that an earlier
+  run installed and this one no longer ships are removed, each only while
+  it is the version installed (with -Force or -AutoUpgrade also when it was
+  changed; its copy is kept).
 
 .PARAMETER GameDir
   The Assetto Corsa folder (the one with acs.exe). Default: found through
@@ -99,6 +102,18 @@
   dev-uninstall.ps1 leaves them; a file that an earlier run installed and
   that is unchanged stays recorded as installed.
 
+.PARAMETER Tools
+  A folder whose files go into <game>\ac-dlssg as they are: the test
+  package's files\ac-dlssg, which its install.ps1 passes, with uninstall.bat
+  and collect-logs.bat and, in scripts\, the scripts they run, so that the
+  unpacked package is not needed after the install. Only .bat files at its
+  top and files in its scripts folder are allowed, and it must hold
+  uninstall.bat and scripts\uninstall.ps1, dev-uninstall.ps1 and
+  dev-common.ps1. They are recorded in the manifest (tools) before they are
+  written and rolled back like every other file; tools an earlier run
+  installed that this folder no longer holds are removed. Without -Tools,
+  the tools an earlier run recorded stay as they are.
+
 .PARAMETER Force
   Replace installed files that were changed outside this script.
 
@@ -129,6 +144,7 @@ param(
     [string]$Mode = 'Auto',
     [string[]]$SpoofInstall = @(),
     [string[]]$SpoofFound = @(),
+    [string]$Tools,
     [switch]$Force,
     [switch]$AutoUpgrade
 )
@@ -290,6 +306,30 @@ function Get-LuaAppSources([string]$Dir) {
     return @(Get-ChildItem -LiteralPath $Dir -File -Recurse | Sort-Object FullName | ForEach-Object { $_.FullName })
 }
 
+# The tool files in $Dir (see -Tools), each with the path it gets relative
+# to the game folder; refuses a folder with any other file, or without the
+# uninstaller.
+function Get-ToolSources([string]$Dir) {
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) {
+        Stop-Refused "the tools folder $Dir was not found. Pass -Tools <folder with uninstall.bat and scripts\>."
+    }
+    $root = Get-NormalizedPath (Resolve-Path -LiteralPath $Dir).ProviderPath
+    foreach ($need in @('uninstall.bat', 'scripts\uninstall.ps1', 'scripts\dev-uninstall.ps1', 'scripts\dev-common.ps1')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $root $need) -PathType Leaf)) {
+            Stop-Refused "the tools folder $root has no $need; the uninstaller in the game folder would not work."
+        }
+    }
+    $sources = @()
+    foreach ($f in @(Get-ChildItem -LiteralPath $root -File -Recurse -Force | Sort-Object FullName)) {
+        $rel = "$($script:AcdbDataDirName)\$($f.FullName.Substring($root.Length + 1))"
+        if (-not (Test-ToolRelPath $rel)) {
+            Stop-Refused "the tools folder $root holds $($f.FullName), which is neither a .bat file at its top nor a file in its scripts folder."
+        }
+        $sources += [pscustomobject]@{ Source = $f.FullName; Rel = $rel }
+    }
+    return [pscustomobject]@{ Dir = $root; Files = $sources }
+}
+
 function Write-Manifest([string]$Path, $Manifest) {
     Write-Utf8NoBom $Path ($Manifest | ConvertTo-Json -Depth 8)
 }
@@ -369,13 +409,14 @@ function Install-PlannedFile($Plan, [string]$BackupDir, [string]$Stamp) {
 }
 
 # A file an earlier run installed that this build no longer ships. $Dir is
-# the folder it must be in (the manifest names it relative to the game).
-function New-ObsoletePlan([string]$Rel, [string]$Recorded, [string]$Dir) {
+# the folder it must be in (the manifest names it relative to the game);
+# $Kind is the manifest part that records it (streamline, luaApp, tools).
+function New-ObsoletePlan([string]$Rel, [string]$Recorded, [string]$Dir, [string]$Kind = '') {
     $path = Join-Path $game $Rel
     $inside = (Get-NormalizedPath $path).StartsWith((Get-NormalizedPath $Dir) + '\', [System.StringComparison]::OrdinalIgnoreCase)
     $hash = $null
     if (Test-Path -LiteralPath $path -PathType Leaf) { $hash = Get-Sha256OfFile $path }
-    return [pscustomobject]@{ Rel = $Rel; Path = $path; Recorded = $Recorded; Hash = $hash; Inside = $inside }
+    return [pscustomobject]@{ Rel = $Rel; Path = $path; Recorded = $Recorded; Hash = $hash; Inside = $inside; Kind = $Kind }
 }
 
 # Removes one obsolete file, backed up first for the rollback; returns that
@@ -480,6 +521,12 @@ try {
     $luaSourceDir = Get-NormalizedPath (Resolve-Path -LiteralPath $LuaApp).ProviderPath
     Step "CSP Lua app: $luaSourceDir ($($luaSources.Count) files)"
 
+    $toolSet = $null
+    if ($Tools) {
+        $toolSet = Get-ToolSources $Tools
+        Step "uninstaller and log collector: $($toolSet.Dir) ($($toolSet.Files.Count) files)"
+    }
+
     $dxgi = Join-Path $game 'dxgi.dll'
     $dataDir = Join-Path $game $script:AcdbDataDirName
     $installDir = Join-Path $dataDir 'install'
@@ -492,7 +539,7 @@ try {
     $manifest = $null
     $recordedMode = $null
     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
-        $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        $manifest = Read-Manifest $manifestPath
         # Manifests written before standalone mode existed have no mode.
         $recordedMode = 'reshade'
         if ($manifest.PSObject.Properties['mode'] -and $manifest.mode) { $recordedMode = [string]$manifest.mode }
@@ -620,10 +667,26 @@ try {
         $rel = "$($script:AcdbLuaAppRelDir)\$($file.Substring($luaSourceDir.Length + 1))"
         $luaPlans += New-FilePlan $file (Join-Path $game $rel) $rel $luaRecorded[$rel.ToLowerInvariant()]
     }
+    # The uninstaller and the log collector (-Tools) into <game>\ac-dlssg,
+    # after the Lua app and before the bridge, so that the game never loads
+    # a bridge that has no uninstaller next to it. Without -Tools the
+    # earlier records stay as they are.
+    $toolOldFiles = @()
+    $toolRecorded = @{}
+    if ($manifest -and $manifest.PSObject.Properties['tools'] -and $manifest.tools) {
+        $toolOldFiles = @($manifest.tools.files | Where-Object { Test-ToolRelPath ([string]$_.path) })
+        foreach ($f in $toolOldFiles) { $toolRecorded[([string]$f.path).ToLowerInvariant()] = [string]$f.sha256 }
+    }
+    $toolPlans = @()
+    if ($toolSet) {
+        foreach ($t in $toolSet.Files) {
+            $toolPlans += New-FilePlan $t.Source (Join-Path $game $t.Rel) $t.Rel $toolRecorded[$t.Rel.ToLowerInvariant()]
+        }
+    }
     $dllRecorded = $null
     if ($manifest -and -not $modeSwitch) { $dllRecorded = [string]$manifest.dll.sha256 }
     $dllPlan = New-FilePlan $source $target $targetRel $dllRecorded
-    $plans = @($slPlans) + @($spoofPlans) + @($luaPlans) + @($dllPlan)
+    $plans = @($slPlans) + @($spoofPlans) + @($luaPlans) + @($toolPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
     $foreign = @($plans | Where-Object { $_.Foreign })
     if ($foreign.Count -gt 0 -and -not ($Force -or $AutoUpgrade)) {
@@ -639,12 +702,19 @@ try {
     $obsolete = @()
     foreach ($f in $slOldFiles) {
         if (@($slPlans | Where-Object { $_.Rel -ieq [string]$f.path }).Count -eq 0) {
-            $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $slDir
+            $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $slDir 'streamline'
         }
     }
     foreach ($f in $luaOldFiles) {
         if (@($luaPlans | Where-Object { $_.Rel -ieq [string]$f.path }).Count -eq 0) {
-            $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $luaDir
+            $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $luaDir 'luaApp'
+        }
+    }
+    if ($toolSet) {
+        foreach ($f in $toolOldFiles) {
+            if (@($toolPlans | Where-Object { $_.Rel -ieq [string]$f.path }).Count -eq 0) {
+                $obsolete += New-ObsoletePlan ([string]$f.path) ([string]$f.sha256) $dataDir 'tools'
+            }
         }
     }
     $obsoleteRemove = @($obsolete | Where-Object { $_.Inside -and $_.Hash -and ($_.Hash -eq $_.Recorded -or $Force -or $AutoUpgrade) })
@@ -726,9 +796,16 @@ try {
     # keeps because they were changed (the uninstaller still knows them).
     $slFiles = @($slPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
     $luaFiles = @($luaPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
+    $toolFiles = @($toolPlans | ForEach-Object { [ordered]@{ path = $_.Rel; sha256 = $_.SourceHash } })
     foreach ($o in $obsoleteKeep) {
         $rec = [ordered]@{ path = $o.Rel; sha256 = $o.Recorded }
-        if (@($slOldFiles | Where-Object { [string]$_.path -ieq $o.Rel }).Count -gt 0) { $slFiles += $rec } else { $luaFiles += $rec }
+        if ($o.Kind -eq 'streamline') { $slFiles += $rec } elseif ($o.Kind -eq 'tools') { $toolFiles += $rec } else { $luaFiles += $rec }
+    }
+    $toolsRecord = $null
+    if ($toolSet) {
+        $toolsRecord = [ordered]@{ source = $toolSet.Dir; files = $toolFiles }
+    } elseif ($manifest -and $manifest.PSObject.Properties['tools'] -and $manifest.tools) {
+        $toolsRecord = $manifest.tools
     }
     # dlssg_for_sm86: a file copied now is installed, unless the same file was
     # already there and the manifest does not record it as ours; earlier
@@ -758,11 +835,13 @@ try {
     } elseif ($manifest -and $manifest.PSObject.Properties['spoof'] -and $manifest.spoof) {
         $spoofRecord = $manifest.spoof
     }
-    # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof; dev-uninstall.ps1
-    # reads a schema 1 manifest as reshade, and one without luaApp or spoof
-    # as one without the Lua app or the spoof.
+    # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof, schema 5 tools;
+    # dev-uninstall.ps1 reads a schema 1 manifest as reshade, and one without
+    # luaApp, spoof or tools as one without the Lua app, the spoof or the
+    # tools. Every run writes the whole manifest, so an older one becomes
+    # schema 5 on the next install.
     $newManifest = [ordered]@{
-        schema       = 4
+        schema       = 5
         tool         = 'tools\dev-install.ps1'
         mode         = $chosen.Mode
         state        = 'installing'
@@ -773,6 +852,7 @@ try {
         streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
         spoof        = $spoofRecord
         luaApp       = [ordered]@{ source = $luaSourceDir; dir = $script:AcdbLuaAppRelDir; createdDirs = $luaCreatedDirs; files = $luaFiles }
+        tools        = $toolsRecord
         dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }
     }
@@ -860,6 +940,11 @@ try {
         foreach ($d in @(Get-ChildItem -LiteralPath $luaDir -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending)) {
             if (@(Get-ChildItem -LiteralPath $d.FullName -Force).Count -eq 0) { Remove-Item -LiteralPath $d.FullName -Force }
         }
+    }
+    $toolScriptsDir = Join-Path $dataDir $script:AcdbToolsScriptsDirName
+    if (@($obsoleteRemove | Where-Object { $_.Kind -eq 'tools' }).Count -gt 0 -and (Test-Path -LiteralPath $toolScriptsDir -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $toolScriptsDir -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $toolScriptsDir -Force
     }
     # Previous versions of ours: only the rollback needed them.
     foreach ($drop in $backupsToDrop) { Remove-Item -LiteralPath $drop -Force }

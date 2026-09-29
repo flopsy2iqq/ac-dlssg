@@ -4,11 +4,16 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <map>
 #include <regex>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -338,8 +343,8 @@ TEST(LuaApp_WindowSaysWhenBridgeAndWindowVersionsDiffer) {
     CHECK(acdb_test::LuaFunctionBody(lua, "bridgeProblem").find("return status.otherVersion ~= 0 and 3 or 1") !=
           std::string::npos);
     const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
-    CHECK(window.find("ui.textColored(TEXT_VERSIONS_DIFFER, COLOR_BAD)") != std::string::npos);
-    CHECK(window.find("texts.versions") != std::string::npos);
+    // The window's card for it: the title in the error colour, the hint below.
+    CHECK(window.find("noteCard(cards.problem, TEXT_VERSIONS_DIFFER, texts.versions, COLOR_BAD)") != std::string::npos);
     CHECK(acdb_test::LuaFunctionBody(lua, "refreshStatus").find("texts.versions = string.format(TEXT_VERSIONS_HINT") !=
           std::string::npos);
 }
@@ -355,9 +360,12 @@ TEST(LuaApp_WindowShowsTheAutoFixNoteAtTheTop) {
     const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
     const size_t note = window.find("if texts.autoFixNote ~= '' then");
     REQUIRE(note != std::string::npos);
-    CHECK(window.find("ui.textWrapped(texts.autoFixNote)", note) != std::string::npos);
+    // A note card in the "on" colour.
+    CHECK(window.find("noteCard(cards.autoFix, nil, texts.autoFixNote, COLOR_GOOD)", note) != std::string::npos);
     CHECK(note < window.find("texts.restartNote"));
-    CHECK(note < window.find("toggleSize.x = ui.availableSpaceX()"));
+    CHECK(note < window.find("fgSwitch(available)"));
+    // The card wraps its text inside its padding.
+    CHECK(acdb_test::LuaFunctionBody(lua, "noteCard").find("ui.textWrapped(text, wrapX)") != std::string::npos);
     // The window's texts table has it from the start.
     CHECK(std::regex_search(lua, std::regex("local texts = \\{[^}]*[{,\\s]autoFixNote = ''")));
 }
@@ -385,6 +393,58 @@ TEST(LuaApp_VramNoteDoesNotRepeatTheStatusLine) {
           std::string::npos);
 }
 
+// "Save as default" shows "Saved" in place of its label only for a save the
+// bridge confirmed. A click clears the result of the save before it: kept,
+// a second save would show the first one's "Saved" at once, and a failure
+// arriving during that flash would read "Saving failed" in the success
+// colour on the button (or the button would go blank when the status in
+// between cleared the text).
+TEST(LuaApp_SaveButtonShowsOnlyTheResultOfTheLatestSave) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string body = acdb_test::LuaFunctionBody(lua, "saveButton");
+    REQUIRE(!body.empty());
+    const size_t click = body.find("lastSaveRequest = requestCounter");
+    REQUIRE(click != std::string::npos);
+    const size_t clickEnd = body.find("\n  end", click);
+    REQUIRE(clickEnd != std::string::npos);
+    const std::string onClick = body.substr(click, clickEnd - click);
+    for (const char* reset : {"texts.save = ''", "a.lastSaveText = ''", "a.savedAt = -100"}) {
+        if (onClick.find(reset) == std::string::npos) std::printf("  saveButton(): the click does not do '%s'\n", reset);
+        CHECK(onClick.find(reset) != std::string::npos);
+    }
+    // The flash is drawn only while the text is a success.
+    const size_t flash = body.find("local flash = ");
+    REQUIRE(flash != std::string::npos);
+    const size_t guard = body.find("if texts.save == '' or status.saveOk == 0 then flash = 0 end", flash);
+    CHECK(guard != std::string::npos);
+    CHECK(guard < body.find("if flash > 0 then"));
+}
+
+// The opened "Details" is a child window whose height eases; the mouse wheel
+// over it must still scroll the app's window. CSP's SDK says of
+// NoScrollWithMouse: "On child window, mouse wheel will be forwarded to the
+// parent unless NoScrollbar is also set", so the child has NoScrollWithMouse
+// without NoScrollbar, and its scrollbar (there while the height is below the
+// content's) is made zero wide around ui.beginChild instead.
+TEST(LuaApp_TheDetailsChildForwardsTheMouseWheel) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    std::smatch m;
+    REQUIRE(std::regex_search(lua, m, std::regex(R"(childFlags = ([^\n]*))")));
+    const std::string flags = m[1];
+    CHECK(flags.find("ui.WindowFlags.NoScrollWithMouse") != std::string::npos);
+    CHECK(flags.find("ui.WindowFlags.NoScrollbar") == std::string::npos);
+    const std::string body = acdb_test::LuaFunctionBody(lua, "detailsSection");
+    REQUIRE(!body.empty());
+    const size_t push = body.find("ui.pushStyleVar(ui.StyleVar.ScrollbarSize, 0)");
+    const size_t begin = body.find("ui.beginChild(ID.detailsChild, CHILD_SIZE, false, K.childFlags)");
+    const size_t pop = body.find("ui.popStyleVar(1)");
+    const size_t content = body.find("pcall(detailsContent)");
+    CHECK(push != std::string::npos && begin != std::string::npos && pop != std::string::npos);
+    CHECK(push < begin && begin < pop && pop < content);
+}
+
 // No Lua interpreter runs in these tests; a block that is never closed (or
 // closed twice) is the easiest mistake to make in the app, so the block
 // keywords are counted: every function, if and do has its end, every
@@ -406,6 +466,329 @@ TEST(LuaApp_BlockKeywordsBalance) {
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "end"), 1u);
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "do"), 0u);
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "function"), 0u);
+}
+
+namespace {
+
+// The locals the main chunk declares at its top level: LuaJIT refuses a
+// function with more than 200 active locals ("too many local variables"),
+// and every top-level local of the app stays active to the end of the file.
+size_t TopLevelLocals(const std::string& code) {
+    // Names, numbers and single symbols; a field or method name (a.b, a:b)
+    // becomes "#", since it is never a keyword.
+    const std::regex token(R"([A-Za-z_][A-Za-z0-9_]*|[0-9][0-9A-Za-z_.]*|\S)");
+    std::vector<std::string> words;
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), token); it != std::sregex_iterator(); ++it) {
+        const size_t at = static_cast<size_t>(it->position());
+        const char before = at > 0 ? code[at - 1] : ' ';
+        words.push_back(before == '.' || before == ':' ? std::string("#") : it->str());
+    }
+    size_t count = 0;
+    int depth = 0;
+    for (size_t i = 0; i < words.size(); ++i) {
+        const std::string& w = words[i];
+        if (w == "function" || w == "if" || w == "do" || w == "repeat") {
+            ++depth;
+        } else if (w == "end" || w == "until") {
+            --depth;
+        } else if (w == "local" && depth == 0) {
+            if (i + 1 < words.size() && words[i + 1] == "function") {
+                ++count;
+                continue;
+            }
+            // local a, b, c: each name, as long as a comma follows the one before.
+            for (size_t j = i + 1; j < words.size(); j += 2) {
+                ++count;
+                if (j + 1 >= words.size() || words[j + 1] != ",") break;
+            }
+        }
+    }
+    return count;
+}
+
+}  // namespace
+
+// The window's constants and animation state live in tables for this.
+TEST(LuaApp_TheMainChunkStaysUnderLuaJitsLocalLimit) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const size_t locals = TopLevelLocals(acdb_test::LuaCodeOnly(lua));
+    std::printf("  %zu top-level locals\n", locals);
+    CHECK(locals > 100);  // the counting finds them
+    CHECK(locals <= 185);  // LuaJIT's limit is 200; keep some room
+    // The counting itself.
+    CHECK_EQ(TopLevelLocals("local a, b = 1, 2\nlocal function f() local x end\nif a then local y end\nlocal t = {x = 1}\n"),
+             4u);
+    CHECK_EQ(TopLevelLocals("function s.w(dt) local q = 1 end\nlocal c\n"), 1u);
+}
+
+namespace {
+
+// lib.lua of CSP's Lua SDK for apps (<game>\extension\internal\lua-sdk\ac_apps),
+// or an empty path. The environment variable ACDB_CSP_LUA_SDK names the
+// lua-sdk folder; else the game is looked for in Steam's default folder and in
+// a SteamLibrary folder at the root of every fixed drive.
+std::filesystem::path CspAppsLib() {
+    namespace fs = std::filesystem;
+    const fs::path rel = fs::path("extension") / "internal" / "lua-sdk" / "ac_apps" / "lib.lua";
+    std::vector<fs::path> candidates;
+    wchar_t env[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"ACDB_CSP_LUA_SDK", env, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) candidates.push_back(fs::path(env) / "ac_apps" / "lib.lua");
+    candidates.push_back(fs::path(L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\assettocorsa") / rel);
+    const DWORD drives = GetLogicalDrives();
+    for (int d = 2; d < 26; ++d) {  // C: to Z:
+        if (!(drives & (1u << d))) continue;
+        const std::wstring root = std::wstring(1, static_cast<wchar_t>(L'A' + d)) + L":\\";
+        if (GetDriveTypeW(root.c_str()) != DRIVE_FIXED) continue;
+        candidates.push_back(fs::path(root) / "SteamLibrary" / "steamapps" / "common" / "assettocorsa" / rel);
+    }
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (fs::is_regular_file(c, ec)) return c;
+    }
+    return {};
+}
+
+bool IsIdentChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+std::string IdentAt(const std::string& s, size_t at) {
+    size_t e = at;
+    while (e < s.size() && IsIdentChar(s[e])) ++e;
+    return s.substr(at, e - at);
+}
+
+// How many arguments a ui function takes: at most max (-1: any number, as
+// with "...") and at least min, the parameters up to the last one whose
+// ---@param type is neither optional ("type?") nor nil-able (0 when an
+// ---@overload may take fewer).
+struct Arity {
+    int min = 0;
+    int max = -1;
+};
+
+// The names in a parameter list "a, b, ..." (the text between the parentheses).
+std::vector<std::string> ParamNames(const std::string& list) {
+    std::vector<std::string> names;
+    std::string cur;
+    for (char c : list + ",") {
+        if (c != ',') {
+            cur.push_back(c);
+            continue;
+        }
+        const size_t b = cur.find_first_not_of(" \t");
+        if (b != std::string::npos) names.push_back(cur.substr(b, cur.find_last_not_of(" \t") - b + 1));
+        cur.clear();
+    }
+    return names;
+}
+
+// The text between the '(' at open and the next ')', or empty.
+std::string ParenList(const std::string& line, size_t open) {
+    if (open == std::string::npos) return {};
+    const size_t close = line.find(')', open);
+    return close == std::string::npos ? std::string() : line.substr(open + 1, close - open - 1);
+}
+
+// The ---@param and ---@overload lines of the doc comment above a declaration.
+struct DocComment {
+    std::map<std::string, bool> optional;  // parameter name -> optional
+    int overloadMax = -1;                  // the most parameters an overload takes
+    bool overload = false;
+};
+
+Arity ArityOf(const std::vector<std::string>& params, const DocComment& doc) {
+    Arity a;
+    for (const auto& p : params)
+        if (p == "...") return a;
+    a.max = std::max(static_cast<int>(params.size()), doc.overloadMax);
+    if (doc.overload) return a;
+    for (size_t i = 0; i < params.size(); ++i) {
+        const auto found = doc.optional.find(params[i]);
+        if (found != doc.optional.end() && !found->second) a.min = static_cast<int>(i) + 1;
+    }
+    return a;
+}
+
+// What lib.lua declares under ui: functions ("function ui.name(" and
+// "ui.name = function (") with their arity, and enums ("ui.Name = {" with one
+// member per line).
+struct SdkUi {
+    std::set<std::string> functions;
+    std::map<std::string, Arity> arity;
+    std::map<std::string, std::set<std::string>> enums;
+};
+
+SdkUi ParseSdkUi(const std::string& lib) {
+    static const std::regex param(R"(^---@param\s+([A-Za-z_][A-Za-z0-9_]*)\s+(\S+))");
+    SdkUi out;
+    std::istringstream in(lib);
+    std::string line;
+    std::string openEnum;
+    DocComment doc;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("---", 0) == 0) {
+            std::smatch m;
+            if (std::regex_search(line, m, param)) {
+                const std::string type = m[2];
+                doc.optional[m[1]] = type.back() == '?' || type.find("nil") != std::string::npos;
+            } else if (line.rfind("---@overload fun(", 0) == 0) {
+                doc.overload = true;
+                doc.overloadMax =
+                    std::max(doc.overloadMax, static_cast<int>(ParamNames(ParenList(line, line.find('('))).size()));
+            }
+            continue;
+        }
+        // Any other line ends the doc comment; it belongs to this line only.
+        const DocComment above = std::move(doc);
+        doc = DocComment();
+        if (!openEnum.empty()) {
+            if (line.rfind('}', 0) == 0) {
+                openEnum.clear();
+                continue;
+            }
+            const size_t b = line.find_first_not_of(" \t");
+            if (b != std::string::npos && line.compare(b, 2, "--") != 0) {
+                const std::string member = IdentAt(line, b);
+                if (!member.empty()) out.enums[openEnum].insert(member);
+            }
+            continue;
+        }
+        if (line.rfind("function ui.", 0) == 0) {
+            const std::string name = IdentAt(line, 12);
+            if (!name.empty() && line.size() > 12 + name.size() && line[12 + name.size()] == '(') {
+                out.functions.insert(name);
+                out.arity[name] = ArityOf(ParamNames(ParenList(line, 12 + name.size())), above);
+            }
+        } else if (line.rfind("ui.", 0) == 0) {
+            const std::string name = IdentAt(line, 3);
+            size_t at = line.find_first_not_of(' ', 3 + name.size());
+            if (name.empty() || at == std::string::npos || line[at] != '=') continue;
+            at = line.find_first_not_of(' ', at + 1);
+            if (at != std::string::npos && line[at] == '{') {
+                if (line.find('}', at) == std::string::npos) openEnum = name;
+                out.enums[name];
+            } else {
+                out.functions.insert(name);
+                if (line.compare(at, 8, "function") == 0)
+                    out.arity[name] = ArityOf(ParamNames(ParenList(line, line.find('(', at))), above);
+                else
+                    out.arity[name] = Arity();
+            }
+        }
+    }
+    return out;
+}
+
+// Each call "ui.name(...)" in code (LuaCodeOnly with a string stand-in, so a
+// string argument still counts) with the number of its arguments: the commas
+// outside nested (), {} and [] plus one, or 0 for "()".
+std::vector<std::pair<std::string, int>> UiCallArgCounts(const std::string& code) {
+    static const std::regex call(R"((?:^|[^A-Za-z0-9_.:])ui\.([A-Za-z_][A-Za-z0-9_]*)\s*\()");
+    std::vector<std::pair<std::string, int>> out;
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), call); it != std::sregex_iterator(); ++it) {
+        size_t i = static_cast<size_t>(it->position() + it->length());  // after '('
+        int depth = 0;
+        int commas = 0;
+        bool any = false;
+        for (; i < code.size(); ++i) {
+            const char c = code[i];
+            if (c == '(' || c == '{' || c == '[') {
+                ++depth;
+            } else if (c == ')' || c == '}' || c == ']') {
+                if (depth == 0) break;
+                --depth;
+            } else if (c == ',' && depth == 0) {
+                ++commas;
+            }
+            if (!std::isspace(static_cast<unsigned char>(c))) any = true;
+        }
+        out.emplace_back((*it)[1], any ? commas + 1 : 0);
+    }
+    return out;
+}
+
+}  // namespace
+
+// The app runs only inside CSP, so a ui function that CSP does not have
+// fails only in game. Every ui.name( the app calls must be declared in the
+// SDK's lib.lua of the installed CSP, and every ui.Enum.Member it uses must be
+// a member there. Skips when no CSP SDK is found (see CspAppsLib).
+TEST(LuaApp_EveryUiFunctionAndEnumTheAppUsesIsInTheCspSdk) {
+    const std::filesystem::path libPath = CspAppsLib();
+    if (libPath.empty()) {
+        std::printf("  SKIP: CSP's lua-sdk\\ac_apps\\lib.lua not found (set ACDB_CSP_LUA_SDK to the lua-sdk folder)\n");
+        return;
+    }
+    std::printf("  %s\n", libPath.string().c_str());
+    const SdkUi sdk = ParseSdkUi(acdb_test::ReadAll(libPath));
+    REQUIRE(sdk.functions.count("drawRectFilled") == 1 && sdk.functions.count("DWriteFont") == 1);
+    REQUIRE(sdk.enums.count("StyleColor") == 1 && sdk.enums.at("StyleColor").count("CheckMark") == 1);
+
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string code = acdb_test::LuaCodeOnly(lua);
+    std::set<std::string> called;
+    const std::regex call(R"((?:^|[^A-Za-z0-9_.:])ui\.([A-Za-z_][A-Za-z0-9_]*)\s*\()");
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), call); it != std::sregex_iterator(); ++it)
+        called.insert((*it)[1]);
+    CHECK(called.size() >= 20);  // the window draws with many
+    for (const auto& name : called) {
+        if (sdk.functions.count(name) == 0) std::printf("  ui.%s is not in the SDK\n", name.c_str());
+        CHECK(sdk.functions.count(name) == 1);
+    }
+    const std::regex member(R"((?:^|[^A-Za-z0-9_.:])ui\.([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*))");
+    size_t members = 0;
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), member); it != std::sregex_iterator(); ++it) {
+        ++members;
+        const std::string e = (*it)[1];
+        const std::string m = (*it)[2];
+        const auto found = sdk.enums.find(e);
+        const bool ok = found != sdk.enums.end() && found->second.count(m) == 1;
+        if (!ok) std::printf("  ui.%s.%s is not in the SDK\n", e.c_str(), m.c_str());
+        CHECK(ok);
+    }
+    CHECK(members >= 10);
+
+    // Every call passes no more arguments than the function declares, and at
+    // least its required ones: a colour, position or flag in the wrong place
+    // usually shows up as one argument too many or too few.
+    const std::vector<std::pair<std::string, int>> calls = UiCallArgCounts(acdb_test::LuaCodeOnly(lua, 's'));
+    CHECK(calls.size() >= 60);
+    for (const auto& [name, args] : calls) {
+        const auto found = sdk.arity.find(name);
+        if (found == sdk.arity.end()) continue;  // reported above
+        const Arity& a = found->second;
+        const bool ok = args >= a.min && (a.max < 0 || args <= a.max);
+        if (!ok) std::printf("  ui.%s called with %d arguments; the SDK takes %d to %d\n", name.c_str(), args, a.min, a.max);
+        CHECK(ok);
+    }
+    CHECK(sdk.arity.at("drawRectFilled").min == 3 && sdk.arity.at("drawRectFilled").max == 5);
+    CHECK(sdk.arity.at("dwriteDrawTextClipped").min == 4 && sdk.arity.at("dwriteDrawTextClipped").max == 8);
+
+    // The parsing itself.
+    const SdkUi sample = ParseSdkUi(
+        "function ui.text(text) end\r\nui.Font = {\r\n  Small = 1, ---@type ui.Font\r\n}\r\n"
+        "ui.DWriteFont = function (name, dir) end\r\nfunction ui.DWriteFont.Weight(x) end\r\n--ui.nope = 1\r\n"
+        "---@param p1 vec2\r\n---@param color rgbm\r\n---@param rounding number? @Default value: 0.\r\n"
+        "function ui.box(p1, color, rounding) end\r\n---@param a string\r\nfunction ui.any(a, ...) end\r\n"
+        "---@overload fun(a: string)\r\n---@param a string\r\n---@param b number\r\nfunction ui.over(a, b) end\r\n");
+    CHECK(sample.functions.count("text") == 1 && sample.functions.count("DWriteFont") == 1);
+    CHECK(sample.functions.count("nope") == 0 && sample.functions.size() == 5);
+    CHECK(sample.enums.count("Font") == 1 && sample.enums.at("Font").count("Small") == 1);
+    CHECK(sample.arity.at("text").min == 0 && sample.arity.at("text").max == 1);  // no ---@param: optional
+    CHECK(sample.arity.at("DWriteFont").max == 2);
+    CHECK(sample.arity.at("box").min == 2 && sample.arity.at("box").max == 3);
+    CHECK(sample.arity.at("any").max == -1);
+    CHECK(sample.arity.at("over").min == 0 && sample.arity.at("over").max == 2);
+    const std::vector<std::pair<std::string, int>> counted = UiCallArgCounts(acdb_test::LuaCodeOnly(
+        "ui.box(P1, f(a, b), {1, 2})\nui.text('a, b')\nui.endChild()\nx.ui.no(1)\nui.box(P1, c, 2, K.corners)\n", 's'));
+    REQUIRE(counted.size() == 4u);
+    CHECK(counted[0] == std::make_pair(std::string("box"), 3));
+    CHECK(counted[1] == std::make_pair(std::string("text"), 1));
+    CHECK(counted[2] == std::make_pair(std::string("endChild"), 0));
+    CHECK(counted[3] == std::make_pair(std::string("box"), 4));  // one too many for box: the check above fails it
 }
 
 // One visible CSP app window titled "AC DLSS-G"; LAZY = NONE keeps the

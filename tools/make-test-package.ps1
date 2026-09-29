@@ -12,6 +12,14 @@
                          the CSP Lua app that publishes the camera (from the
                          repository's apps\lua\AcDlssg); dev-install.ps1 puts it
                          into <game>\apps\lua\AcDlssg
+    files\ac-dlssg\      what dev-install.ps1 -Tools puts into <game>\ac-dlssg,
+                         so that the unpacked package can be deleted after the
+                         install: uninstall.bat and collect-logs.bat (from
+                         tools\package\installed; they work on the game folder
+                         they are in) and scripts\ with uninstall.ps1,
+                         dev-uninstall.ps1, dev-common.ps1, collect-logs.ps1,
+                         collect-sysinfo.ps1 and tools.json (the list of these
+                         files with their SHA-256, written here)
     scripts\install.ps1  tools\package\install.ps1: finds the game through
                          Steam, starts itself again with administrator rights
                          when the game folder needs them, gets Streamline with
@@ -71,6 +79,14 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'dev-common.ps1')
 
 $repo = Split-Path -Parent $PSScriptRoot
+# Removes links to Patreon from a document and keeps the words: a Markdown
+# link [text](https://www.patreon.com/...) becomes its text, and a bare
+# Patreon URL, with the ": " before it, is dropped.
+function Remove-PatreonLinks([string]$Text) {
+    $Text = [regex]::Replace($Text, '\[([^\]]+)\]\(https?://(?:www\.)?patreon\.com/[^)\s]*\)', '$1')
+    return [regex]::Replace($Text, ':?[ \t]*https?://(?:www\.)?patreon\.com/[^\s)]*', '')
+}
+
 # Copied from the repository root into docs\ of the package.
 # Repository paths; each lands in the package's docs\ under its file name.
 $script:PackageDocs = @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt',
@@ -135,6 +151,25 @@ try {
     foreach ($f in @('uninstall.bat', 'collect-logs.bat')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "package\$f") -Destination (Join-Path $toolsDir $f)
     }
+    # The uninstaller and the log collector for <game>\ac-dlssg; scripts\install.ps1
+    # passes files\ac-dlssg to dev-install.ps1 as -Tools.
+    $gameTools = Join-Path $filesDir $script:AcdbDataDirName
+    $gameScripts = Join-Path $gameTools $script:AcdbToolsScriptsDirName
+    New-Item -ItemType Directory -Force -Path $gameScripts | Out-Null
+    foreach ($f in @('uninstall.bat', 'collect-logs.bat')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "package\installed\$f") -Destination (Join-Path $gameTools $f)
+    }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'package\uninstall.ps1') -Destination (Join-Path $gameScripts 'uninstall.ps1')
+    foreach ($f in @('dev-uninstall.ps1', 'dev-common.ps1', 'collect-logs.ps1', 'collect-sysinfo.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $f) -Destination (Join-Path $gameScripts $f)
+    }
+    # The list of those files with their SHA-256, paths relative to the game
+    # folder, as the manifest names them: the uninstaller in the game folder
+    # removes its own files by it when the manifest records none.
+    $toolList = @(Get-ChildItem -LiteralPath $gameTools -File -Recurse | Sort-Object FullName | ForEach-Object {
+            [ordered]@{ path = "$($script:AcdbDataDirName)\$($_.FullName.Substring($gameTools.Length + 1))"; sha256 = (Get-Sha256OfFile $_.FullName) }
+        })
+    Write-Utf8NoBom (Join-Path $gameScripts $script:AcdbToolsListName) ([ordered]@{ files = $toolList } | ConvertTo-Json -Depth 4)
     # The CSP Lua app; scripts\install.ps1 passes files\apps\lua\AcDlssg to dev-install.ps1.
     $luaSource = Join-Path $repo 'apps\lua\AcDlssg'
     if (-not (Test-Path -LiteralPath (Join-Path $luaSource 'manifest.ini') -PathType Leaf)) { throw "the CSP Lua app is missing: $luaSource" }
@@ -147,13 +182,24 @@ try {
     $readme = $readme.Replace('{VERSION}', $Version).Replace('{COMMIT}', $commit).Replace('{DLL_SHA256}', $dllHash).
         Replace('{DATE}', [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm') + ' UTC')
     $readme = ($readme -replace "`r?`n", "`r`n")
-    [System.IO.File]::WriteAllText((Join-Path $docsDir 'README-test.txt'), $readme, (New-Object System.Text.UTF8Encoding($true)))
+    [System.IO.File]::WriteAllText((Join-Path $docsDir 'README-test.txt'), (Remove-PatreonLinks $readme), (New-Object System.Text.UTF8Encoding($true)))
     # The license, its exceptions, the third-party notices and both READMEs.
+    # The Markdown files lose their Patreon links (the text stays), since the
+    # zip is also uploaded to Nexus Mods, which does not allow links to paid
+    # early-access builds such as the CSP previews.
     foreach ($f in $script:PackageDocs) {
         $from = Join-Path $repo $f
         if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { throw "$from is missing; the package must carry it" }
-        Copy-Item -LiteralPath $from -Destination (Join-Path $docsDir (Split-Path -Leaf $f))
+        $to = Join-Path $docsDir (Split-Path -Leaf $f)
+        if ($f -like '*.md') {
+            $text = [System.IO.File]::ReadAllText($from, $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText($to, (Remove-PatreonLinks $text), $script:Utf8NoBom)
+        } else {
+            Copy-Item -LiteralPath $from -Destination $to
+        }
     }
+    $withPatreon = @(Get-ChildItem -LiteralPath $docsDir -File | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match '(?i)patreon\.com' } | ForEach-Object { $_.Name })
+    if ($withPatreon.Count -gt 0) { throw "docs\ still links to Patreon: $($withPatreon -join ', ')" }
 
     # The root holds only install.bat and the four folders; docs\ holds its files.
     $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })
