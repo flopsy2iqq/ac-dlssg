@@ -24,7 +24,7 @@ FgGateResult Off(std::string reason, bool perFrame) {
 
 FgGateResult DecideFg(const FgGateInputs& in) {
     if (!in.supported) return Off("not supported on this adapter", false);
-    if (!in.userOn) return Off("off by the user (start_with_fg or the hotkey)", false);
+    if (!in.userOn) return Off(UserOffReason(in.userSource), false);
     if (!in.stateFailure.empty()) return Off("DLSS-G status " + in.stateFailure, false);
     if (in.stalled) return Off("D3D12 stall", true);
     if (in.windowMinimized) return Off("game window minimized", true);
@@ -41,6 +41,10 @@ FgGateResult DecideFg(const FgGateInputs& in) {
     if (!in.constantsOk) return Off("frame constants refused: " + in.constantsWhy, true);
     if (!in.vramRefusal.empty()) return Off(in.vramRefusal, false);
     return FgGateResult{true, std::string(), false};
+}
+
+std::string UserOffReason(const std::string& source) {
+    return "off by the user (" + (source.empty() ? std::string("start_with_fg, the hotkey or the panel") : source) + ")";
 }
 
 bool ShouldTag(const FgGateInputs& in, const FgGateResult& gate, bool tagWithoutFg) {

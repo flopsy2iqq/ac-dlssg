@@ -1,9 +1,9 @@
 # Test application (spec 11): a stand-in for Assetto Corsa with CSP that loads
 # ac-dlssg.dll the way ReShade loads its ProxyLibrary. It deliberately
 # does not link acdb_core: like the game, it only sees the DLL's exports.
-add_executable(testapp main.cpp fake_csp.h log_checks.h)
+add_executable(testapp main.cpp fake_csp.h fake_panel.h log_checks.h)
 target_link_libraries(testapp PRIVATE d3d11)
-# Declarations only: the camera layout and the NGX parameter interface (src),
+# Declarations only: the camera and panel layouts and the NGX parameter interface (src),
 # and the fake NGX module's state (tests/fake_nvngx) for --fake-ngx.
 target_include_directories(testapp PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/tests")
 

@@ -38,6 +38,7 @@ struct BootstrapState {
     Config config;
     std::wstring game_dir;      // directory of the host exe
     std::wstring data_dir;      // <game_dir>\ac-dlssg
+    std::wstring config_path;   // <data_dir>\ac-dlssg.ini (read here; the panel's "Save as default" writes it)
     std::wstring docs_ac_dir;   // DocumentsAcDir()
     CompatInputs compat;        // files + registry HAGS read at bootstrap; module flags re-read and
                                 // HAGS taken from the render adapter per swap chain (FactoryHook)
@@ -69,7 +70,15 @@ HMODULE BridgeModule();
 // <data_dir>\logs) (a disabled bridge never loads Streamline: streamline_error
 // is then "not loaded: the bridge is disabled"); possible = enabled &&
 // streamline_ok, reason "disabled in ac-dlssg.ini" or "Streamline: <error>"
-// otherwise.
+// otherwise. Last, whether or not the bridge is enabled (spec 6.9): the
+// panel's status and control sections (PanelStatusChannel::Get().Create and
+// PanelControlChannel::Get().Create); when this process owns the status it
+// publishes the bootstrap's part of it (mode, the config's switches and
+// hotkey, the spoof, the first driver-profile warning) with bridgeState
+// kPanelNotLoaded ("waiting for the game's swap chain"), or kPanelPassThrough
+// with the reason when the bridge is not possible, and logs "panel: status
+// section <name> and control section <name> ready"; a status section of
+// another process's bridge is logged at INFO and left alone.
 // Must not be called from DllMain. Adapters are enumerated through
 // GetSystemDxgi() under InternalCallScope.
 const BootstrapState& BootstrapRunOnce();

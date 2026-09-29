@@ -15,8 +15,10 @@
 #include "adapter_caps.h"
 #include "bootstrap.h"
 #include "compat.h"
+#include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
+#include "panel_status.h"
 #include "proxy_swapchain.h"
 #include "streamline_runtime.h"
 #include "vtable_patch.h"
@@ -156,6 +158,19 @@ HagsDecision RenderAdapterHags(const RenderAdapter& adapter, bool registryOn) {
     return hags;
 }
 
+// Spec 6.9: the game's main window passes through; the panel shows why.
+void PublishPassThrough(const std::string& reason, const RenderAdapter& adapter) {
+    PanelStatusChannel::Get().Update([&](StatusLayout& s) {
+        s.bridgeState = kPanelPassThrough;
+        s.fgOn = 0;
+        s.fgPaused = 0;
+        s.rtx30 = adapter.known && IsAmpereSm86(adapter.vendor_id, adapter.device_id) ? 1u : 0u;
+        CopyText(s.gpuName, adapter.known ? adapter.description : std::string());
+        CopyText(s.reason, reason);
+        CopyText(s.stateReason, reason);
+    });
+}
+
 // Decides, and on "proxy" creates the ProxySwapChain. False means the caller
 // passes through. Exceptions propagate to the hook, which also passes through.
 bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& requested,
@@ -176,11 +191,12 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
 
     CompatResult compat;
     std::string adapterReason;
+    RenderAdapter adapter;
     if (in.is_main_window) {
         // CSP's own adapter must be NVIDIA; its HAGS state decides rule 10,
         // with the registry value read at bootstrap only as the fallback when
         // D3DKMT cannot answer.
-        const RenderAdapter adapter = AdapterOf(device11.Get());
+        adapter = AdapterOf(device11.Get());
         adapterReason = RenderAdapterRefusal(adapter);
         in.nvidia_adapter = adapterReason.empty();
         const HagsDecision hags = RenderAdapterHags(adapter, bs.compat.hags_on);
@@ -202,7 +218,10 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
              static_cast<int>(desc.Format), desc.BufferCount, static_cast<int>(desc.SwapEffect), desc.Flags,
              fullscreenDesc ? "fullscreen desc" : "no fullscreen desc", proxy ? "proxy" : "pass-through: ",
              reason.c_str());
-    if (!proxy) return false;
+    if (!proxy) {
+        if (in.is_main_window) PublishPassThrough(reason, adapter);
+        return false;
+    }
 
     ComPtr<IDXGISwapChain1> created;
     std::string error;
@@ -218,12 +237,19 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         env.install_ngx_hook = true;
         env.spoof_loaded = bs.spoof_loaded;
         env.allow_stretching = bs.compat.allow_stretching.value_or(0) == 1;
+        // Spec 6.9: only a process that owns the panel's status reads its requests.
+        if (PanelStatusChannel::Get().Owned()) {
+            env.status = &PanelStatusChannel::Get();
+            if (PanelControlChannel::Get().Ready()) env.control = &PanelControlChannel::Get();
+        }
+        env.config_path = bs.config_path;
         hr = ProxySwapChain::Create(self, device11.Get(), hwnd, desc, fullscreenDesc, bs.config, streamline,
                                     created.GetAddressOf(), &error, env);
     }
     if (FAILED(hr) || !created) {
         LOGE("proxy swap chain creation failed (0x%08lX): %s; passing through", static_cast<unsigned long>(hr),
              error.empty() ? "no details" : error.c_str());
+        PublishPassThrough(error.empty() ? std::string("the proxy swap chain could not be created") : error, adapter);
         return false;
     }
     LOGI("proxy swap chain created %ux%u", desc.Width, desc.Height);

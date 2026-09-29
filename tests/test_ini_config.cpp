@@ -106,6 +106,162 @@ TEST(Ini_ToInt) {
     CHECK(!ToInt(std::nullopt).has_value());
 }
 
+// ---------------------------------------------------------------- SetIniKeys (panel "Save as default")
+
+TEST(IniEdit_ReplacesValuesAndKeepsEveryOtherByte) {
+    const std::string text =
+        "\xEF\xBB\xBF; ac-dlssg settings\r\n"
+        "[bridge]\r\n"
+        "enabled=1\r\n"
+        "start_with_fg = 1 ; set by the installer\r\n"
+        "  Camera_Flip_Handedness=0\r\n"
+        "hotkey=ctrl+f10\r\n"
+        "\r\n"
+        "[other]\r\n"
+        "start_with_fg=1\r\n";
+    const std::string out =
+        SetIniKeys(text, "bridge", {{"start_with_fg", "0"}, {"camera_flip_handedness", "1"}});
+    const std::string expected =
+        "\xEF\xBB\xBF; ac-dlssg settings\r\n"
+        "[bridge]\r\n"
+        "enabled=1\r\n"
+        "start_with_fg = 0 ; set by the installer\r\n"
+        "  Camera_Flip_Handedness=1\r\n"
+        "hotkey=ctrl+f10\r\n"
+        "\r\n"
+        "[other]\r\n"
+        "start_with_fg=1\r\n";
+    if (out != expected) std::printf("  got:\n%s\n", out.c_str());
+    CHECK(out == expected);
+}
+
+// Missing keys go under the section, after its last key line, with the
+// file's own line ending; comment and blank lines after it stay where they are.
+TEST(IniEdit_AppendsMissingKeysUnderTheSection) {
+    const std::string text =
+        "; written by run-testapp.ps1\r\n"
+        "[bridge]\r\n"
+        "proxy_without_fg=1\r\n"
+        "; the end of the section\r\n"
+        "\r\n"
+        "[later]\r\n"
+        "x=1\r\n";
+    const std::string out = SetIniKeys(
+        text, "bridge", {{"start_with_fg", "0"}, {"camera_flip_handedness", "1"}, {"camera_negate_side", "0"}});
+    const std::string expected =
+        "; written by run-testapp.ps1\r\n"
+        "[bridge]\r\n"
+        "proxy_without_fg=1\r\n"
+        "start_with_fg=0\r\n"
+        "camera_flip_handedness=1\r\n"
+        "camera_negate_side=0\r\n"
+        "; the end of the section\r\n"
+        "\r\n"
+        "[later]\r\n"
+        "x=1\r\n";
+    if (out != expected) std::printf("  got:\n%s\n", out.c_str());
+    CHECK(out == expected);
+    const IniFile ini = IniFile::Parse(out);
+    CHECK(ini.Get("bridge", "camera_negate_side") == std::optional<std::string>("0"));
+    CHECK(ini.Get("later", "x") == std::optional<std::string>("1"));
+}
+
+TEST(IniEdit_AnEmptySectionGetsTheKeysRightAfterItsHeader) {
+    CHECK(SetIniKeys("[bridge]\r\n[x]\r\n", "bridge", {{"a", "1"}}) == "[bridge]\r\na=1\r\n[x]\r\n");
+    // No newline at the end of the file: one is added before the new line.
+    CHECK(SetIniKeys("[bridge]\r\nk=2", "bridge", {{"a", "1"}}) == "[bridge]\r\nk=2\r\na=1\r\n");
+}
+
+TEST(IniEdit_AddsTheSectionWhenMissing) {
+    CHECK(SetIniKeys("", "bridge", {{"a", "1"}, {"b", "0"}}) == "[bridge]\r\na=1\r\nb=0\r\n");
+    CHECK(SetIniKeys("[x]\r\ny=1\r\n", "bridge", {{"a", "1"}}) == "[x]\r\ny=1\r\n[bridge]\r\na=1\r\n");
+    CHECK(SetIniKeys("[x]\r\ny=1", "bridge", {{"a", "1"}}) == "[x]\r\ny=1\r\n[bridge]\r\na=1\r\n");
+}
+
+TEST(IniEdit_AnLfFileKeepsLf) {
+    CHECK(SetIniKeys("[bridge]\nk=2\n", "bridge", {{"k", "3"}, {"a", "1"}}) == "[bridge]\nk=3\na=1\n");
+}
+
+// The reader takes the last of repeated keys (and merges repeated
+// sections), so every occurrence is rewritten, and none is added.
+TEST(IniEdit_EveryOccurrenceOfAKeyIsRewritten) {
+    const std::string out =
+        SetIniKeys("[bridge]\r\nk=1\r\n[x]\r\nk=5\r\n[BRIDGE]\r\nk=2\r\n", "bridge", {{"k", "9"}});
+    CHECK(out == "[bridge]\r\nk=9\r\n[x]\r\nk=5\r\n[BRIDGE]\r\nk=9\r\n");
+    CHECK(IniFile::Parse(out).Get("bridge", "k") == std::optional<std::string>("9"));
+}
+
+// Comment lines that look like keys are comments to the reader and stay; a
+// section without key lines gets the new key right after its header.
+TEST(IniEdit_CommentedKeysAreNotTouched) {
+    const std::string out = SetIniKeys("[bridge]\r\n;k=1\r\n# k=1\r\n", "bridge", {{"k", "0"}});
+    CHECK(out == "[bridge]\r\nk=0\r\n;k=1\r\n# k=1\r\n");
+}
+
+TEST(IniEdit_AnEmptyValueIsFilledIn) {
+    CHECK(SetIniKeys("[bridge]\r\nk=\r\nj= ; note\r\n", "bridge", {{"k", "1"}, {"j", "0"}}) ==
+          "[bridge]\r\nk=1\r\nj= 0; note\r\n");
+}
+
+TEST(IniEdit_WriteIniKeysReplacesTheFileThroughANewFile) {
+    TempDir dir(L"ini_write");
+    const auto path = dir.Write(L"ac-dlssg.ini", "[bridge]\r\nstart_with_fg=1\r\nlog_level=debug\r\n");
+    std::string err;
+    REQUIRE(WriteIniKeys(path.wstring(), "bridge", {{"start_with_fg", "0"}, {"camera_negate_side", "1"}}, &err));
+    CHECK(ReadAll(path) == "[bridge]\r\nstart_with_fg=0\r\nlog_level=debug\r\ncamera_negate_side=1\r\n");
+    CHECK(GetFileAttributesW((path.wstring() + L".new").c_str()) == INVALID_FILE_ATTRIBUTES);
+    const Config c = LoadConfig(path.wstring());
+    CHECK(!c.start_with_fg);
+    CHECK(c.camera_negate_side);
+    CHECK(c.log_level == LogLevel::Debug);
+}
+
+TEST(IniEdit_WriteIniKeysCreatesAMissingFile) {
+    TempDir dir(L"ini_write_new");
+    const std::wstring path = dir.Str() + L"\\sub\\ac-dlssg.ini";
+    std::string err;
+    REQUIRE(WriteIniKeys(path, "bridge", {{"start_with_fg", "1"}}, &err));
+    CHECK(ReadAll(path) == "[bridge]\r\nstart_with_fg=1\r\n");
+}
+
+TEST(IniEdit_WriteIniKeysReportsAnUnwritableTarget) {
+    TempDir dir(L"ini_write_fail");
+    // A directory where the file should be: the rename cannot replace it.
+    const std::wstring path = dir.Str() + L"\\ac-dlssg.ini";
+    REQUIRE(CreateDirectoryW(path.c_str(), nullptr));
+    std::string err;
+    CHECK(!WriteIniKeys(path, "bridge", {{"start_with_fg", "1"}}, &err));
+    CHECK(!err.empty());
+    CHECK(GetFileAttributesW((path + L".new").c_str()) == INVALID_FILE_ATTRIBUTES);
+}
+
+// A file saved as UTF-16 (Notepad's "Unicode"), or anything else with NUL
+// bytes, is not text the key-level edit understands: appending UTF-8 lines to
+// it would leave a file of two encodings. It is refused and left as it was.
+TEST(IniEdit_WriteIniKeysRefusesAUtf16File) {
+    TempDir dir(L"ini_write_utf16");
+    const auto utf16 = [](const std::string& ascii, bool bigEndian) {
+        std::string out = bigEndian ? "\xFE\xFF" : "\xFF\xFE";
+        for (char c : ascii) {
+            if (bigEndian) out.push_back('\0');
+            out.push_back(c);
+            if (!bigEndian) out.push_back('\0');
+        }
+        return out;
+    };
+    const std::string ascii = "[bridge]\r\nstart_with_fg=1\r\n";
+    const std::string nul = ascii + std::string(1, '\0') + "\r\n";
+    for (const std::string& text : {utf16(ascii, false), utf16(ascii, true), nul}) {
+        const auto path = dir.Write(L"ac-dlssg.ini", text);
+        std::string err;
+        CHECK(!WriteIniKeys(path.wstring(), "bridge", {{"start_with_fg", "0"}}, &err));
+        if (err.find("not UTF-8") == std::string::npos) std::printf("  error: %s\n", err.c_str());
+        CHECK(err.find("not UTF-8") != std::string::npos);
+        CHECK(ReadAll(path) == text);
+        CHECK(GetFileAttributesW((path.wstring() + L".new").c_str()) == INVALID_FILE_ATTRIBUTES);
+    }
+}
+
 // ---------------------------------------------------------------- Hotkey
 
 TEST(Hotkey_CtrlF10) {

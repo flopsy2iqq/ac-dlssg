@@ -24,6 +24,8 @@
 #include "internal_call.h"
 #include "log.h"
 #include "ngx_hook.h"
+#include "panel_control.h"
+#include "panel_status.h"
 #include "pcl_sequencer.h"
 #include "present_flags.h"
 #include "streamline_runtime.h"
@@ -156,6 +158,15 @@ bool QueryVramMiB(IDXGIAdapter3* adapter, uint64_t* usage, uint64_t* budget, std
 }
 
 constexpr unsigned kStateAnswersLogged = 3;  // the first slDLSSGGetState answers at INFO
+constexpr char kReleasedReason[] = "the game's swap chain was released";
+
+std::string Utf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+    return s;
+}
 constexpr uint32_t kViewport = 0;
 
 // NgxHook is installed once per process, by the first presenter that asks.
@@ -304,7 +315,8 @@ struct D3D12Presenter::Impl {
     uint32_t ngx_modules_logged = UINT32_MAX;
     // pcl and token: the render thread's evaluate emits markers too.
     std::mutex marker_mu;
-    bool fg_user_on = true;  // start_with_fg, then the hotkey
+    bool fg_user_on = true;  // start_with_fg, then the hotkey and the panel
+    std::string user_source = "start_with_fg";  // what set fg_user_on last (FgGateInputs::userSource)
     KeyEdge hotkey_edge;
     bool mode_known = false;     // SetDlssgOptions succeeded once
     bool mode_on = false;        // the DLSS-G mode Streamline has
@@ -353,6 +365,34 @@ struct D3D12Presenter::Impl {
     bool vram_estimate_ok[5] = {};
     uint64_t held_estimate = 0;     // the estimate of what DLSS-G holds since its last eOn (eRetainResourcesWhenOff)
     bool log_first_present = false;  // the next DLSS-G Present is the first at a new numFramesToGenerate
+    // Spec 6.9: the in-game panel (env.status, env.control).
+    PanelStatusChannel* panel_status = nullptr;
+    const PanelControlChannel* panel_control = nullptr;
+    std::wstring config_path;
+    uint32_t control_seq = 0;      // the control record's seq when it was last read
+    uint32_t control_applied = 0;  // requestCounter of the last request applied, or the baseline
+    uint32_t save_counter = 0;     // requestCounter of the last "Save as default"
+    bool save_ok = false;
+    bool panel_published = false;  // the status holds this presenter's record
+    bool published_mode_on = false;
+    bool published_user_on = false;
+    bool status_due = false;       // a statistics line was written in this frame
+    std::string gate_reason;       // why the last frame was presented without DLSS-G; empty when with it
+    std::string state_reason;      // why DLSS-G cannot run here (status stateReason)
+    std::string gpu_name;
+    bool rtx30 = false;
+    bool vsync_note = false;       // the last Present planned "VSync not available with DLSS-G"
+    struct PanelNumbers {
+        float baseFps = 0;
+        float presentedFps = 0;
+        float bridgeGpuMs = -1;
+        uint32_t vramUsageMib = 0;
+        uint32_t vramBudgetMib = 0;
+        float capturesPerSec = 0;
+        float cameraFreshPerSec = 0;
+        float taggedPerSec = 0;
+        bool fgPaused = false;  // FgPausedInSecond of the last statistics second
+    } panel_numbers;
 
     struct FrameDecision {
         bool fg = false;   // the gate allows DLSS-G for this Present
@@ -370,6 +410,11 @@ struct D3D12Presenter::Impl {
     void AttachNgx();
     void ProcessNgx();
     void PollHotkey();
+    void SetUserOn(bool on, const char* source);
+    void PollPanel();
+    void SaveDefaults(uint32_t counter, const PanelSettings& settings);
+    void PublishStatus();
+    void PublishReleased();
     DlssgSizeHints Hints() const;
     FrameDecision Decide(const FrameCapture& cap);
     void RunVramCheck(unsigned wanted);  // records the result in vram_guard
@@ -433,6 +478,9 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     mult = FgMultiplierTracker(config.fg_multiplier);
     env = info.env;
     fg_user_on = config.start_with_fg;
+    panel_status = env.status;
+    panel_control = env.control;
+    config_path = env.config_path;
     device11->GetImmediateContext(&ctx11);
     HRESULT hr = ctx11 ? ctx11.As(&ctx4) : E_NOINTERFACE;
     if (FAILED(hr)) {
@@ -493,8 +541,9 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
         // Spec criterion 5: without DLSS-G the chain passes through, unless
         // proxy_without_fg keeps the M2 behaviour.
         if (!fg_supported) {
+            state_reason = DlssgUnsupportedMessage(why, IsAmpereSm86(ad.VendorId, ad.DeviceId), env.spoof_loaded);
             if (!config.proxy_without_fg) {
-                *err = DlssgUnsupportedMessage(why, IsAmpereSm86(ad.VendorId, ad.DeviceId), env.spoof_loaded);
+                *err = state_reason;
                 return false;
             }
             LOGI("presenter: DLSS-G is not supported; the chain is proxied anyway (proxy_without_fg=1)");
@@ -656,6 +705,10 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
 
     char name[128] = {};
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
+    gpu_name = name;
+    rtx30 = IsAmpereSm86(ad.VendorId, ad.DeviceId);
+    if (!sl) state_reason = "no Streamline: the plain D3D12 path of the tests";
+    if (!fg_supported) gate_reason = "not supported on this adapter";
     LOGI("presenter created: %s (LUID %08lX:%08lX), D3D12 chain %ux%u, %u buffers, flags 0x%X, tearing %s, "
          "frame-latency object %s, hwnd %p, %s",
          name, static_cast<unsigned long>(ad.AdapterLuid.HighPart), static_cast<unsigned long>(ad.AdapterLuid.LowPart),
@@ -672,6 +725,17 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     }
     // Spec 7 step 1 for the first frame: it starts at the end of creation.
     if (sl) StartFrame();
+    // Spec 6.9: a request written before this presenter existed is the
+    // baseline, never applied.
+    if (panel_control) {
+        control_seq = panel_control->Seq();
+        ControlLayout c{};
+        if (panel_control->Read(&c) == PanelControlChannel::ReadResult::Ok) {
+            control_seq = c.seq;
+            control_applied = c.requestCounter;
+        }
+    }
+    PublishStatus();
     // Last: from here on CSP's evaluates reach this presenter.
     AttachNgx();
     shutdown_sl = false;  // from now on the owner decides (ShutdownStreamlineOnRelease)
@@ -737,10 +801,120 @@ void D3D12Presenter::Impl::PollHotkey() {
         chord = HotkeyChordDown(hk, down(static_cast<int>(hk.vk)), down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU));
     }
     if (!hotkey_edge.Pressed(chord)) return;
-    fg_user_on = !fg_user_on;
+    SetUserOn(!fg_user_on, "hotkey");
+}
+
+// The user's DLSS-G switch, from the hotkey or the panel (spec 6.9, 8): one
+// state, the same reset rules.
+void D3D12Presenter::Impl::SetUserOn(bool on, const char* source) {
+    fg_user_on = on;
+    user_source = source;
     prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
     state_failure.clear();   // spec 9: a failure status is retried after a toggle
-    LOGI("fg: hotkey -> %s", fg_user_on ? "on" : "off");
+    LOGI("fg: %s -> %s", source, on ? "on" : "off");
+}
+
+// Spec 6.9: the Lua app's request, if there is a new one. Nothing but one
+// load and compare while the app writes nothing.
+void D3D12Presenter::Impl::PollPanel() {
+    const uint32_t seq = panel_control->Seq();
+    if (seq == control_seq) return;
+    ControlLayout c{};
+    const PanelControlChannel::ReadResult r = panel_control->Read(&c);
+    if (r == PanelControlChannel::ReadResult::Torn) return;  // the app is writing: next frame
+    control_seq = r == PanelControlChannel::ReadResult::Ok ? c.seq : seq;
+    if (r != PanelControlChannel::ReadResult::Ok) return;
+    PanelSettings current;
+    current.fgUserOn = fg_user_on;
+    current.flipHandedness = config.camera_flip_handedness;
+    current.negateSide = config.camera_negate_side;
+    const ControlDecision d = DecideControl(control_applied, ControlRequestFrom(c), current);
+    if (!d.apply) return;
+    control_applied = c.requestCounter;
+    if (d.fgChanged) SetUserOn(d.next.fgUserOn, "panel");
+    if (d.flipChanged)
+        LOGI("panel: camera_flip_handedness %d -> %d", current.flipHandedness ? 1 : 0, d.next.flipHandedness ? 1 : 0);
+    if (d.negateChanged)
+        LOGI("panel: camera_negate_side %d -> %d", current.negateSide ? 1 : 0, d.next.negateSide ? 1 : 0);
+    if (d.flipChanged || d.negateChanged) {
+        config.camera_flip_handedness = d.next.flipHandedness;
+        config.camera_negate_side = d.next.negateSide;
+        prev_had_inputs = false;  // the next DLSS-G frame has reset
+    }
+    if (d.save) SaveDefaults(c.requestCounter, d.next);
+    PublishStatus();
+}
+
+// "Save as default": start_with_fg and the camera switches into
+// ac-dlssg.ini, key by key.
+void D3D12Presenter::Impl::SaveDefaults(uint32_t counter, const PanelSettings& settings) {
+    save_counter = counter;
+    std::string err = "no ac-dlssg.ini path";
+    save_ok = !config_path.empty() && WriteIniKeys(config_path, "bridge", SavedDefaultKeys(settings), &err);
+    if (!save_ok) {
+        LOGW("panel: Save as default failed: %s", err.c_str());
+        return;
+    }
+    config.start_with_fg = settings.fgUserOn;
+    LOGI("panel: saved start_with_fg=%d camera_flip_handedness=%d camera_negate_side=%d to %s",
+         settings.fgUserOn ? 1 : 0, settings.flipHandedness ? 1 : 0, settings.negateSide ? 1 : 0,
+         Utf8(config_path).c_str());
+}
+
+// The presenter's part of the status record; the bootstrap's part (mode,
+// version, driver warning) stays as it is.
+void D3D12Presenter::Impl::PublishStatus() {
+    if (!panel_status) return;
+    panel_published = true;
+    published_mode_on = mode_on;
+    published_user_on = fg_user_on;
+    status_due = false;
+    const std::string gate = PanelGateReason(fg_supported, stalled, gate_reason);
+    const std::string reason = PanelReason(mode_on, fg_user_on, UserOffReason(user_source), gate);
+    const std::string hotkey = HotkeyText(config.hotkey);
+    const PanelNumbers& n = panel_numbers;
+    panel_status->Update([&](StatusLayout& s) {
+        s.bridgeState = sl && fg_supported ? kPanelFgAvailable : kPanelProxyNoFg;
+        s.fgOn = mode_on ? 1u : 0u;
+        s.fgUserOn = fg_user_on ? 1u : 0u;
+        s.fgPaused = mode_on && n.fgPaused ? 1u : 0u;
+        s.spoofLoaded = env.spoof_loaded ? 1u : 0u;
+        s.rtx30 = rtx30 ? 1u : 0u;
+        s.vsyncNote = vsync_note ? 1u : 0u;
+        s.cameraFlipHandedness = config.camera_flip_handedness ? 1u : 0u;
+        s.cameraNegateSide = config.camera_negate_side ? 1u : 0u;
+        s.startWithFg = config.start_with_fg ? 1u : 0u;
+        s.controlApplied = control_applied;
+        s.saveCounter = save_counter;
+        s.saveOk = save_ok ? 1u : 0u;
+        s.baseFps = n.baseFps;
+        s.presentedFps = n.presentedFps;
+        s.bridgeGpuMs = n.bridgeGpuMs;
+        s.vramUsageMib = n.vramUsageMib;
+        s.vramBudgetMib = n.vramBudgetMib;
+        s.capturesPerSec = n.capturesPerSec;
+        s.cameraFreshPerSec = n.cameraFreshPerSec;
+        s.taggedPerSec = n.taggedPerSec;
+        CopyText(s.reason, reason);
+        CopyText(s.stateReason, fg_supported ? std::string() : state_reason);
+        CopyText(s.gpuName, gpu_name);
+        CopyText(s.hotkey, hotkey);
+    });
+}
+
+// Spec 6.3 "Final Release": every later chain passes through.
+void D3D12Presenter::Impl::PublishReleased() {
+    if (!panel_status || !panel_published) return;
+    panel_status->Update([](StatusLayout& s) {
+        s.bridgeState = kPanelPassThrough;
+        s.fgOn = 0;
+        s.fgPaused = 0;
+        s.baseFps = s.presentedFps = 0;
+        s.bridgeGpuMs = -1;
+        s.capturesPerSec = s.cameraFreshPerSec = s.taggedPerSec = 0;
+        CopyText(s.reason, kReleasedReason);
+        CopyText(s.stateReason, kReleasedReason);
+    });
 }
 
 // The size and format hints for slDLSSGSetOptions and the estimate: the
@@ -764,6 +938,7 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     FrameDecision d;
     FgGateInputs g;
     g.userOn = fg_user_on;
+    g.userSource = user_source;
     g.supported = fg_supported;
     g.stateFailure = state_failure;
     g.stalled = stalled;
@@ -1274,6 +1449,7 @@ HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceCon
     if (ngx_attached) ProcessNgx();
     if (self.stopped_) return stop_error;
     if (!ctx) return E_INVALIDARG;
+    if (panel_control) PollPanel();
     ++stats_presents;
     const int64_t start = QpcNow();
     if (last_frame_qpc) max_frame_ms = std::max(max_frame_ms, QpcMs(start - last_frame_qpc));
@@ -1281,6 +1457,10 @@ HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceCon
     const HRESULT hr = Deliver(self, ctx, source, cspSync, cspFlags);
     max_present_ms = std::max(max_present_ms, QpcMs(QpcNow() - start));
     MaybeLogStats(ctx);
+    // Spec 6.9: the status once per second, and at once when the mode or the
+    // user's switch changed (the hotkey, a stall, a resize, a menu).
+    if (panel_status && (status_due || mode_on != published_mode_on || fg_user_on != published_user_on))
+        PublishStatus();
     return hr;
 }
 
@@ -1432,6 +1612,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
             perFrame = false;
         }
         LogMode(fgThisFrame, reason, perFrame, dec.tagPathReason);
+        gate_reason = fgThisFrame ? std::string() : reason;
     }
 
     hr = cl->Close();
@@ -1447,6 +1628,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     if (FAILED(self.chain_->GetFullscreenState(&fullscreen, nullptr))) fullscreen = FALSE;
     // Spec 7 step 6, with the VSync rule for DLSS-G.
     const PresentPlan plan = PlanPresent(cspSync, cspFlags, tearing, !fullscreen, fgThisFrame, vsync_available);
+    vsync_note = plan.vsync_unavailable_with_fg;
     if (plan.vsync_unavailable_with_fg && !logged_vsync_fallback) {
         logged_vsync_fallback = true;
         LOGW("fg: VSync is not available with DLSS-G here (bIsVsyncSupportAvailable is not eTrue); presenting with "
@@ -1681,6 +1863,21 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
          stats_uncopied, max_frame_ms, max_present_ms, a11, a12, mode_on ? "on" : "off", stalls, sl ? "on" : "off",
          reflex_on ? "on" : "off", pclProblems, stats_captures, stats_camera_fresh, stats_tagged, stats_fg_frames,
          generated, stats_double, UsedMultiplier(), vram);
+    // Spec 6.9: the same second for the panel; presented includes the
+    // generated frames.
+    PanelNumbers& pn = panel_numbers;
+    pn.baseFps = static_cast<float>(stats_presents / seconds);
+    pn.presentedFps = static_cast<float>((stats_delivered + stats_generated) / seconds);
+    pn.bridgeGpuMs = n11 > 0 || n12 > 0
+                         ? static_cast<float>((n11 > 0 ? sum11 / n11 : 0.0) + (n12 > 0 ? sum12 / n12 : 0.0))
+                         : -1.0f;
+    pn.vramUsageMib = static_cast<uint32_t>(vramBudget ? vramUsage : 0);
+    pn.vramBudgetMib = static_cast<uint32_t>(vramBudget);
+    pn.capturesPerSec = static_cast<float>(stats_captures / seconds);
+    pn.cameraFreshPerSec = static_cast<float>(stats_camera_fresh / seconds);
+    pn.taggedPerSec = static_cast<float>(stats_tagged / seconds);
+    pn.fgPaused = FgPausedInSecond(stats_presents, stats_fg_frames, stats_generated, polled_state);
+    status_due = true;
     stats_captures = stats_camera_fresh = stats_tagged = stats_fg_frames = stats_double = 0;
     stats_generated = 0;
     stats_start = now;
@@ -1935,6 +2132,7 @@ void D3D12Presenter::Impl::Shutdown(D3D12Presenter& self) {
     // Spec 6.3 "Final Release" step 4: slShutdown after the drain and before
     // any D3D12/DXGI object is released.
     if (sl && shutdown_sl) sl->Shutdown();
+    PublishReleased();
 
     if (!drained) {
         // Releasing objects the GPU still uses can crash the driver later;

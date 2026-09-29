@@ -25,6 +25,8 @@
 #include "gpu_test_devices.h"
 #include "internal_call.h"
 #include "log.h"
+#include "panel_control.h"
+#include "panel_status.h"
 #include "system_dxgi.h"
 #include "temp_dir.h"
 #include "test_framework.h"
@@ -717,6 +719,79 @@ TEST(FactoryHook_MainWindowDecisionIsLoggedAndPassesThroughOnRefusal) {
     CHECK(log.find("pass-through: " + refusal) != std::string::npos);
     CHECK(log.find("proxy swap chain created") == std::string::npos);
     if (lines != 1) std::printf("  log:\n%s\n", log.c_str());
+}
+
+// ---------------------------------------------------------------- the panel (spec 6.9)
+
+// The bootstrap creates the panel's two sections and publishes what it
+// knows. In this process the section is Local\AcDlssg.Status.v1 itself: a
+// game running at the same time owns it, and then this process never
+// writes it.
+TEST(Bootstrap_CreatesThePanelSectionsAndPublishesItsPart) {
+    const BootstrapState& bs = EnsureBootstrap();
+    CHECK(bs.config_path == bs.data_dir + L"\\ac-dlssg.ini");
+    PanelStatusChannel& panel = PanelStatusChannel::Get();
+    StatusLayout s{};
+    REQUIRE(panel.Read(&s) == PanelStatusChannel::ReadResult::Ok);
+    if (!panel.Owned()) {
+        std::printf("  the status section belongs to process %u (a running game); not checked\n", panel.ForeignOwner());
+        CHECK(panel.ForeignOwner() != 0);
+        CHECK_EQ(s.ownerPid, panel.ForeignOwner());
+        return;
+    }
+    CHECK(PanelControlChannel::Get().Ready());
+    CHECK_EQ(s.ownerPid, static_cast<uint32_t>(GetCurrentProcessId()));
+    // The test exe is not dxgi.dll: proxy (ReShade) mode.
+    CHECK_EQ(s.mode, static_cast<uint32_t>(kPanelModeReShade));
+    CHECK(TextOf(s.bridgeVersion) == ACDB_VERSION);
+    CHECK(TextOf(s.hotkey) == HotkeyText(bs.config.hotkey));
+    CHECK_EQ(s.startWithFg, bs.config.start_with_fg ? 1u : 0u);
+    CHECK_EQ(s.spoofLoaded, bs.spoof_loaded ? 1u : 0u);
+    CHECK_EQ(s.driverWarning, bs.driver_warnings.empty() ? 0u : 1u);
+    // Before any main-window chain: waiting, or passing everything through
+    // when the bootstrap already refused (no Streamline next to the test exe).
+    // A later test's pass-through may have been published since.
+    if (bs.possible) {
+        CHECK(s.bridgeState == kPanelNotLoaded || s.bridgeState == kPanelPassThrough);
+    } else {
+        CHECK_EQ(s.bridgeState, static_cast<uint32_t>(kPanelPassThrough));
+        CHECK(TextOf(s.stateReason).find(bs.reason) != std::string::npos);
+    }
+    const std::string log = acdb_test::ReadAll(bs.data_dir + L"\\logs\\bridge.log");
+    CHECK(log.find(" INFO panel: status section Local\\AcDlssg.Status.v1 and control section "
+                   "Local\\AcDlssg.Control.v1 ready\n") != std::string::npos);
+}
+
+// A main-window chain that passes through is published with its reason.
+TEST(FactoryHook_PublishesAPassThroughToThePanel) {
+    REQUIRE(EnsureHookInstalled());
+    acdb_test::GpuTestDevices dev;
+    if (!acdb_test::CreateGpuTestDevices(&dev)) {
+        std::printf("  SKIP: no GPU device\n");
+        return;
+    }
+    PanelStatusChannel& panel = PanelStatusChannel::Get();
+    if (!panel.Owned()) {
+        std::printf("  SKIP: the status section belongs to process %u\n", panel.ForeignOwner());
+        return;
+    }
+    ComPtr<IDXGIFactory2> factory = NewSystemFactory();
+    REQUIRE(factory);
+    const std::string log = MainWindowChainLog(factory.Get(), dev, L"hook_panel");
+    const BootstrapState& bs = EnsureBootstrap();
+    const std::string refusal = bs.possible ? std::string("CSP upscaler is not DLSS") : bs.reason;
+    CHECK(log.find("pass-through: " + refusal) != std::string::npos);
+    StatusLayout s{};
+    REQUIRE(panel.Read(&s) == PanelStatusChannel::ReadResult::Ok);
+    CHECK_EQ(s.bridgeState, static_cast<uint32_t>(kPanelPassThrough));
+    CHECK_EQ(s.fgOn, 0u);
+    CHECK(TextOf(s.stateReason).find(refusal) == 0);
+    DXGI_ADAPTER_DESC ad{};
+    REQUIRE(AdapterDescOf(dev.device11.Get(), &ad));
+    char name[128] = {};
+    WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
+    CHECK(TextOf(s.gpuName) == std::string(name).substr(0, sizeof(s.gpuName) - 1));
+    CHECK_EQ(s.rtx30, IsAmpereSm86(ad.VendorId, ad.DeviceId) ? 1u : 0u);
 }
 
 // ---------------------------------------------------------------- the DLL

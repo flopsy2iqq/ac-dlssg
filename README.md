@@ -67,9 +67,9 @@ On a 4 GB card the video memory is tight: if the game stutters, lower CSP's text
 ## Use
 
 - **Ctrl+F10** switches frame generation on and off, for an A/B comparison of the same scene.
+- The **AC DLSS-G** window (CSP's app bar, in both install modes) has the same switch, shows why frame generation is off, the real and output fps, the bridge's GPU time and video memory, and **Save as default** keeps the current switches in `ac-dlssg.ini`.
 - CSP's own FPS counter shows real frames. Use the NVIDIA overlay (Alt+R), RTSS or another external counter to see the frames on screen.
 - Settings are in `<game>\ac-dlssg\ac-dlssg.ini`: `start_with_fg`, `hotkey` and `log_level`.
-- An in-game settings window is coming in the next build.
 
 ## Uninstall
 

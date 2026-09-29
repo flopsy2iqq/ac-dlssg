@@ -91,6 +91,18 @@
   process of the logon session, so these scenarios SKIP while acs.exe runs.
   DLSS-G generating frames is never seen here; the user checks it in game.
 
+  The panel scenario (spec 6.9): the test app plays the CSP Lua app's settings
+  window (--fake-panel). It reads Local\AcDlssg.Status.v1, which the bridge
+  creates at bootstrap, and writes the window's requests into
+  Local\AcDlssg.Control.v1: frame generation off, a camera switch, "Save as
+  default", frame generation on. The bridge must apply each at its next frame
+  (the log lines "fg: panel -> off|on", "panel: camera_flip_handedness 0 -> 1"
+  and "panel: saved ..."), publish the result in the status, edit the
+  scenario's ac-dlssg.ini key by key (start_with_fg=1 becomes 0 in place, the
+  camera keys are added under [bridge]), keep the heartbeat going and publish
+  pass-through after the release. Those sections are per logon session too,
+  so the scenario SKIPs while acs.exe runs.
+
   -ReShadeDll names ReShade's dxgi.dll. By default it is the dxgi.dll in the
   Assetto Corsa folder found through Steam's libraryfolders.vdf; it is only
   read and copied. A DLL whose version resource ProductName is not "ReShade",
@@ -168,7 +180,12 @@ $scenarios = @(
     # DLSS's inputs without the Lua app: captured, never tagged, and the
     # throttled per-frame reason names the camera.
     @{ Name = 'fg-no-camera';       Args = @('--fake-ngx', '--frames', '3000', '--fps-cap', '500', '--expect-proxy',
-                                             '--expect-fg', 'no-camera'); Ini = @('tag_without_fg=1'); Camera = $true }
+                                             '--expect-fg', 'no-camera'); Ini = @('tag_without_fg=1'); Camera = $true },
+    # The in-game panel (see the description): the Lua app's window played by
+    # the test app. 1500 frames at 500 fps: the requests, then about two
+    # statistics lines for the heartbeat.
+    @{ Name = 'panel';              Args = @('--fake-panel', '--frames', '1500', '--fps-cap', '500', '--expect-proxy');
+       Ini = @('start_with_fg=1'); Panel = $true }
 )
 if ($Scenario.Count) {
     $unknown = @($Scenario | Where-Object { $n = $_; -not ($scenarios | Where-Object { $_.Name -eq $n }) })
@@ -484,14 +501,18 @@ foreach ($cfg in $Config) {
         }
         # The camera section Local\AcDlssg.Camera.v1 is per logon session: a
         # running game (its bridge and its Lua app) would share it with the
-        # test app, and each would read the other's camera.
-        if ($s.Camera) {
+        # test app, and each would read the other's camera. The panel's
+        # sections likewise: the game's bridge would apply the fake panel's
+        # requests.
+        if ($s.Camera -or $s.Panel) {
             $game = @(Get-RunningGame)
             if ($game.Count) {
+                $shared = if ($s.Panel) { 'panel sections Local\AcDlssg.Status.v1 and Local\AcDlssg.Control.v1' }
+                    else { 'camera section Local\AcDlssg.Camera.v1' }
                 $results.Add([pscustomobject]@{ Config = $cfg; Scenario = $s.Name; Result = 'SKIP'; Seconds = 0.0;
                         BridgeMs = ''; Args = $argText
                         Detail = "acs.exe is running (pid $(($game | ForEach-Object { $_.Id }) -join ', ')), and the " +
-                            'camera section Local\AcDlssg.Camera.v1 would be shared with it' })
+                            "$shared would be shared with it" })
                 continue
             }
         }
@@ -600,6 +621,11 @@ foreach ($cfg in $Config) {
             Write-Host "  bridge.log M3 evidence ($($evidence.Count) lines):"
             $evidence | ForEach-Object { Write-Host "    $_" }
             @($lines | Where-Object { $_ -match '^testapp: (fake |note: fg)' }) | ForEach-Object { Write-Host "  $_" }
+        }
+
+        if ($s.Panel) {
+            # The test app checks these itself; they are printed as evidence.
+            @($lines | Where-Object { $_ -match '^testapp: (fake panel|note: panel)' }) | ForEach-Object { Write-Host "  $_" }
         }
 
         if ($s.Budget) {

@@ -6,6 +6,7 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -17,10 +18,12 @@
 
 #include "child_process.h"
 #include "d3d12_presenter.h"
+#include "fake_panel.h"
 #include "fake_nvngx/fake_nvngx.h"
 #include "gpu_test_devices.h"
 #include "log.h"
 #include "ngx_hook.h"
+#include "panel_status.h"
 #include "temp_dir.h"
 #include "test_framework.h"
 
@@ -817,4 +820,226 @@ TEST(Presenter_ACaptureKeepsCspWaitingForTheD3D12Copy) {
     const std::string log = acdb_test::ReadAll(logPath);
     CHECK(log.find("debug stall: the D3D12 queue now waits 250 ms") != std::string::npos);
     CHECK(log.find("D3D12 stall:") == std::string::npos);  // the watchdog never fired
+}
+
+// ---------------------------------------------------------------- the panel (spec 6.9)
+
+namespace {
+
+std::wstring PanelSectionName(const wchar_t* kind) {
+    static std::atomic<unsigned> counter{0};
+    return std::wstring(L"Local\\AcDlssg.") + kind + L".presenter." + std::to_wstring(GetCurrentProcessId()) + L"." +
+           std::to_wstring(counter++);
+}
+
+size_t Count(const std::string& text, const std::string& piece) {
+    size_t n = 0;
+    for (size_t pos = text.find(piece); pos != std::string::npos; pos = text.find(piece, pos + 1)) ++n;
+    return n;
+}
+
+}  // namespace
+
+// The Lua app's requests reach the presenter through the control section
+// at the start of every frame; the presenter publishes its state into the
+// status section. The plain path has no Streamline, so DLSS-G is
+// unavailable (kPanelProxyNoFg), but the switches and the save work the same.
+TEST(Presenter_AppliesPanelRequestsAndPublishesItsStatus) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    acdb_test::TempDir dir(L"presenter_panel");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    const std::wstring iniPath =
+        dir.Write(L"ac-dlssg.ini", "[bridge]\r\nstart_with_fg=1\r\nlog_level=info\r\n").wstring();
+    const std::wstring statusName = PanelSectionName(L"Status");
+    const std::wstring controlName = PanelSectionName(L"Control");
+    PanelStatusChannel status(statusName.c_str());
+    PanelControlChannel control(controlName.c_str());
+    std::string err;
+    REQUIRE(status.Create(&err));
+    REQUIRE(control.Create(&err));
+    testapp::FakePanel panel;
+    REQUIRE(panel.Open(statusName.c_str(), controlName.c_str(), &err));
+    // A request from before the presenter existed is never applied.
+    panel.Request(false, true, true, true);
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    StatusLayout s{};
+    uint32_t beatBefore = 0;
+    uint32_t beatAfter = 0;
+    {
+        GameWindow window(320, 180);
+        REQUIRE(window.Get() != nullptr);
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = GameDesc(320, 180);
+        info.config.start_with_fg = true;
+        info.env.status = &status;
+        info.env.control = &control;
+        info.env.config_path = iniPath;
+        auto p = D3D12Presenter::Create(info, &err);
+        if (!p) std::printf("  D3D12Presenter::Create: %s\n", err.c_str());
+        REQUIRE(p != nullptr);
+        Source src = CreateSource(d.device11.Get(), 320, 180);
+        REQUIRE(src.rtv);
+        const auto frames = [&](int n) {
+            for (int i = 0; i < n; ++i) CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, i)));
+        };
+
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.bridgeState, static_cast<uint32_t>(kPanelProxyNoFg));
+        CHECK_EQ(s.fgUserOn, 1u);
+        CHECK_EQ(s.fgOn, 0u);
+        CHECK_EQ(s.startWithFg, 1u);
+        CHECK_EQ(s.controlApplied, panel.Counter());  // the baseline, not applied
+        CHECK(!TextOf(s.stateReason).empty());
+        CHECK(!TextOf(s.gpuName).empty());
+        CHECK(TextOf(s.hotkey) == "Ctrl+F10");
+        CHECK(TextOf(s.reason) == "not supported on this adapter");
+        frames(3);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.fgUserOn, 1u);
+        CHECK_EQ(s.cameraFlipHandedness, 0u);
+
+        // Off, as the switch in the window does it.
+        panel.Request(false, false, false, false);
+        frames(1);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.controlApplied, panel.Counter());
+        CHECK_EQ(s.fgUserOn, 0u);
+        CHECK(TextOf(s.reason) == "off by the user (panel)");
+
+        // A camera switch; the DLSS-G switch stays off.
+        panel.Request(false, true, false, false);
+        frames(1);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.cameraFlipHandedness, 1u);
+        CHECK_EQ(s.cameraNegateSide, 0u);
+        CHECK_EQ(s.fgUserOn, 0u);
+
+        // A request the app is still writing (odd seq) waits for the next frame.
+        panel.Request(false, true, true, false);
+        const uint32_t seq = panel.ControlSeq();
+        panel.SetControlSeqForTest(seq - 1);
+        frames(2);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.cameraNegateSide, 0u);
+        CHECK(s.controlApplied != panel.Counter());
+        panel.SetControlSeqForTest(seq);
+        frames(1);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.cameraNegateSide, 1u);
+        panel.Request(false, true, false, false);
+        frames(1);
+
+        // Save as default: the current switches go into ac-dlssg.ini.
+        panel.Request(false, true, false, true);
+        frames(1);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.saveCounter, panel.Counter());
+        CHECK_EQ(s.saveOk, 1u);
+        CHECK_EQ(s.startWithFg, 0u);
+        CHECK(acdb_test::ReadAll(iniPath) ==
+              "[bridge]\r\nstart_with_fg=0\r\nlog_level=info\r\ncamera_flip_handedness=1\r\ncamera_negate_side=0\r\n");
+
+        // On again; then the same state once more changes nothing.
+        panel.Request(true, true, false, false);
+        frames(1);
+        panel.Request(true, true, false, false);
+        frames(1);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.controlApplied, panel.Counter());
+        CHECK_EQ(s.fgUserOn, 1u);
+        CHECK_EQ(s.cameraFlipHandedness, 1u);
+
+        // Without requests the statistics path keeps the heartbeat going.
+        beatBefore = s.heartbeat;
+        const ULONGLONG start = GetTickCount64();
+        for (int i = 0; GetTickCount64() - start < 1300; ++i) {
+            CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, i)));
+            Sleep(2);
+        }
+        REQUIRE(panel.ReadStatus(&s));
+        beatAfter = s.heartbeat;
+        CHECK(s.baseFps > 0.0f);
+    }
+    LogClose();
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+    std::printf("  heartbeat %u -> %u\n", beatBefore, beatAfter);
+    CHECK(beatAfter > beatBefore);
+    // Released: the next chain passes through (spec 6.3 "Final Release").
+    REQUIRE(panel.ReadStatus(&s));
+    CHECK_EQ(s.bridgeState, static_cast<uint32_t>(kPanelPassThrough));
+    CHECK_EQ(s.fgOn, 0u);
+    CHECK(TextOf(s.stateReason) == "the game's swap chain was released");
+
+    const std::string log = acdb_test::ReadAll(logPath);
+    CHECK_EQ(Count(log, " INFO fg: panel -> off\n"), 1u);
+    CHECK_EQ(Count(log, " INFO fg: panel -> on\n"), 1u);
+    CHECK_EQ(Count(log, " INFO panel: camera_flip_handedness 0 -> 1\n"), 1u);
+    CHECK_EQ(Count(log, " INFO panel: camera_negate_side 0 -> 1\n"), 1u);
+    CHECK_EQ(Count(log, " INFO panel: camera_negate_side 1 -> 0\n"), 1u);
+    std::string narrowIni;
+    for (wchar_t c : iniPath) narrowIni.push_back(static_cast<char>(c));
+    CHECK_EQ(Count(log, " INFO panel: saved start_with_fg=0 camera_flip_handedness=1 camera_negate_side=0 to " +
+                            narrowIni + "\n"),
+             1u);
+    if (Count(log, "fg: panel -> ") != 2) std::printf("  log:\n%s\n", log.c_str());
+}
+
+// A failed save is reported in the status and the log, and changes nothing.
+TEST(Presenter_ReportsAFailedSaveAsDefault) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    acdb_test::TempDir dir(L"presenter_panel_save");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    const std::wstring iniPath = dir.Str() + L"\\ac-dlssg.ini";
+    REQUIRE(CreateDirectoryW(iniPath.c_str(), nullptr));  // a folder where the file should be
+    const std::wstring statusName = PanelSectionName(L"Status");
+    const std::wstring controlName = PanelSectionName(L"Control");
+    PanelStatusChannel status(statusName.c_str());
+    PanelControlChannel control(controlName.c_str());
+    std::string err;
+    REQUIRE(status.Create(&err));
+    REQUIRE(control.Create(&err));
+    testapp::FakePanel panel;
+    REQUIRE(panel.Open(statusName.c_str(), controlName.c_str(), &err));
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    StatusLayout s{};
+    {
+        GameWindow window(160, 90);
+        REQUIRE(window.Get() != nullptr);
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = GameDesc(160, 90);
+        info.env.status = &status;
+        info.env.control = &control;
+        info.env.config_path = iniPath;
+        auto p = D3D12Presenter::Create(info, &err);
+        REQUIRE(p != nullptr);
+        Source src = CreateSource(d.device11.Get(), 160, 90);
+        REQUIRE(src.rtv);
+        panel.Request(true, false, false, true);
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 0)));
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.saveCounter, panel.Counter());
+        CHECK_EQ(s.saveOk, 0u);
+        CHECK_EQ(s.startWithFg, 1u);
+    }
+    LogClose();
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+    const std::string log = acdb_test::ReadAll(logPath);
+    CHECK_EQ(Count(log, " WARN panel: Save as default failed: "), 1u);
+}
+
+// Without the channels (the unit tests' default) the presenter publishes
+// nothing and reads no requests.
+TEST(Presenter_PanelChannelsAreOffByDefault) {
+    PresenterEnvironment env;
+    CHECK(env.status == nullptr);
+    CHECK(env.control == nullptr);
+    CHECK(env.config_path.empty());
 }

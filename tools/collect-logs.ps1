@@ -24,8 +24,9 @@
                              acdlssg-lua-app.txt: the lines of that CSP log from or
                              about the Lua app (CSP writes a Lua app's ac.log,
                              ac.warn and ac.error lines there, tagged
-                             "[Lua: App: AC DLSS-G Camera]", and its loading lines
-                             name apps\lua\AcDlssg)
+                             "[Lua: App: AC DLSS-G]", "[Lua: App: AC DLSS-G
+                             Camera]" before the settings window, and its
+                             loading lines name apps\lua\AcDlssg)
     crash-events.txt         Windows Application log entries that name acs.exe,
                              from the last 7 days
     sysinfo\...              collect-sysinfo.ps1's report and dxdiag.txt (not
@@ -77,9 +78,10 @@ function Copy-Shared([string]$Source, [string]$Target) {
 }
 
 # The Lua app's lines in CSP's log: its own messages ("AcDlssg: ..."), CSP's
-# "[Lua: App: AC DLSS-G Camera]" tag (the NAME in its manifest.ini), and the
-# loading lines that name its folder.
-$LuaAppLinePattern = 'AcDlssg|\[Lua: App: AC DLSS-G Camera\]'
+# "[Lua: App: AC DLSS-G]" tag (the NAME in its manifest.ini; "AC DLSS-G
+# Camera" in builds before the settings window), and the loading lines that
+# name its folder.
+$LuaAppLinePattern = 'AcDlssg|\[Lua: App: AC DLSS-G( Camera)?\]'
 $MaxSpoofLogs = 20
 
 # All lines of a text file (CSP's log is UTF-8), even while the game has it open.

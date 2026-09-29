@@ -1767,7 +1767,8 @@ Invoke-Case 'PK: the friend test package' {
         '  98200     M [Lua: App: AC DLSS-G Camera] AcDlssg: writing the camera from render.onSceneReady',
         '  98201     M [Lua: App: Other] something else',
         '  98300     M Unrelated CSP line',
-        '  98400     M [Lua: App: AC DLSS-G Camera] AcDlssg: at scene ready ac.getSim().cameraPosition differs')
+        '  98400     M [Lua: App: AC DLSS-G Camera] AcDlssg: at scene ready ac.getSim().cameraPosition differs',
+        '  98500     M [Lua: App: AC DLSS-G] Script error in windowMain')
     Write-Text (Join-Path $acDocs 'logs\custom_shaders_patch.log') (($cspLog -join "`r`n") + "`r`n")
     Write-Text (Join-Path $acDocs 'logs\log.txt') "fake AC log`r`n"
     $before = @(Get-ChildItem -LiteralPath $game, $acDocs -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
@@ -1798,7 +1799,7 @@ Invoke-Case 'PK: the friend test package' {
         } finally {
             $archive.Dispose()
         }
-        Check ($luaLines.Count -eq 3 -and @($luaLines | Where-Object { $_ -match 'Other|Unrelated' }).Count -eq 0) "acdlssg-lua-app.txt holds the app's three CSP log lines and nothing else ($($luaLines.Count) lines)"
+        Check ($luaLines.Count -eq 4 -and @($luaLines | Where-Object { $_ -match 'Other|Unrelated' }).Count -eq 0) "acdlssg-lua-app.txt holds the app's four CSP log lines (both app names) and nothing else ($($luaLines.Count) lines)"
         Remove-Item -LiteralPath $logZips[0].FullName
     }
     Check (@(Get-ChildItem -LiteralPath (Join-Path $pkg 'tools') -Directory | Where-Object { $_.Name -like 'ac-dlssg-logs-*' }).Count -eq 0) 'no staging folder left'
