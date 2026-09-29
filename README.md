@@ -68,7 +68,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 
 - **Ctrl+F10** switches frame generation on and off, for an A/B comparison of the same scene.
 - The **AC DLSS-G** window (CSP's app bar, in both install modes) has the same switch, shows why frame generation is off, the real and output fps, the bridge's GPU time and video memory, and **Save as default** keeps the current switches in `ac-dlssg.ini`.
-  - **2X / 3X / 4X** choose how many frames are shown per real frame; the change applies at once. 3X and 4X need a GPU and driver that allow them: RTX 50, or RTX 30 and 40 through the spoof when NVIDIA's frame generation there reports multi frame support. A button above what the GPU allows is greyed out ("not supported by this GPU/driver"), and a note under the buttons says when a lower multiplier is used and why (the GPU's maximum, or not enough video memory for the higher one).
+  - **2X / 3X / 4X** choose how many frames are shown per real frame; the change applies at once. 3X and 4X need a GPU and driver that allow them: RTX 50, or RTX 30 and 40 through dlssg_for_sm86 when NVIDIA's frame generation there reports multi frame support. A button above what the GPU allows is greyed out ("not supported by this GPU/driver"), and a note under the buttons says when a lower multiplier is used and why (the GPU's maximum, or not enough video memory for the higher one).
   - Under the video memory line, a note in orange says "video memory is tight ... frame generation on anyway" when the bridge turned frame generation on with little memory to spare, or "not enough video memory ... lower CSP texture quality, shadows or the render resolution" when it keeps it off.
   - After **Save as default** the window says **Restart the game to apply**: the saved switches are the ones the game starts with next time (the current session already uses them).
 - CSP's own FPS counter shows real frames. Use the NVIDIA overlay (Alt+R), RTSS or another external counter to see the frames on screen.
@@ -89,7 +89,7 @@ Double-click `tools\uninstall.bat`. It restores every file the installer changed
 
 ## Known limitations
 
-- 3X and 4X run only where the GPU and driver allow them (RTX 50, or RTX 30 and 40 through the spoof); elsewhere the bridge uses 2X and says so in the window.
+- 3X and 4X run only where the GPU and driver allow them (RTX 50, or RTX 30 and 40 through dlssg_for_sm86); elsewhere the bridge uses 2X and says so in the window.
 - CSP app windows and on-screen UI can show small artifacts during fast motion. A HUD-less colour buffer is planned.
 - The following are not supported: VR, triple screens, HDR output, MSAA, `EXCLUSIVE_FULLSCREEN=1`, and letterboxed output.
 - Other CSP upscalers (FSR, XeSS) do not provide the inputs frame generation needs.
