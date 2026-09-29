@@ -544,6 +544,7 @@ TEST(Presenter_FgMultiplierIsAppliedAtTheNextFrame) {
         CHECK_EQ(s.requested, 3u);
         CHECK_EQ(s.used, 3u);
         CHECK_EQ(s.framesMax, 0u);
+        CHECK(!s.maxKnown);  // the plain path never asks Streamline
         CHECK(s.note.empty());
         Source src = CreateSource(d.device11.Get(), 640, 360);
         REQUIRE(src.rtv);
