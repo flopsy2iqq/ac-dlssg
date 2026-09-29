@@ -59,9 +59,9 @@ Test PC: Intel CC150 (8 cores, 16 threads), GeForce RTX 3080 10 GB (driver 616.6
 ## Use
 
 - **Ctrl+F10** switches frame generation on and off, for an A/B comparison of the same scene.
+- The **AC DLSS-G** window (CSP's app bar, in both install modes) has the same switch, shows why frame generation is off, the real and output fps, the bridge's GPU time and video memory, and **Save as default** keeps the current switches in `ac-dlssg.ini`.
 - CSP's own FPS counter shows real frames. Use the NVIDIA overlay (Alt+R), RTSS or another external counter to see the frames on screen.
 - Settings are in `<game>\ac-dlssg\ac-dlssg.ini`: `start_with_fg`, `hotkey` and `log_level`.
-- An in-game settings window is coming in the next build.
 
 ## Uninstall
 
@@ -162,9 +162,9 @@ GPL-3.0. See [LICENSE](LICENSE).
 ### Как пользоваться
 
 - **Ctrl+F10** включает и выключает генерацию, так удобно сравнить одну и ту же сцену.
+- Окно **AC DLSS-G** (панель приложений CSP, в обоих режимах установки) даёт тот же переключатель, показывает, почему генерация выключена, настоящие и итоговые FPS, время моста на GPU и видеопамять, а кнопка **Save as default** сохраняет текущие переключатели в `ac-dlssg.ini`.
 - Счётчик FPS в CSP показывает настоящие кадры. Чтобы видеть кадры на экране, нужен внешний счётчик: оверлей NVIDIA (Alt+R), RTSS и т. п.
 - Настройки лежат в `<игра>\ac-dlssg\ac-dlssg.ini`: `start_with_fg`, `hotkey`, `log_level`.
-- Окно настроек прямо в игре будет в следующей сборке.
 
 ### Удаление
 
