@@ -20,7 +20,7 @@ DLSS-G 2X in Assetto Corsa with CSP:
 - **Top left:** CSP's FPS counter. It shows the **real** frames the game renders.
 - **Top right:** the NVIDIA overlay. It shows the frames **on screen after frame generation**.
 
-Test PC: Intel CC150 (8 cores, 16 threads), GeForce RTX 3080 10 GB (driver 616.64), 16 GB DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, dlssg_for_sm86 0.3.5.
+Test PC: Intel Core i9-9900 (8 cores, 16 threads), GeForce RTX 3080 10 GB (driver 616.64), 16 GB DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, dlssg_for_sm86 0.3.5.
 
 ![DLSS-G 2X, cockpit view: 62 real fps, 124 fps on screen](docs/screenshots/fg2x-1.jpg)
 ![DLSS-G 2X, chase view: 57 real fps, 112 fps on screen](docs/screenshots/fg2x-2.jpg)
@@ -131,7 +131,7 @@ GPL-3.0. See [LICENSE](LICENSE).
 
 Генерация кадров NVIDIA DLSS Frame Generation (DLSS-G 2X) для **Assetto Corsa** с **Custom Shaders Patch**.
 
-**Статус: тестовая сборка, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Скриншоты выше: слева вверху счётчик CSP, это **настоящие** кадры; справа вверху оверлей NVIDIA, это кадры **на экране после генерации**. Тестовый ПК: Intel CC150 (8 ядер, 16 потоков), RTX 3080 10 ГБ (драйвер 616.64), 16 ГБ DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, dlssg_for_sm86 0.3.5.
+**Статус: тестовая сборка, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Скриншоты выше: слева вверху счётчик CSP, это **настоящие** кадры; справа вверху оверлей NVIDIA, это кадры **на экране после генерации**. Тестовый ПК: Intel Core i9-9900 (8 ядер, 16 потоков), RTX 3080 10 ГБ (драйвер 616.64), 16 ГБ DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, dlssg_for_sm86 0.3.5.
 
 ### Что нужно
 
