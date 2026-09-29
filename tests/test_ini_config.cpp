@@ -414,6 +414,7 @@ TEST(Config_M3KeyDefaults) {
     CHECK(!c.camera_negate_side);
     CHECK(!c.proxy_without_fg);
     CHECK(!c.tag_without_fg);
+    CHECK(c.fg_vram_headroom_auto);  // fg_vram_headroom_mib=auto
     CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK(c.warnings.empty());
 }
@@ -425,19 +426,44 @@ TEST(Config_M3KeysParsed) {
     CHECK(c.camera_negate_side);
     CHECK(c.proxy_without_fg);
     CHECK(c.tag_without_fg);
+    CHECK(!c.fg_vram_headroom_auto);  // a number is a fixed headroom
     CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK(c.warnings.empty());
     c = ParseConfig(IniFile::Parse("[bridge]\ncamera_flip_handedness=0\nproxy_without_fg=0\nfg_vram_headroom_mib=2048\n"));
     CHECK(!c.camera_flip_handedness);
     CHECK(!c.proxy_without_fg);
+    CHECK(!c.fg_vram_headroom_auto);
     CHECK_EQ(c.fg_vram_headroom_mib, 2048u);
     CHECK(c.warnings.empty());
+}
+
+// fg_vram_headroom_mib=auto (the default): the headroom follows the render
+// adapter's budget (AutoVramHeadroomMib), in any letter case.
+TEST(Config_VramHeadroomAcceptsAuto) {
+    for (const char* text : {"auto", "Auto", "AUTO"}) {
+        const Config c = ParseConfig(IniFile::Parse(std::string("[bridge]\nfg_vram_headroom_mib=") + text + "\n"));
+        CHECK(c.fg_vram_headroom_auto);
+        CHECK_EQ(c.fg_vram_headroom_mib, 0u);
+        CHECK(c.warnings.empty());
+    }
+    // The friend's laptop: a hand-added 0 above the old default block, then
+    // that block updated to auto by the installer. The last one wins.
+    Config c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=0\nenabled=1\nfg_vram_headroom_mib=auto\n"));
+    CHECK(c.fg_vram_headroom_auto);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("(0, auto); the last one (auto) is used") != std::string::npos);
+    // A wrong word keeps auto and says what is accepted.
+    c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=automatic\n"));
+    CHECK(c.fg_vram_headroom_auto);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("expected auto or 0..65536 MiB") != std::string::npos);
 }
 
 // A key written twice (a hand-added line above an older default block) is a
 // trap: the last one wins. The bridge says which value it took.
 TEST(Config_RepeatedKeyIsReported) {
     Config c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=0\nenabled=1\nfg_vram_headroom_mib=512\n"));
+    CHECK(!c.fg_vram_headroom_auto);
     CHECK_EQ(c.fg_vram_headroom_mib, 512u);
     REQUIRE(c.warnings.size() == 1);
     CHECK(c.warnings[0].find("fg_vram_headroom_mib") != std::string::npos);
@@ -500,6 +526,7 @@ TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
     CHECK(!c.camera_negate_side);
     CHECK(!c.proxy_without_fg);
     CHECK(!c.tag_without_fg);
+    CHECK(c.fg_vram_headroom_auto);
     CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     REQUIRE(c.warnings.size() == 5);
     const char* keys[] = {"camera_flip_handedness", "camera_negate_side", "proxy_without_fg", "tag_without_fg",
@@ -512,9 +539,11 @@ TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
     }
     // Above 64 GiB is refused as a typo; an empty value keeps the default quietly.
     c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=65537\n"));
+    CHECK(c.fg_vram_headroom_auto);
     CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK_EQ(c.warnings.size(), 1u);
     c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=\n"));
+    CHECK(c.fg_vram_headroom_auto);
     CHECK_EQ(c.fg_vram_headroom_mib, 0u);
     CHECK(c.warnings.empty());
 }

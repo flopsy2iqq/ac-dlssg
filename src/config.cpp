@@ -105,11 +105,15 @@ Config ParseConfig(const IniFile& ini) {
     ParseBool(ini.Get(kSection, "spoof_load_any"), "spoof_load_any", &c.spoof_load_any, &c.warnings);
     if (const auto raw = ini.Get(kSection, "fg_vram_headroom_mib"); raw && !raw->empty()) {
         const auto v = ToInt(raw);
-        if (v && *v >= 0 && *v <= 65536) {
+        if (Lower(*raw) == "auto") {
+            c.fg_vram_headroom_auto = true;
+            c.fg_vram_headroom_mib = 0;
+        } else if (v && *v >= 0 && *v <= 65536) {
+            c.fg_vram_headroom_auto = false;
             c.fg_vram_headroom_mib = static_cast<unsigned>(*v);
         } else {
             c.warnings.push_back("fg_vram_headroom_mib: invalid value '" + *raw +
-                                 "' (expected 0..65536 MiB); using default");
+                                 "' (expected auto or 0..65536 MiB); using auto");
         }
     }
     if (const auto raw = ini.Get(kSection, "fg_multiplier"); raw && !raw->empty()) {
