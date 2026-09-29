@@ -106,7 +106,7 @@ Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local 
 - **The game starts but the frame rate does not change.** Look at `<game>\ac-dlssg\logs\bridge.log`. The line `fg: DLSS-G on` means frame generation runs. A line `fg: frame without DLSS-G: <reason>`, or `DLSS-G is not supported on this adapter (...)`, says why it does not.
 - **"Not enough video memory" in the window.** Frame generation needs the memory the window names. Lower CSP's texture quality, shadows or the render resolution; the bridge checks again every 60 frames and turns frame generation on when it fits.
 - **"Bridge and window versions differ" in the window.** The bridge and the AC DLSS-G app come from different releases. Close the game and run `install.bat` of one release again.
-- **The game crashes or does not start.** Run `<game>\ac-dlssg\uninstall.bat`; the game is then back to how it was.
+- **The game crashes or does not start.** First double-click `<game>\ac-dlssg\collect-logs.bat` and keep the zip (see the next point), then run `<game>\ac-dlssg\uninstall.bat`; the game is then back to how it was. The zip stays in `<game>\ac-dlssg`.
 - **Reporting a problem:** double-click `<game>\ac-dlssg\collect-logs.bat` after the game is closed. It only reads files and writes one zip into `<game>\ac-dlssg`; the window prints its full path. Attach that zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
 
 ## Known limitations

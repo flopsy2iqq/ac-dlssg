@@ -2505,6 +2505,31 @@ Invoke-Case 'IT0: the installed launchers and the system report (static)' {
     Check ($sysinfo -match '(?s)^.*?param\([^)]*\$OutDir' -and $collect -match '-File \$sysinfo -OutDir') 'collect-logs.ps1 has collect-sysinfo.ps1 write its report into the staging folder (nothing next to the installed scripts)'
 }
 
+# The uninstall removes collect-logs.bat, and the unpacked folder may be
+# gone: the guides must say to collect the logs first.
+Invoke-Case 'DOC: the guides say to run collect-logs.bat before uninstall.bat when the game does not start (static)' {
+    $repoRoot = Split-Path -Parent $tools
+    # Russian as \u escapes: Windows PowerShell reads this BOM-less file in the ANSI code page.
+    $notStart = 'does not start|\u043d\u0435 \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442\u0441\u044f'
+    $uninstall = '(?i)uninstall|\u0443\u0434\u0430\u043b'
+    foreach ($doc in @('docs\INSTALL.md', 'docs\INSTALL.ru.md', 'README.md', 'README.ru.md')) {
+        $lines = @([IO.File]::ReadAllLines((Join-Path $repoRoot $doc), $utf8) | Where-Object { $_ -match '^\s*- ' -and $_ -match $notStart })
+        $ok = $lines.Count -gt 0
+        foreach ($line in $lines) {
+            $logs = $line.IndexOf('collect-logs.bat')
+            $un = [regex]::Match($line, $uninstall)
+            if ($logs -lt 0 -or -not $un.Success -or $logs -gt $un.Index) { $ok = $false }
+        }
+        Check $ok "$doc`: the item for a game that does not start says collect-logs.bat, then uninstall ($($lines -join ' / '))"
+    }
+    $guide = @([IO.File]::ReadAllLines((Join-Path $repoRoot 'docs\steam-guide\steam-guide.en.txt'), $utf8))
+    $i = [array]::IndexOf($guide, '[b]How do I uninstall it?[/b]')
+    $answer = ''
+    if ($i -ge 0 -and $i + 1 -lt $guide.Count) { $answer = $guide[$i + 1] }
+    $logs = $answer.IndexOf('collect-logs.bat')
+    Check ($logs -ge 0 -and $logs -lt $answer.IndexOf('uninstall.bat')) "steam-guide.en.txt: the uninstall answer says to collect the logs first ($answer)"
+}
+
 Invoke-Case 'IT1: the uninstaller in the game folder works after the package is deleted' {
     $pkg = New-PackageCopy 'IT1'
     $game = New-FakeGame "IT1 $cyrName & co"

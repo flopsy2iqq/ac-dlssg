@@ -36,7 +36,7 @@ It takes about 5 minutes.
 - **No FPS gain:** check that DLSS is on (step 5), then open the **AC DLSS-G** window. It says why frame generation is off.
 - **Ghosting** (a trail behind moving things) **with DLAA:** turn off MSAA and FXAA (step 5).
 - **On a laptop:** in Windows Settings, open System, then Display, then Graphics, and set `acs.exe` to **High performance**.
-- **The game does not start:** uninstall the mod (see [Uninstall](#uninstall)). The game is back to how it was.
+- **The game does not start:** first double-click **`collect-logs.bat`** in `ac-dlssg` (see the next point) and keep the zip it makes. Then uninstall the mod (see [Uninstall](#uninstall)). The game is back to how it was, and the zip stays in `ac-dlssg`.
 - **Ask for help:** close the game, open the game folder (see [Uninstall](#uninstall)), open `ac-dlssg` and double-click **`collect-logs.bat`**. Attach the zip it makes next to it to a [new issue](https://github.com/flopsy2iqq/ac-dlssg/issues/new).
 
 ## Update
