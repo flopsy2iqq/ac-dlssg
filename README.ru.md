@@ -10,7 +10,7 @@
 
 </div>
 
-**Версия 1.0.0, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Картинки в разделе [Скриншоты](#скриншоты).
+**Версия 1.1.0, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Картинки в разделе [Скриншоты](#скриншоты).
 
 Assetto Corsa рисует через DirectX 11. DLSS Frame Generation работает только в DirectX 12 и Vulkan, через NVIDIA Streamline. ac-dlssg соединяет одно с другим:
 
@@ -162,7 +162,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 Каждый архив релиза собирает GitHub Actions из этого репозитория, а у архива и `ac-dlssg.dll` есть аттестация сборки. В описании релиза указан SHA-256 обоих файлов. Проверить скачанный файл через GitHub CLI:
 
 ```
-gh attestation verify ac-dlssg-1.0.0.zip --repo flopsy2iqq/ac-dlssg
+gh attestation verify ac-dlssg-1.1.0.zip --repo flopsy2iqq/ac-dlssg
 ```
 
 ## Поддержать автора

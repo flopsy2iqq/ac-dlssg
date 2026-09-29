@@ -13,7 +13,7 @@ It takes about 5 minutes.
 ## Install
 
 1. **Close the game.**
-2. **Download** `ac-dlssg-1.0.0.zip` from the [latest release](https://github.com/flopsy2iqq/ac-dlssg/releases/latest).
+2. **Download** `ac-dlssg-1.1.0.zip` from the [latest release](https://github.com/flopsy2iqq/ac-dlssg/releases/latest).
 3. **Unpack it.** Right-click the zip and choose **Extract All**.
 4. **Double-click `install.bat`.**
    - If Windows asks "Do you want to allow this app to make changes?", click **Yes**.

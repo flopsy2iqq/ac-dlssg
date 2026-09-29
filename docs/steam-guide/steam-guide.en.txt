@@ -97,7 +97,7 @@ Section title: Install (5 minutes)
 
 [olist]
 [*][b]Close the game.[/b]
-[*][b]Download[/b] ac-dlssg-1.0.0.zip from the latest release on GitHub:
+[*][b]Download[/b] the newest ac-dlssg zip (for example ac-dlssg-1.1.0.zip) from the latest release on GitHub:
 [url=https://github.com/flopsy2iqq/ac-dlssg/releases/latest]github.com/flopsy2iqq/ac-dlssg/releases[/url]
 [*][b]Unpack it[/b] (right-click, "Extract All").
 [*][b]Double-click install.bat.[/b] If Windows asks "Allow changes?", click Yes. Wait until it says it is done, then press Enter.

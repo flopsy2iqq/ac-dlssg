@@ -4,7 +4,7 @@ All notable changes to ac-dlssg are listed here. Versions follow
 [Semantic Versioning](https://semver.org/). The release workflow publishes the
 section of a version as its GitHub release notes.
 
-## [1.1.0] - 2026-09-29
+## [1.1.0] - 2026-09-30
 
 ### Changed
 

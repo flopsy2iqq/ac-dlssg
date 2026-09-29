@@ -10,7 +10,7 @@ NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X and 4X) for **Assetto Corsa** with *
 
 </div>
 
-**Version 1.0.0. Frame generation works in game.** On the test PC the frame rate doubles with no ghosting and no blur. The pictures are in [Screenshots](#screenshots).
+**Version 1.1.0. Frame generation works in game.** On the test PC the frame rate doubles with no ghosting and no blur. The pictures are in [Screenshots](#screenshots).
 
 Assetto Corsa renders with DirectX 11. DLSS Frame Generation runs only on DirectX 12 and Vulkan, through NVIDIA Streamline. ac-dlssg connects the two:
 
@@ -162,7 +162,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 Every release zip is built by GitHub Actions from this repository, and the zip and `ac-dlssg.dll` carry build provenance attestations. The release notes list the SHA-256 of both. To check a downloaded file with the GitHub CLI:
 
 ```
-gh attestation verify ac-dlssg-1.0.0.zip --repo flopsy2iqq/ac-dlssg
+gh attestation verify ac-dlssg-1.1.0.zip --repo flopsy2iqq/ac-dlssg
 ```
 
 ## Support
