@@ -139,6 +139,13 @@ struct PresenterCreateInfo {
 //    growth over the estimate of what DLSS-G already holds has to fit; when
 //    a higher multiplier does not fit but 2X does, "fg: video memory: <m>X
 //    needs <n> MiB, free <f> MiB; falling back to 2X" (INFO) and 2X.
+//    With fg_vram_headroom_mib=auto the headroom is AutoVramHeadroomMib of
+//    the budget ("+ headroom <h> MiB (auto)" in the check line), and a 2X
+//    shortfall within VramTightToleranceMib turns DLSS-G on anyway: "fg:
+//    video memory is tight (<f> MiB free for <n> MiB); frame generation on
+//    anyway (fg_vram_headroom_mib=auto)" at INFO once per change; a larger
+//    one keeps it off with "not enough video memory: ..." as the reason
+//    (DecideVramMultiplier). The guard's note is the status' vramNote.
 //  - the options carry numFramesToGenerate = the multiplier used - 1, and
 //    are sent only when the mode changes or, while on, the hints or the
 //    count change (DlssgOptionsDue); a new count while on sets reset for

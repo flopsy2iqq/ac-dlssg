@@ -361,6 +361,7 @@ struct D3D12Presenter::Impl {
     uint32_t mode_frames = 0;                 // numFramesToGenerate of the options Streamline has (mode_known)
     uint32_t on_frames = 0;                   // numFramesToGenerate of the last eOn; 0 before the first
     std::string vram_fallback;                // the guard's fallback note for vram_guard.Wanted()
+    std::string vram_note;                    // the guard's last note for the panel (tight, or not enough)
     uint64_t vram_estimate[5] = {};           // the last DLSS-G estimate per multiplier (2..4)
     bool vram_estimate_ok[5] = {};
     uint64_t held_estimate = 0;     // the estimate of what DLSS-G holds since its last eOn (eRetainResourcesWhenOff)
@@ -1031,10 +1032,12 @@ void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
         VramInputs in;
         VramCheck check;
     };
+    const bool autoHeadroom = config.fg_vram_headroom_auto;
+    const unsigned headroom = VramHeadroomMib(autoHeadroom, config.fg_vram_headroom_mib, budget);
     const auto checkAt = [&](unsigned m) {
         Checked c;
         c.multiplier = m;
-        c.in.headroomMib = config.fg_vram_headroom_mib;
+        c.in.headroomMib = headroom;
         c.in.budgetKnown = budgetKnown;
         c.in.budgetBytes = budget;
         c.in.usageBytes = usage;
@@ -1061,9 +1064,12 @@ void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
     Checked at2x;
     const bool asked2x = !atWanted.check.ok && wanted > 2;
     if (asked2x) at2x = checkAt(2);
-    const VramMultiplierDecision d = DecideVramMultiplier(wanted, atWanted.check, asked2x ? &at2x.check : nullptr);
-    const bool changed = vram_guard.Record(frame_index, d.check, wanted, d.multiplier);
+    const VramMultiplierDecision d =
+        DecideVramMultiplier(wanted, atWanted.check, asked2x ? &at2x.check : nullptr, autoHeadroom);
+    const bool changed = vram_guard.Record(frame_index, d.check, wanted, d.multiplier, d.tight);
     vram_fallback = d.fallback;
+    if (changed || vram_note != d.note) status_due = true;  // the panel shows the note at once
+    vram_note = d.note;
     const LogLevel level = changed ? LogLevel::Info : LogLevel::Debug;
     const auto logCheck = [&](const Checked& c) {
         char estimate[32] = "n/a";
@@ -1080,15 +1086,18 @@ void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
             std::snprintf(held, sizeof(held), " (%llu MiB already held)",
                           static_cast<unsigned long long>(c.in.heldBytes / (1024 * 1024)));
         LogWrite(level,
-                 "fg: video memory check at %uX: DLSS-G estimate %s%s + headroom %u MiB, budget %llu MiB, usage %llu "
-                 "MiB: %s; VSync with DLSS-G %s",
-                 c.multiplier, estimate, held, c.in.headroomMib, static_cast<unsigned long long>(budget / (1024 * 1024)),
+                 "fg: video memory check at %uX: DLSS-G estimate %s%s + headroom %u MiB%s, budget %llu MiB, usage "
+                 "%llu MiB: %s; VSync with DLSS-G %s",
+                 c.multiplier, estimate, held, c.in.headroomMib, autoHeadroom ? " (auto)" : "",
+                 static_cast<unsigned long long>(budget / (1024 * 1024)),
                  static_cast<unsigned long long>(usage / (1024 * 1024)), c.check.ok ? "ok" : c.check.reason.c_str(),
                  vsync_available ? "available" : "not available");
     };
     logCheck(atWanted);
     if (asked2x) logCheck(at2x);
     if (!d.fallback.empty()) LogWrite(level, "fg: %s", d.fallback.c_str());
+    // fg_vram_headroom_mib=auto: DLSS-G on although 2X falls a little short.
+    if (d.tight) LogWrite(level, "fg: %s", d.note.c_str());
 }
 
 // slDLSSGSetOptions only when the mode, or while on the size hints or the
