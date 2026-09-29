@@ -30,6 +30,15 @@ DLSS-G 2X в Assetto Corsa с CSP:
 ![DLSS-G 2X, вид спереди: 55 настоящих fps, 108 fps на экране](docs/screenshots/fg2x-6.jpg)
 ![DLSS-G 2X, ночь со статистикой рендера CSP: 59 настоящих fps, 119 fps на экране](docs/screenshots/fg2x-7.jpg)
 
+### Тест на ноутбуке
+
+Ноутбук друга Acer Nitro 5 AN515-57: GeForce RTX 3050 Ti Laptop GPU (4 ГБ, драйвер 610.88), Core i5-11400H, 32 ГБ ОЗУ, Windows 11 25H2, Optimus (экран подключён к встроенной графике Intel), без ReShade (режим без ReShade), CSP preview634. 31 настоящий fps превращается в 60 на экране.
+
+![DLSS-G 2X на ноутбуке с RTX 3050 Ti: 31 настоящий fps, 60 fps на экране](docs/screenshots/fg2x-laptop-1.jpg)
+![DLSS-G 2X на ноутбуке с RTX 3050 Ti в тоннеле: 30 настоящих fps, 57 fps на экране](docs/screenshots/fg2x-laptop-2.jpg)
+
+На карте с 4 ГБ видеопамяти мало: если игра подтормаживает, снизьте в CSP качество текстур или теней.
+
 ## Что нужно
 
 - **Assetto Corsa** из Steam с **Custom Shaders Patch 0.3.0** или новее. Проверено на preview622 и preview634.

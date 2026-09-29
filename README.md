@@ -30,6 +30,15 @@ Test PC: Intel Core i9-9900 (8 cores, 16 threads), GeForce RTX 3080 10 GB (drive
 ![DLSS-G 2X, front view: 55 real fps, 108 fps on screen](docs/screenshots/fg2x-6.jpg)
 ![DLSS-G 2X, night with CSP's render stats: 59 real fps, 119 fps on screen](docs/screenshots/fg2x-7.jpg)
 
+### Tested on a laptop
+
+A friend's Acer Nitro 5 AN515-57: GeForce RTX 3050 Ti Laptop GPU (4 GB, driver 610.88), Core i5-11400H, 32 GB RAM, Windows 11 25H2, Optimus (the Intel iGPU drives the panel), no ReShade (standalone mode), CSP preview634. 31 real fps become 60 on screen.
+
+![DLSS-G 2X on an RTX 3050 Ti laptop: 31 real fps, 60 fps on screen](docs/screenshots/fg2x-laptop-1.jpg)
+![DLSS-G 2X on an RTX 3050 Ti laptop in a tunnel: 30 real fps, 57 fps on screen](docs/screenshots/fg2x-laptop-2.jpg)
+
+On a 4 GB card the video memory is tight: if the game stutters, lower CSP's texture or shadow quality.
+
 ## Requirements
 
 - **Assetto Corsa** from Steam with **Custom Shaders Patch 0.3.0** or newer. It was tested with preview622 and preview634.
