@@ -1123,13 +1123,15 @@ local function detailsSection(controls)
   a.detailsHover = ease(a.detailsHover, hovered and 1 or 0, 14)
   a.detailsT = ease(a.detailsT, a.detailsOpen and 1 or 0, 10)
   local col = lerpColor(c1, C.muted, C.text, a.detailsHover, 1)
-  -- A triangle pointing right, turned by up to 90 degrees to point down.
+  -- A triangle pointing right, turned by up to 90 degrees to point down: the
+  -- tip, then the lower and the upper corner, in the order ImGui draws its own
+  -- arrows (clockwise on screen, which its anti-aliased fill expects).
   local cx, cy = x + 8, y + rowH / 2
   local turn = a.detailsT * math.pi / 2
   local ca, sa = math.cos(turn), math.sin(turn)
   P1.x, P1.y = cx + 4 * ca, cy + 4 * sa
-  P2.x, P2.y = cx - 3 * ca + 4 * sa, cy - 3 * sa - 4 * ca
-  P3.x, P3.y = cx - 3 * ca - 4 * sa, cy - 3 * sa + 4 * ca
+  P2.x, P2.y = cx - 3 * ca - 4 * sa, cy - 3 * sa + 4 * ca
+  P3.x, P3.y = cx - 3 * ca + 4 * sa, cy - 3 * sa - 4 * ca
   ui.drawTriangleFilled(P1, P2, P3, col)
   label(WORDS.details, FONT.semi, 13, x + 20, y, x + lw, y + rowH, K.alignStart, col)
   if a.detailsT > 0 then
