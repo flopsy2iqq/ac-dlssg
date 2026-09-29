@@ -136,6 +136,14 @@ Config ParseConfig(const IniFile& ini) {
                                  "' (expected error, warn, info or debug); using default");
         }
     }
+    // A repeated key is a trap (a hand-added line above an older default
+    // block): say which value won.
+    for (const auto& [key, values] : ini.Repeats(kSection)) {
+        std::string list;
+        for (const auto& v : values) list += (list.empty() ? "" : ", ") + v;
+        c.warnings.push_back(key + " appears " + std::to_string(values.size()) + " times in [bridge] (" + list +
+                             "); the last one (" + values.back() + ") is used");
+    }
     return c;
 }
 

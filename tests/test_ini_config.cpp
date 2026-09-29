@@ -278,6 +278,20 @@ TEST(Config_M3KeysParsed) {
     CHECK(c.warnings.empty());
 }
 
+// A key written twice (a hand-added line above an older default block) is a
+// trap: the last one wins. The bridge says which value it took.
+TEST(Config_RepeatedKeyIsReported) {
+    Config c = ParseConfig(IniFile::Parse("[bridge]\nfg_vram_headroom_mib=0\nenabled=1\nfg_vram_headroom_mib=512\n"));
+    CHECK_EQ(c.fg_vram_headroom_mib, 512u);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("fg_vram_headroom_mib") != std::string::npos);
+    CHECK(c.warnings[0].find("2 times") != std::string::npos);
+    CHECK(c.warnings[0].find("512") != std::string::npos);
+    // Another section's repeats are not ours to report.
+    c = ParseConfig(IniFile::Parse("[other]\nx=1\nx=2\n[bridge]\nenabled=1\n"));
+    CHECK(c.warnings.empty());
+}
+
 // Windows 11 25H2 binds VERSION.dll to System32 before acs.exe's own import;
 // spoof_load_any=1 lets the bridge load a version.dll that is not the pinned
 // dlssg_for_sm86 release.

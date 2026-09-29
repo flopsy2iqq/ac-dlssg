@@ -52,6 +52,7 @@ IniFile IniFile::Parse(const std::string& text) {
         const size_t semi = value.find(';');
         if (semi != std::string::npos) value.resize(semi);
         ini.data_[section][key] = Trim(value);
+        ini.all_[section][key].push_back(Trim(value));
     }
     return ini;
 }
@@ -102,6 +103,16 @@ std::optional<long long> ToInt(const std::optional<std::string>& value) {
     long long out = 0;
     const auto res = std::from_chars(first, last, out, 10);
     if (res.ec != std::errc() || res.ptr != last) return std::nullopt;
+    return out;
+}
+
+std::map<std::string, std::vector<std::string>> IniFile::Repeats(const std::string& section) const {
+    std::map<std::string, std::vector<std::string>> out;
+    const auto s = all_.find(Lower(section));
+    if (s == all_.end()) return out;
+    for (const auto& [key, values] : s->second) {
+        if (values.size() > 1) out[key] = values;
+    }
     return out;
 }
 
