@@ -112,6 +112,14 @@ Config ParseConfig(const IniFile& ini) {
                                  "' (expected 0..65536 MiB); using default");
         }
     }
+    if (const auto raw = ini.Get(kSection, "fg_multiplier"); raw && !raw->empty()) {
+        const auto v = ToInt(raw);
+        if (v && *v >= 2 && *v <= 4) {
+            c.fg_multiplier = static_cast<unsigned>(*v);
+        } else {
+            c.warnings.push_back("fg_multiplier: invalid value '" + *raw + "' (expected 2, 3 or 4); using 2");
+        }
+    }
 
     if (const auto raw = ini.Get(kSection, "log_level")) {
         const std::string v = Lower(*raw);

@@ -290,6 +290,39 @@ TEST(Config_SpoofLoadAny) {
     CHECK(c.warnings[0].find("spoof_load_any") != std::string::npos);
 }
 
+// Multi frame generation (spec 3, 6.8): fg_multiplier=2|3|4, 2X by default.
+// The key asks for a multiplier; Streamline's numFramesToGenerateMax and the
+// video memory guard decide what DLSS-G gets (fg_policy.h).
+TEST(Config_FgMultiplierDefaultsTo2X) {
+    const Config c = ParseConfig(IniFile::Parse(""));
+    CHECK_EQ(c.fg_multiplier, 2u);
+    CHECK(c.warnings.empty());
+}
+
+TEST(Config_FgMultiplierAccepts2To4) {
+    for (unsigned m : {2u, 3u, 4u}) {
+        const Config c = ParseConfig(IniFile::Parse("[bridge]\nfg_multiplier=" + std::to_string(m) + "\n"));
+        CHECK_EQ(c.fg_multiplier, m);
+        CHECK(c.warnings.empty());
+    }
+    // Spaces around the number, as for the other number keys.
+    CHECK_EQ(ParseConfig(IniFile::Parse("[bridge]\nfg_multiplier = 3 \n")).fg_multiplier, 3u);
+}
+
+TEST(Config_FgMultiplierInvalidKeeps2XAndWarns) {
+    for (const char* v : {"1", "5", "0", "-3", "6", "4x", "x", "3.0", "on"}) {
+        const Config c = ParseConfig(IniFile::Parse(std::string("[bridge]\nfg_multiplier=") + v + "\n"));
+        CHECK_EQ(c.fg_multiplier, 2u);
+        REQUIRE(c.warnings.size() == 1);
+        CHECK(c.warnings[0].find("fg_multiplier: invalid value '") != std::string::npos);
+        CHECK(c.warnings[0].find("(expected 2, 3 or 4); using 2") != std::string::npos);
+    }
+    // An empty value keeps the default quietly, like the other number keys.
+    const Config c = ParseConfig(IniFile::Parse("[bridge]\nfg_multiplier=\n"));
+    CHECK_EQ(c.fg_multiplier, 2u);
+    CHECK(c.warnings.empty());
+}
+
 TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
     Config c = ParseConfig(IniFile::Parse("[bridge]\ncamera_flip_handedness=2\ncamera_negate_side=on\n"
                                           "proxy_without_fg=-1\ntag_without_fg=x\nfg_vram_headroom_mib=-5\n"));
