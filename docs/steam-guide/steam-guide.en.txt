@@ -82,7 +82,7 @@ Section title: What you need
 [list]
 [*]An [b]NVIDIA RTX 30, 40 or 50[/b] graphics card (laptop GPUs work too).
 [*][b]Assetto Corsa[/b] on Steam and a [b]Custom Shaders Patch preview build[/b] (0.3.0-preview or newer), published by CSP's author on Patreon: [url=https://www.patreon.com/c/x4fab/home]patreon.com/c/x4fab[/url]
-[*][b]DLSS[/b] selected as the upscaler in CSP's settings (in Content Manager: Settings, Custom Shaders Patch, search for "DLSS").
+[*][b]DLSS[/b] turned on in CSP before you start the game (in Content Manager: Settings, Custom Shaders Patch, ADJUSTMENTS, Upscaling: Active, Method NVIDIA DLSS).
 [*]Windows 10 (version 2004 or newer) or Windows 11, with "Hardware-accelerated GPU scheduling" on.
 [*]An internet connection during install: the installer downloads NVIDIA's files by itself.
 [/list]
@@ -101,6 +101,7 @@ Section title: Install (5 minutes)
 [url=https://github.com/flopsy2iqq/ac-dlssg/releases/latest]github.com/flopsy2iqq/ac-dlssg/releases[/url]
 [*][b]Unpack it[/b] (right-click, "Extract All").
 [*][b]Double-click install.bat.[/b] If Windows asks "Allow changes?", click Yes. Wait until it says it is done, then press Enter.
+[*][b]Turn on DLSS before you start the game.[/b] In Content Manager: Settings, Custom Shaders Patch, ADJUSTMENTS (under Graphics), Upscaling: tick Active and set Method to NVIDIA DLSS (EXTRA FX must be active too). [b]Using DLAA[/b] (Quality: DLAA (100%))? Then also turn off MSAA and FXAA (Settings, Assetto Corsa, Video: MSAA Off, untick FXAA, keep post-processing on), or moving things leave a ghost trail.
 [*][b]Start the game[/b] as usual and drive. Frame generation turns on by itself.
 [/olist]
 
@@ -142,6 +143,7 @@ The mod adapts to the card by itself. When memory is tight, the window tells you
 
 [b]Any artifacts?[/b]
 In fast motion, CSP app windows and on-screen UI can smear a little, because the whole frame is generated. The road and the cars stay clean.
+If moving things leave a ghost trail and you use DLAA, turn off MSAA and FXAA (Content Manager: Settings, Assetto Corsa, Video: MSAA Off, untick FXAA).
 
 [b]RTX 20, GTX, AMD?[/b]
 No, it needs an RTX 30, 40 or 50.

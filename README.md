@@ -61,7 +61,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 ## Requirements
 
 - **Assetto Corsa** from Steam with a **Custom Shaders Patch preview build** (0.3.0-preview or newer). It was tested with preview622 and preview634. CSP preview builds are available from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
-- **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it.
+- **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it. With DLAA, also turn off MSAA and FXAA in the game's video settings (Content Manager: Settings, Assetto Corsa, Video: MSAA Off, FXAA unticked, post-processing kept on), or moving things ghost.
 - **An NVIDIA RTX GPU:**
   - RTX 40 and RTX 50 support DLSS-G themselves.
   - RTX 30, including laptop GPUs such as the RTX 3050 Ti, needs the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). You do not install it yourself: on an RTX 30 the installer downloads the pinned release 0.3.5 from the author's repository, checks its hashes and puts it next to `acs.exe`. See [RTX 30 and dlssg_for_sm86](#rtx-30-and-dlssg_for_sm86). It needs NVIDIA driver R580 or newer.
@@ -76,7 +76,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 1. Close Assetto Corsa and Content Manager's game session.
 2. Download `ac-dlssg-<version>.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `docs`, `files`, `scripts` and `tools`.
 3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30 dlssg_for_sm86), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. At the end the window waits for Enter.
-4. Start the game as usual and make sure DLSS is the upscaler in CSP's graphics settings.
+4. Before you start the game, turn on DLSS in CSP: in Content Manager, Settings, Custom Shaders Patch, ADJUSTMENTS (under Graphics), Upscaling: tick Active and set Method to NVIDIA DLSS (EXTRA FX must be active too). With DLAA (Quality: DLAA (100%)), also set MSAA to Off and untick FXAA in Settings, Assetto Corsa, Video, and keep post-processing on, or moving things ghost. Then start the game as usual.
 5. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.
 
 **Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`.

@@ -18,18 +18,22 @@ It takes about 5 minutes.
 4. **Double-click `install.bat`.**
    - If Windows asks "Do you want to allow this app to make changes?", click **Yes**.
    - Wait until the window says it is done, then press **Enter**.
-5. **Start the game** as usual and drive. Frame generation turns on by itself.
+5. **Turn on DLSS before you start the game.** Frame generation needs it.
+   - In Content Manager, open Settings, then Custom Shaders Patch, and click **ADJUSTMENTS** (under Graphics) in the list on the left.
+   - Under **Upscaling**, tick **Active** and set **Method** to **NVIDIA DLSS**. **EXTRA FX** (also under Graphics) must be active too.
+   - **Using DLAA** (Quality: **DLAA (100%)**)? Then also turn off MSAA and FXAA, or moving things leave a ghost trail. In Content Manager, open Settings, then Assetto Corsa, then Video, set **MSAA** to **Off** and untick **FXAA**. Keep **Enable post-processing effects** ticked, DLSS needs it.
+6. **Start the game** as usual and drive. Frame generation turns on by itself.
 
 ## Check that it works
 
-- In CSP's graphics settings, **DLSS** must be the upscaler. In Content Manager, open Settings, then Custom Shaders Patch, and type `DLSS` in the search box.
 - Press **Ctrl+F10** while driving. Frame generation switches off, and pressing it again switches it back on.
 - Open the **AC DLSS-G** window from CSP's app bar. It shows whether frame generation is on and your FPS, and it has the settings.
 - CSP's own FPS counter shows only the real frames. The NVIDIA overlay (Alt+R) shows the frames on screen.
 
 ## Something is wrong?
 
-- **No FPS gain:** open the **AC DLSS-G** window. It says why frame generation is off.
+- **No FPS gain:** check that DLSS is on (step 5), then open the **AC DLSS-G** window. It says why frame generation is off.
+- **Ghosting** (a trail behind moving things) **with DLAA:** turn off MSAA and FXAA (step 5).
 - **On a laptop:** in Windows Settings, open System, then Display, then Graphics, and set `acs.exe` to **High performance**.
 - **The game does not start:** in the unpacked folder, open `tools` and double-click **`uninstall.bat`**. The game is back to how it was.
 - **Ask for help:** close the game, double-click `tools\collect-logs.bat`, and attach the zip it makes to a [new issue](https://github.com/flopsy2iqq/ac-dlssg/issues/new).
