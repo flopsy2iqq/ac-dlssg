@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo/ac-dlssg-banner.png" alt="ac-dlssg" width="640"></p>
+
 [![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Install](https://img.shields.io/badge/-Install-brightgreen)](docs/INSTALL.md) [![Support](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
 
 # ac-dlssg
