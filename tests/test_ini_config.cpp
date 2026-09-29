@@ -235,6 +235,46 @@ TEST(IniEdit_WriteIniKeysReportsAnUnwritableTarget) {
     CHECK(GetFileAttributesW((path + L".new").c_str()) == INVALID_FILE_ATTRIBUTES);
 }
 
+// The bridge's own fix of a blocking fg_vram_headroom_mib (spec 6.11) saves
+// auto with WriteIniKeys. The friend's laptop had the key twice in [bridge]
+// (a hand-added 0 above the old default block's 512): every occurrence in
+// every [bridge] section becomes auto, so whichever the reader takes is auto,
+// and no line is added. Comments, other sections and every other byte stay.
+TEST(IniEdit_WriteIniKeysSetsEveryRepeatOfTheHeadroomToAuto) {
+    TempDir dir(L"ini_write_headroom");
+    const auto path = dir.Write(L"ac-dlssg.ini",
+                                "[bridge]\r\n"
+                                "fg_vram_headroom_mib=0\r\n"
+                                "enabled=1\r\n"
+                                "; Video memory (MiB) that must stay free in the budget before DLSS-G is turned on.\r\n"
+                                "FG_VRAM_HEADROOM_MIB = 512 ; old default\r\n"
+                                "[other]\r\n"
+                                "fg_vram_headroom_mib=512\r\n"
+                                "[Bridge]\r\n"
+                                "fg_vram_headroom_mib=1024\r\n");
+    REQUIRE(LoadConfig(path.wstring()).fg_vram_headroom_mib == 1024u);
+    std::string err;
+    REQUIRE(WriteIniKeys(path.wstring(), "bridge", {{"fg_vram_headroom_mib", "auto"}}, &err));
+    CHECK(ReadAll(path) ==
+          "[bridge]\r\n"
+          "fg_vram_headroom_mib=auto\r\n"
+          "enabled=1\r\n"
+          "; Video memory (MiB) that must stay free in the budget before DLSS-G is turned on.\r\n"
+          "FG_VRAM_HEADROOM_MIB = auto ; old default\r\n"
+          "[other]\r\n"
+          "fg_vram_headroom_mib=512\r\n"
+          "[Bridge]\r\n"
+          "fg_vram_headroom_mib=auto\r\n");
+    const auto ini = IniFile::Load(path.wstring());
+    REQUIRE(ini.has_value());
+    const auto repeats = ini->Repeats("bridge");
+    REQUIRE(repeats.count("fg_vram_headroom_mib") == 1);
+    CHECK(repeats.at("fg_vram_headroom_mib") == std::vector<std::string>({"auto", "auto", "auto"}));
+    const Config c = LoadConfig(path.wstring());
+    CHECK(c.fg_vram_headroom_auto);
+    CHECK_EQ(c.fg_vram_headroom_mib, 0u);
+}
+
 // A file saved as UTF-16 (Notepad's "Unicode"), or anything else with NUL
 // bytes, is not text the key-level edit understands: appending UTF-8 lines to
 // it would leave a file of two encodings. It is refused and left as it was.
