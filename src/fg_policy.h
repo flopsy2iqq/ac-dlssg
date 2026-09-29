@@ -206,6 +206,46 @@ std::string FgMultiplierNote(const std::string& clampNote, const std::string& vr
 // the hints and the count.
 bool DlssgOptionsDue(bool known, bool lastOn, uint32_t lastFrames, bool sameHints, bool on, uint32_t frames);
 
+// The multiplier on the presenting thread (spec 6.8): the request
+// (fg_multiplier, then SetFgMultiplier) and what Streamline allows. The
+// presenter queries slDLSSGGetState before options carry a count while
+// QueryDue() holds: before the first options, and again after every new
+// request.
+class FgMultiplierTracker {
+public:
+    explicit FgMultiplierTracker(unsigned requested = 2);  // anything but 2..4 counts as 2
+    // A new request; false (nothing changes) when it is not 2..4 or is the
+    // current one. True makes the max due again and lets the note of this
+    // request be logged once more.
+    bool Request(unsigned multiplier);
+    unsigned Requested() const { return requested_; }
+    bool QueryDue() const { return query_due_; }
+    // Streamline's DLSSGState::numFramesToGenerateMax (0 when the query
+    // failed). Returns the clamp note when it is to be logged: non-empty and
+    // not yet logged for this request.
+    std::string OnFramesMax(uint32_t numFramesToGenerateMax);
+    bool MaxKnown() const { return max_known_; }
+    uint32_t FramesMax() const { return max_; }
+    // ChooseFgMultiplier(request, last known max); the request itself before
+    // Streamline answered once. The video memory guard is asked about it.
+    unsigned Wanted() const { return choice_.multiplier; }
+    const std::string& ClampNote() const { return choice_.note; }
+
+private:
+    void Choose();
+    unsigned requested_ = 2;
+    bool query_due_ = true;
+    bool max_known_ = false;
+    uint32_t max_ = 0;
+    FgMultiplierChoice choice_;
+    std::string logged_;
+};
+
+// The multiplier the DLSS-G options carry: the video memory guard's grant
+// (the wanted multiplier, or 2X after a fallback) when its last passed check
+// was for the wanted multiplier, else the wanted multiplier itself.
+unsigned UsedFgMultiplier(unsigned wanted, bool guardPassed, unsigned guardWanted, unsigned guardGranted);
+
 // ---------------------------------------------------------------- hotkey
 
 // The chord is down when its key is down and exactly the configured

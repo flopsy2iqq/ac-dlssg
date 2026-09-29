@@ -643,3 +643,91 @@ TEST(VramGuard_ANewOrFallenBackMultiplierIsAChange) {
     CHECK(!g.Record(30, VramCheck{}, 3, 3));  // the same outcome
     CHECK(g.Record(40, VramCheck{}, 3, 2));   // now a fallback
 }
+
+// ---------------------------------------------------------------- the multiplier on the present thread
+
+TEST(FgMultTracker_StartsWithTheConfiguredRequestAndNoMax) {
+    const FgMultiplierTracker t(3);
+    CHECK_EQ(t.Requested(), 3u);
+    CHECK(t.QueryDue());
+    CHECK(!t.MaxKnown());
+    CHECK_EQ(t.FramesMax(), 0u);
+    // Nothing lowers the request before Streamline answered.
+    CHECK_EQ(t.Wanted(), 3u);
+    CHECK(t.ClampNote().empty());
+    // An invalid configuration counts as 2X.
+    CHECK_EQ(FgMultiplierTracker(7).Requested(), 2u);
+    CHECK_EQ(FgMultiplierTracker(1).Wanted(), 2u);
+}
+
+TEST(FgMultTracker_TheMaxClampsTheRequestAndTheNoteIsLoggedOnce) {
+    FgMultiplierTracker t(4);
+    CHECK_EQ(t.OnFramesMax(2), std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    CHECK(!t.QueryDue());
+    CHECK(t.MaxKnown());
+    CHECK_EQ(t.FramesMax(), 2u);
+    CHECK_EQ(t.Wanted(), 3u);
+    CHECK_EQ(t.ClampNote(), std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    // The same answer again: nothing new to log, the status keeps the note.
+    CHECK(t.OnFramesMax(2).empty());
+    CHECK_EQ(t.ClampNote(), std::string("4X requested, Streamline allows up to 3X; using 3X"));
+    // A request within the max: no note.
+    FgMultiplierTracker ok(3);
+    CHECK(ok.OnFramesMax(3).empty());
+    CHECK_EQ(ok.Wanted(), 3u);
+    CHECK(ok.ClampNote().empty());
+}
+
+TEST(FgMultTracker_AFailedQueryMeans2X) {
+    FgMultiplierTracker t(3);
+    CHECK_EQ(t.OnFramesMax(0), std::string("3X requested, Streamline allows up to 2X; using 2X"));
+    CHECK_EQ(t.Wanted(), 2u);
+    CHECK(!t.QueryDue());  // asked again at the next request only
+}
+
+TEST(FgMultTracker_ANewRequestIsQueriedAgainBeforeTheNextOptions) {
+    FgMultiplierTracker t(2);
+    CHECK(t.OnFramesMax(1).empty());
+    // Unchanged or invalid requests change nothing.
+    CHECK(!t.Request(2));
+    CHECK(!t.Request(5));
+    CHECK(!t.Request(0));
+    CHECK(!t.QueryDue());
+    CHECK(t.Request(4));
+    CHECK_EQ(t.Requested(), 4u);
+    CHECK(t.QueryDue());
+    // Until the answer, the last known max already clamps it (the status is
+    // right while DLSS-G is off).
+    CHECK_EQ(t.Wanted(), 2u);
+    CHECK_EQ(t.ClampNote(), std::string("4X requested, Streamline allows up to 2X; using 2X"));
+    // The answer for the new request logs its note once more.
+    CHECK_EQ(t.OnFramesMax(1), std::string("4X requested, Streamline allows up to 2X; using 2X"));
+    CHECK(t.OnFramesMax(1).empty());
+    // Back and forth: each request that is lowered is logged again.
+    CHECK(t.Request(2));
+    CHECK(t.OnFramesMax(1).empty());
+    CHECK(t.ClampNote().empty());
+    CHECK(t.Request(4));
+    CHECK_EQ(t.OnFramesMax(1), std::string("4X requested, Streamline allows up to 2X; using 2X"));
+}
+
+TEST(FgMultTracker_AHigherMaxAllowsTheRequest) {
+    FgMultiplierTracker t(4);
+    CHECK_EQ(t.OnFramesMax(3), std::string());
+    CHECK_EQ(t.Wanted(), 4u);
+    CHECK(t.Request(3));
+    CHECK_EQ(t.Wanted(), 3u);
+    CHECK(t.OnFramesMax(3).empty());
+    CHECK_EQ(t.Wanted(), 3u);
+}
+
+TEST(FgMult_TheOptionsCarryTheGuardsGrantForTheWantedMultiplier) {
+    // No check yet, or a check for another multiplier: the wanted one.
+    CHECK_EQ(UsedFgMultiplier(4, false, 2, 2), 4u);
+    CHECK_EQ(UsedFgMultiplier(4, true, 3, 3), 4u);
+    // The guard passed the wanted multiplier as it is, or fell back to 2X.
+    CHECK_EQ(UsedFgMultiplier(4, true, 4, 4), 4u);
+    CHECK_EQ(UsedFgMultiplier(4, true, 4, 2), 2u);
+    // A refusal keeps DLSS-G off; the options would carry the wanted count.
+    CHECK_EQ(UsedFgMultiplier(3, false, 3, 2), 3u);
+}

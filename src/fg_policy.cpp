@@ -154,6 +154,44 @@ bool DlssgOptionsDue(bool known, bool lastOn, uint32_t lastFrames, bool sameHint
     return on && (!sameHints || frames != lastFrames);
 }
 
+FgMultiplierTracker::FgMultiplierTracker(unsigned requested)
+    : requested_(ValidFgMultiplier(static_cast<int>(requested)) ? requested : 2) {
+    Choose();
+}
+
+void FgMultiplierTracker::Choose() {
+    if (max_known_) {
+        choice_ = ChooseFgMultiplier(requested_, max_);
+        return;
+    }
+    choice_ = FgMultiplierChoice{};
+    choice_.multiplier = requested_;
+    choice_.numFramesToGenerate = FramesToGenerate(requested_);
+}
+
+bool FgMultiplierTracker::Request(unsigned multiplier) {
+    if (!ValidFgMultiplier(static_cast<int>(multiplier)) || multiplier == requested_) return false;
+    requested_ = multiplier;
+    query_due_ = true;
+    logged_.clear();
+    Choose();
+    return true;
+}
+
+std::string FgMultiplierTracker::OnFramesMax(uint32_t numFramesToGenerateMax) {
+    max_known_ = true;
+    max_ = numFramesToGenerateMax;
+    query_due_ = false;
+    Choose();
+    if (choice_.note.empty() || choice_.note == logged_) return {};
+    logged_ = choice_.note;
+    return logged_;
+}
+
+unsigned UsedFgMultiplier(unsigned wanted, bool guardPassed, unsigned guardWanted, unsigned guardGranted) {
+    return guardPassed && guardWanted == wanted ? guardGranted : wanted;
+}
+
 bool HotkeyChordDown(const Hotkey& hotkey, bool keyDown, bool ctrlDown, bool shiftDown, bool altDown) {
     return keyDown && ctrlDown == hotkey.ctrl && shiftDown == hotkey.shift && altDown == hotkey.alt;
 }
