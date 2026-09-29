@@ -50,6 +50,10 @@ $script:AcdbSlRuntimeSha256 = [ordered]@{
 # <game>\ac-dlssg (the manifest's "tools"): .bat files directly in it, and
 # the scripts they run in its scripts\ folder. Nothing else there is a tool.
 $script:AcdbToolsScriptsDirName = 'scripts'
+# In that scripts\ folder: the list of the other tool files with their
+# SHA-256, which make-test-package.ps1 writes. The uninstaller there removes
+# its own files by it when the manifest records none (see uninstall.ps1).
+$script:AcdbToolsListName = 'tools.json'
 $script:AcdbGameExe = 'acs.exe'
 $script:AcdbSteamAppId = '244210'
 $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)

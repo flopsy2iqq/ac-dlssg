@@ -36,6 +36,17 @@
   run does all of that in its window while the first one waits for it; the
   first one then only reports the exit code and touches no file.
 
+  The copy's own files are the ones the manifest records as tools. When the
+  manifest records none, they are the ones scripts\tools.json lists (the
+  package writes it, with each file's SHA-256), and that list. So when the
+  manifest is gone and nothing of the install is left (no Streamline file
+  in <game>\ac-dlssg\sl, no <game>\ac-dlssg.dll), because a run was closed
+  at its Enter prompt or an older package's uninstaller undid the install,
+  running it again says that ac-dlssg is already uninstalled and removes
+  only the copy's own files, as above. When an older package's install
+  wrote a manifest without tools, it undoes that install and removes them
+  by the list.
+
   The last line is "Press Enter to exit", so that a double-clicked window
   stays open; not with -NoPause or when the input is redirected.
 
@@ -98,13 +109,36 @@ function Get-OwnGameDir {
     return Get-NormalizedPath (Split-Path -Parent $dataDir)
 }
 
-# The tools the manifest records, read before dev-uninstall.ps1 deletes it.
+# The uninstaller's own files: the tools the manifest records, read before
+# dev-uninstall.ps1 deletes it. When it records none (it is gone because an
+# earlier run was closed at its Enter prompt or an older package's
+# uninstaller ran, or an older package's install wrote it without tools),
+# the list next to this script (scripts\tools.json, which the package
+# writes), and that list itself.
 function Get-ToolRecords([string]$Game) {
     $path = Join-Path $Game "$($script:AcdbDataDirName)\install\dev-manifest.json"
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
-    $manifest = Read-Manifest $path
-    if (-not $manifest.PSObject.Properties['tools'] -or -not $manifest.tools) { return @() }
-    return @($manifest.tools.files | Where-Object { Test-ToolRelPath ([string]$_.path) })
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $manifest = Read-Manifest $path
+        if ($manifest.PSObject.Properties['tools'] -and $manifest.tools) {
+            $records = @($manifest.tools.files | Where-Object { Test-ToolRelPath ([string]$_.path) })
+            if ($records.Count -gt 0) { return $records }
+        }
+    }
+    $listPath = Join-Path $PSScriptRoot $script:AcdbToolsListName
+    if (-not (Test-Path -LiteralPath $listPath -PathType Leaf)) { return @() }
+    try { $list = Read-Manifest $listPath } catch { return @() }
+    $records = @()
+    if ($list.PSObject.Properties['files']) { $records = @($list.files | Where-Object { Test-ToolRelPath ([string]$_.path) }) }
+    $self = "$($script:AcdbDataDirName)\$($script:AcdbToolsScriptsDirName)\$($script:AcdbToolsListName)"
+    return @($records) + @([pscustomobject]@{ path = $self; sha256 = (Get-Sha256OfFile $listPath) })
+}
+
+# True when the Streamline files or the ReShade-mode bridge are still in the
+# game folder: without a manifest that is not an uninstalled game.
+function Test-InstallLeft([string]$Game) {
+    $sl = Join-Path $Game "$($script:AcdbDataDirName)\$($script:AcdbSlDirName)"
+    if ((Test-Path -LiteralPath $sl -PathType Container) -and @(Get-ChildItem -LiteralPath $sl -Force).Count -gt 0) { return $true }
+    return Test-Path -LiteralPath (Join-Path $Game $script:AcdbDllName)
 }
 
 # After the Enter: the uninstaller and the log collector, each only while it
@@ -119,11 +153,17 @@ function Remove-InstalledTools([string]$Game, $Records) {
             Say "deleted $dataDir with the uninstaller in it (-RemoveData)"
             return
         }
+        if (@($Records).Count -eq 0) {
+            Say "WARNING: there is no record of the uninstaller's files, so they stay. Delete uninstall.bat, collect-logs.bat and the scripts folder in $dataDir by hand."
+            return
+        }
+        $removed = 0
         foreach ($rec in @($Records)) {
             $path = Join-Path $Game ([string]$rec.path)
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
             if ((Get-Sha256OfFile $path) -eq [string]$rec.sha256) {
                 Remove-Item -LiteralPath $path -Force
+                $removed++
             } else {
                 Say "WARNING: $path was changed since the install; left in place. Delete it by hand if you no longer need it."
             }
@@ -133,7 +173,7 @@ function Remove-InstalledTools([string]$Game, $Records) {
                 Remove-Item -LiteralPath $dir -Force
             }
         }
-        Say "removed the uninstaller and the log collector from $dataDir"
+        if ($removed -gt 0) { Say "removed the uninstaller and the log collector from $dataDir ($removed files)" }
     } catch {
         Say "WARNING: the uninstaller could not remove itself completely ($($_.Exception.Message)). Delete uninstall.bat, collect-logs.bat and the scripts folder in $dataDir by hand."
     }
@@ -170,14 +210,31 @@ try {
         Say "the uninstaller with administrator rights ended with exit code $code."
         exit $code
     }
-    if ($InstalledCopy) { $tools = @(Get-ToolRecords $game) }
-    # -Force: a dxgi.dll that is not the recorded bridge stays, the rest goes.
-    # -KeepTools: this copy is one of the tools; it removes them at its end.
-    $uninstallArgs = @{ GameDir = $game; Force = $true }
-    if ($RemoveData) { $uninstallArgs.RemoveData = $true }
-    if ($InstalledCopy) { $uninstallArgs.KeepTools = $true }
-    & (Join-Path $PSScriptRoot 'dev-uninstall.ps1') @uninstallArgs
-    $code = $LASTEXITCODE
+    $done = $false
+    if ($InstalledCopy) {
+        $tools = @(Get-ToolRecords $game)
+        # No manifest and nothing of the install left: an earlier uninstall
+        # did the work and only this copy is left (see Get-ToolRecords).
+        $manifestPath = Join-Path $game "$($script:AcdbDataDirName)\install\dev-manifest.json"
+        if (-not (Test-Path -LiteralPath $manifestPath) -and -not (Test-InstallLeft $game)) {
+            $running = @(Get-RunningGame)
+            if ($running.Count -gt 0) {
+                Stop-Refused "$($script:AcdbGameExe) is running (pid $(($running | ForEach-Object { $_.Id }) -join ', ')). Close Assetto Corsa first."
+            }
+            Say "ac-dlssg is already uninstalled from $game; only the uninstaller and the log collector are left, and they are removed at the end."
+            $done = $true
+            $code = 0
+        }
+    }
+    if (-not $done) {
+        # -Force: a dxgi.dll that is not the recorded bridge stays, the rest goes.
+        # -KeepTools: this copy is one of the tools; it removes them at its end.
+        $uninstallArgs = @{ GameDir = $game; Force = $true }
+        if ($RemoveData) { $uninstallArgs.RemoveData = $true }
+        if ($InstalledCopy) { $uninstallArgs.KeepTools = $true }
+        & (Join-Path $PSScriptRoot 'dev-uninstall.ps1') @uninstallArgs
+        $code = $LASTEXITCODE
+    }
 } catch {
     $code = 1
     if (Test-IsRefusal $_) {

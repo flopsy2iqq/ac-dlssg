@@ -1818,7 +1818,9 @@ function Get-TreeState([string]$Dir) {
 
 # The uninstaller and log collector that the package install puts into
 # <game>\ac-dlssg, each with the repository file it is a copy of; the package
-# carries them in files\ac-dlssg.
+# carries them in files\ac-dlssg. scripts\tools.json has no repository
+# file: make-test-package.ps1 writes it, the list of the others with their
+# hashes.
 $toolSources = [ordered]@{
     'ac-dlssg\uninstall.bat'               = 'package\installed\uninstall.bat'
     'ac-dlssg\collect-logs.bat'            = 'package\installed\collect-logs.bat'
@@ -1827,6 +1829,7 @@ $toolSources = [ordered]@{
     'ac-dlssg\scripts\dev-common.ps1'      = 'dev-common.ps1'
     'ac-dlssg\scripts\collect-logs.ps1'    = 'collect-logs.ps1'
     'ac-dlssg\scripts\collect-sysinfo.ps1' = 'collect-sysinfo.ps1'
+    'ac-dlssg\scripts\tools.json'          = $null
 }
 $toolRels = @($toolSources.Keys | Sort-Object)
 
@@ -1842,11 +1845,19 @@ function Get-ToolFiles([string]$Game) {
     return @($found | Sort-Object)
 }
 
-# True when <game>\ac-dlssg holds exactly the tool files, each a copy of its repository file.
+# True when <game>\ac-dlssg holds exactly the tool files, each a copy of its
+# repository file, and scripts\tools.json lists each of those with its hash.
 function Test-ToolsInstalled([string]$Game) {
     if ((@(Get-ToolFiles $Game) -join '|') -ne ($toolRels -join '|')) { return $false }
     foreach ($rel in $toolRels) {
-        if ((Get-Sha (Join-Path $Game $rel)) -ne (Get-Sha (Join-Path $tools $toolSources[$rel]))) { return $false }
+        if ($toolSources[$rel]) {
+            if ((Get-Sha (Join-Path $Game $rel)) -ne (Get-Sha (Join-Path $tools $toolSources[$rel]))) { return $false }
+            continue
+        }
+        $list = Read-Manifest (Join-Path $Game $rel)
+        $want = @($toolRels | Where-Object { $toolSources[$_] } | ForEach-Object { "$_|$(Get-Sha (Join-Path $tools $toolSources[$_]))" } | Sort-Object)
+        $got = @($list.files | ForEach-Object { "$($_.path)|$($_.sha256)" } | Sort-Object)
+        if (($got -join "`n") -ne ($want -join "`n")) { return $false }
     }
     return $true
 }
@@ -2768,6 +2779,87 @@ Invoke-Case 'IT9: dlssg_for_sm86 already installed: no download; changed or miss
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
     Check ($r.Code -eq 0 -and $r.Text -match 'copying .*dlssg_sm86\.ini \(-SpoofSourceDir' -and $r.Text -notmatch 'copying .*version\.dll') 'a missing dlssg_sm86.ini is fetched again, version.dll is not'
     Check (Test-SpoofInstalled $game) 'both are in place again'
+}
+
+# The state the installed uninstall.bat leaves when its window is closed at
+# "Press Enter to exit" (or when an older package's uninstaller undid the
+# install): the uninstall is done and the manifest gone, but uninstall.bat,
+# collect-logs.bat and scripts\ are still there.
+Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt, or whose install was undone otherwise, still removes itself' {
+    $pkg = New-PackageCopy 'IT10'
+    $game = New-FakeGame "IT10 $cyrName" -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0 -and (Test-ToolsInstalled $game)) 'install exits 0 with the tools'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake log`r`n"
+    # The installed uninstall.bat in a hidden console window of its own, with
+    # console input, so that it waits at "Press Enter to exit"; once the
+    # uninstall is done, the window's processes are killed, as closing the
+    # window does.
+    $bat = Join-Path $game 'ac-dlssg\uninstall.bat'
+    $manifest = Get-ManifestPath $game
+    $window = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList ('/d /c ""' + $bat + '" -NoElevate"') `
+        -WorkingDirectory $FakeRoot -WindowStyle Hidden -PassThru
+    $deadline = (Get-Date).AddSeconds(300)
+    while ((Test-Path -LiteralPath $manifest) -and -not $window.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    Start-Sleep -Seconds 3
+    Check (-not $window.HasExited -and -not (Test-Path -LiteralPath $manifest)) 'the uninstall is done and waits at "Press Enter to exit"'
+    & taskkill.exe /PID $window.Id /T /F | Out-Null
+    [void]$window.WaitForExit(30000)
+    Check (Test-ToolsInstalled $game) 'the window is closed there: uninstall.bat, collect-logs.bat and scripts\ are still in <game>\ac-dlssg'
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and $r.Text -match 'already uninstalled') "uninstall.bat again exits 0 and says that ac-dlssg is already uninstalled (exit code $($r.Code))"
+    Check ($r.StdErr.Trim().Length -eq 0) "nothing on stderr ($($r.StdErr.Trim()))"
+    Check ((Test-NoTools $game) -and $r.Text -match 'removed the uninstaller') 'it removes uninstall.bat, collect-logs.bat and scripts\, and says so'
+    $left = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg') -Recurse -Force | ForEach-Object { $_.FullName.Substring($game.Length + 1) } | Sort-Object)
+    $keep = @('ac-dlssg\ac-dlssg.ini', 'ac-dlssg\logs', 'ac-dlssg\logs\bridge.log') | Sort-Object
+    Check (($left -join '|') -eq ($keep -join '|')) "the settings and the logs stay ($($left -join ', '))"
+
+    # The same state, with -RemoveData: the whole <game>\ac-dlssg goes. The
+    # installed dev-uninstall.ps1 -KeepTools is what the uninstall does
+    # before its Enter prompt.
+    $pkg = New-PackageCopy 'IT10b'
+    $game = New-FakeGame "IT10b $cyrName" -NoDxgi
+    $before = Get-TreeState $game
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the second install exits 0'
+    Check (Remove-PackageFolder $pkg) 'its unpacked package folder is deleted'
+    $r = Invoke-Tool (Join-Path $game 'ac-dlssg\scripts\dev-uninstall.ps1') @('-GameDir', $game, '-Force', '-KeepTools', '-RemoveData')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath $manifest) -and (Test-ToolsInstalled $game)) 'the uninstall up to the Enter prompt leaves only the tools'
+    $r = Invoke-InstalledUninstall $game @('-RemoveData', '-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and $r.StdErr.Trim().Length -eq 0) "uninstall.bat -RemoveData then exits 0, nothing on stderr ($($r.StdErr.Trim()))"
+    Check ((Get-TreeState $game) -eq $before) 'the game folder is byte-identical to before the install, <game>\ac-dlssg is gone'
+
+    # An older package installed over this one: its manifest (schema 4)
+    # records no tools, but they are still there. The installed uninstall.bat
+    # undoes the install and removes them by the list next to its scripts.
+    $pkg = New-PackageCopy 'IT10c'
+    $game = New-FakeGame "IT10c $cyrName" -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the third install exits 0'
+    $m = Get-Manifest $game
+    $m.schema = 4
+    [void]$m.PSObject.Properties.Remove('tools')
+    Set-Manifest $game $m
+    Check (Remove-PackageFolder $pkg) 'its unpacked package folder is deleted'
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and $r.StdErr.Trim().Length -eq 0) "uninstall.bat exits 0 over a manifest without tools, nothing on stderr ($($r.StdErr.Trim()))"
+    Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game)) -and -not (Test-Path -LiteralPath (Get-SlDir $game)) -and -not (Test-Path -LiteralPath $manifest)) 'the install is undone'
+    Check ((Test-NoTools $game) -and $r.Text -match 'removed the uninstaller') 'and the tools are gone, too'
+
+    # Without any record of the tools nothing is removed, and the uninstaller
+    # does not claim otherwise.
+    $pkg = New-PackageCopy 'IT10d'
+    $game = New-FakeGame 'IT10d' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    Check ($r.Code -eq 0) 'the fourth install exits 0'
+    $m = Get-Manifest $game
+    [void]$m.PSObject.Properties.Remove('tools')
+    Set-Manifest $game $m
+    Remove-Item -LiteralPath (Join-Path $game 'ac-dlssg\scripts\tools.json')
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and $r.Text -notmatch 'removed the uninstaller' -and $r.Text -match 'by hand') 'without a record of its files it removes none of them, and says to delete them by hand'
+    Check (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\uninstall.bat')) 'uninstall.bat stays'
 }
 
 # ---------------------------------------------------------------------------

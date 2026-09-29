@@ -17,8 +17,9 @@
                          install: uninstall.bat and collect-logs.bat (from
                          tools\package\installed; they work on the game folder
                          they are in) and scripts\ with uninstall.ps1,
-                         dev-uninstall.ps1, dev-common.ps1, collect-logs.ps1 and
-                         collect-sysinfo.ps1
+                         dev-uninstall.ps1, dev-common.ps1, collect-logs.ps1,
+                         collect-sysinfo.ps1 and tools.json (the list of these
+                         files with their SHA-256, written here)
     scripts\install.ps1  tools\package\install.ps1: finds the game through
                          Steam, starts itself again with administrator rights
                          when the game folder needs them, gets Streamline with
@@ -154,6 +155,13 @@ try {
     foreach ($f in @('dev-uninstall.ps1', 'dev-common.ps1', 'collect-logs.ps1', 'collect-sysinfo.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $f) -Destination (Join-Path $gameScripts $f)
     }
+    # The list of those files with their SHA-256, paths relative to the game
+    # folder, as the manifest names them: the uninstaller in the game folder
+    # removes its own files by it when the manifest records none.
+    $toolList = @(Get-ChildItem -LiteralPath $gameTools -File -Recurse | Sort-Object FullName | ForEach-Object {
+            [ordered]@{ path = "$($script:AcdbDataDirName)\$($_.FullName.Substring($gameTools.Length + 1))"; sha256 = (Get-Sha256OfFile $_.FullName) }
+        })
+    Write-Utf8NoBom (Join-Path $gameScripts $script:AcdbToolsListName) ([ordered]@{ files = $toolList } | ConvertTo-Json -Depth 4)
     # The CSP Lua app; scripts\install.ps1 passes files\apps\lua\AcDlssg to dev-install.ps1.
     $luaSource = Join-Path $repo 'apps\lua\AcDlssg'
     if (-not (Test-Path -LiteralPath (Join-Path $luaSource 'manifest.ini') -PathType Leaf)) { throw "the CSP Lua app is missing: $luaSource" }
