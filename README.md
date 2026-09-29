@@ -1,4 +1,4 @@
-[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Install](https://img.shields.io/badge/-Install-brightgreen)](docs/INSTALL.md)
+[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Install](https://img.shields.io/badge/-Install-brightgreen)](docs/INSTALL.md) [![Support](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
 
 # ac-dlssg
 
@@ -128,6 +128,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 - [NVIDIA Streamline](https://github.com/NVIDIA-RTX/Streamline): the SDK that delivers DLSS Frame Generation and Reflex. Its DLLs are downloaded from NVIDIA's release on your PC.
 - [dlss5-bridge](https://github.com/NIGos/dlss5-bridge) (MIT): the approach for hooking CSP's DLSS call.
 - [open-shaders](https://github.com/alandtse/open-shaders) and [Community Shaders](https://github.com/doodlum/skyrim-community-shaders): the DirectX 11 game plus DirectX 12 Streamline swap chain design.
+
+## Support
+
+ac-dlssg is free, and every feature stays free. If you want to thank the author, you can [buy a coffee on Ko-fi](https://ko-fi.com/flopsy2iq). It is optional.
 
 ## License
 
