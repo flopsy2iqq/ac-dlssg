@@ -38,7 +38,9 @@ struct Config {
     // (AutoVramHeadroomMib), and a 2X shortfall within VramTightToleranceMib
     // turns DLSS-G on anyway as "tight". A number 0..65536 clears it and is
     // the headroom, with the guard as before auto existed (a 512 kept DLSS-G
-    // off on the 4 GB RTX 3050 Ti laptop: 346 MiB free for 283 MiB).
+    // off on the 4 GB RTX 3050 Ti laptop: 346 MiB free for 283 MiB). A
+    // number that keeps DLSS-G off where auto would run it is switched to
+    // auto by the presenter and saved as auto (DecideVramHeadroom).
     bool fg_vram_headroom_auto = true;  // fg_vram_headroom_mib=auto
     unsigned fg_vram_headroom_mib = 0;  // fg_vram_headroom_mib=<MiB>, used when not auto
     // When the process bound VERSION.dll to System32 (Windows 11 25H2), the

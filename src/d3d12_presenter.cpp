@@ -375,6 +375,7 @@ struct D3D12Presenter::Impl {
     uint32_t save_counter = 0;     // requestCounter of the last "Save as default"
     bool save_ok = false;
     std::string restart_note;      // StatusLayout::restartNote (PanelRestartNote)
+    std::string autofix_note;      // StatusLayout::autoFixNote (SwitchHeadroomToAuto)
     bool panel_published = false;  // the status holds this presenter's record
     bool published_mode_on = false;
     bool published_user_on = false;
@@ -420,6 +421,7 @@ struct D3D12Presenter::Impl {
     DlssgSizeHints Hints() const;
     FrameDecision Decide(const FrameCapture& cap);
     void RunVramCheck(unsigned wanted);  // records the result in vram_guard
+    void SwitchHeadroomToAuto();
     bool SetMode(bool on);
     void ApplyPendingMultiplier();
     void QueryFramesMax();
@@ -914,6 +916,7 @@ void D3D12Presenter::Impl::PublishStatus() {
         CopyText(s.fgMultNote, multNote);
         CopyText(s.vramNote, vram_note);
         CopyText(s.restartNote, restart_note);
+        CopyText(s.autoFixNote, autofix_note);
     });
 }
 
@@ -1035,7 +1038,11 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
 // DLSS-G already holds has to fit (DecideVram). A failed estimate checks the
 // headroom only (review findings SL-6 and F2). The checks are logged at INFO
 // when the outcome changes and at DEBUG otherwise, so a lasting refusal is
-// not logged every 60 frames.
+// not logged every 60 frames. A number as fg_vram_headroom_mib that keeps
+// DLSS-G off where auto, with the same estimates, budget and usage, would run
+// it (DecideVramHeadroom) is switched to auto at once: the number's checks
+// are logged at INFO, then SwitchHeadroomToAuto, then auto's checks, whose
+// decision the guard records.
 void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
     std::string why;
     uint64_t usage = 0;
@@ -1043,15 +1050,16 @@ void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
     const bool budgetKnown = QueryVramBytes(adapter3.Get(), &usage, &budget, &why);
     struct Checked {
         unsigned multiplier = 2;
+        bool autoHeadroom = false;  // in.headroomMib is AutoVramHeadroomMib of the budget
         VramInputs in;
         VramCheck check;
     };
-    const bool autoHeadroom = config.fg_vram_headroom_auto;
-    const unsigned headroom = VramHeadroomMib(autoHeadroom, config.fg_vram_headroom_mib, budget);
+    const unsigned autoMib = AutoVramHeadroomMib(budget);
     const auto checkAt = [&](unsigned m) {
         Checked c;
         c.multiplier = m;
-        c.in.headroomMib = headroom;
+        c.autoHeadroom = config.fg_vram_headroom_auto;
+        c.in.headroomMib = VramHeadroomMib(c.autoHeadroom, config.fg_vram_headroom_mib, budget);
         c.in.budgetKnown = budgetKnown;
         c.in.budgetBytes = budget;
         c.in.usageBytes = usage;
@@ -1074,18 +1082,14 @@ void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
         c.check = DecideVram(c.in);
         return c;
     };
-    const Checked atWanted = checkAt(wanted);
-    Checked at2x;
-    const bool asked2x = !atWanted.check.ok && wanted > 2;
-    if (asked2x) at2x = checkAt(2);
-    const VramMultiplierDecision d =
-        DecideVramMultiplier(wanted, atWanted.check, asked2x ? &at2x.check : nullptr, autoHeadroom);
-    const bool changed = vram_guard.Record(frame_index, d.check, wanted, d.multiplier, d.tight);
-    vram_fallback = d.fallback;
-    if (changed || vram_note != d.note) status_due = true;  // the panel shows the note at once
-    vram_note = d.note;
-    const LogLevel level = changed ? LogLevel::Info : LogLevel::Debug;
-    const auto logCheck = [&](const Checked& c) {
+    // The same estimates, budget and usage with auto's headroom.
+    const auto withAuto = [&](Checked c) {
+        c.autoHeadroom = true;
+        c.in.headroomMib = autoMib;
+        c.check = DecideVram(c.in);
+        return c;
+    };
+    const auto logCheck = [&](const Checked& c, LogLevel level) {
         char estimate[32] = "n/a";
         if (c.in.estimateOk)
             std::snprintf(estimate, sizeof(estimate), "%llu MiB",
@@ -1102,16 +1106,67 @@ void D3D12Presenter::Impl::RunVramCheck(unsigned wanted) {
         LogWrite(level,
                  "fg: video memory check at %uX: DLSS-G estimate %s%s + headroom %u MiB%s, budget %llu MiB, usage "
                  "%llu MiB: %s; VSync with DLSS-G %s",
-                 c.multiplier, estimate, held, c.in.headroomMib, autoHeadroom ? " (auto)" : "",
+                 c.multiplier, estimate, held, c.in.headroomMib, c.autoHeadroom ? " (auto)" : "",
                  static_cast<unsigned long long>(budget / (1024 * 1024)),
                  static_cast<unsigned long long>(usage / (1024 * 1024)), c.check.ok ? "ok" : c.check.reason.c_str(),
                  vsync_available ? "available" : "not available");
     };
-    logCheck(atWanted);
-    if (asked2x) logCheck(at2x);
+    Checked atWanted = checkAt(wanted);
+    Checked at2x;
+    bool asked2x = !atWanted.check.ok && wanted > 2;
+    if (asked2x) at2x = checkAt(2);
+    VramMultiplierDecision d =
+        DecideVramMultiplier(wanted, atWanted.check, asked2x ? &at2x.check : nullptr, atWanted.autoHeadroom);
+    if (!atWanted.autoHeadroom && !d.check.ok) {
+        // Spec 6.11: would auto run DLSS-G where the number keeps it off?
+        // atWanted refused, so a higher wanted multiplier has its 2X check.
+        const Checked autoWanted = withAuto(atWanted);
+        const bool auto2x = asked2x && !autoWanted.check.ok;
+        const Checked autoAt2x = auto2x ? withAuto(at2x) : Checked{};
+        const VramMultiplierDecision withAutoDecision =
+            DecideVramMultiplier(wanted, autoWanted.check, auto2x ? &autoAt2x.check : nullptr, true);
+        if (DecideVramHeadroom(false, d, withAutoDecision) == VramHeadroomAction::SwitchToAuto) {
+            logCheck(atWanted, LogLevel::Info);
+            if (asked2x) logCheck(at2x, LogLevel::Info);
+            SwitchHeadroomToAuto();
+            atWanted = autoWanted;
+            at2x = autoAt2x;
+            asked2x = auto2x;
+            d = withAutoDecision;
+        }
+    }
+    const bool changed = vram_guard.Record(frame_index, d.check, wanted, d.multiplier, d.tight);
+    vram_fallback = d.fallback;
+    if (changed || vram_note != d.note) status_due = true;  // the panel shows the note at once
+    vram_note = d.note;
+    const LogLevel level = changed ? LogLevel::Info : LogLevel::Debug;
+    logCheck(atWanted, level);
+    if (asked2x) logCheck(at2x, level);
     if (!d.fallback.empty()) LogWrite(level, "fg: %s", d.fallback.c_str());
     // fg_vram_headroom_mib=auto: DLSS-G on although 2X falls a little short.
     if (d.tight) LogWrite(level, "fg: %s", d.note.c_str());
+}
+
+// Spec 6.11: a number as fg_vram_headroom_mib kept DLSS-G off where auto
+// runs it. The session uses auto from now on, auto is written into
+// ac-dlssg.ini key by key (every line of the key in [bridge]), and the
+// panel's autoFixNote says so; a failed save still leaves auto for the
+// session. Once per session: afterwards the config says auto (and only one
+// presenter per process runs Streamline, spec 6.3 "Final Release").
+void D3D12Presenter::Impl::SwitchHeadroomToAuto() {
+    const unsigned number = config.fg_vram_headroom_mib;
+    config.fg_vram_headroom_auto = true;
+    config.fg_vram_headroom_mib = 0;  // as ParseConfig leaves it for auto
+    std::string err = "no ac-dlssg.ini path";
+    const bool saved =
+        !config_path.empty() && WriteIniKeys(config_path, "bridge", {{"fg_vram_headroom_mib", "auto"}}, &err);
+    const std::string line = VramHeadroomSwitchLog(number, saved, err);
+    if (saved)
+        LOGI("fg: %s", line.c_str());
+    else
+        LOGW("fg: %s", line.c_str());
+    autofix_note = VramHeadroomSwitchNote(number, saved, err);
+    status_due = true;  // the panel shows the note at the end of this frame
 }
 
 // slDLSSGSetOptions only when the mode, or while on the size hints or the

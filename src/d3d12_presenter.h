@@ -146,6 +146,17 @@ struct PresenterCreateInfo {
 //    anyway (fg_vram_headroom_mib=auto)" at INFO once per change; a larger
 //    one keeps it off with "not enough video memory: ..." as the reason
 //    (DecideVramMultiplier). The guard's note is the status' vramNote.
+//    A number that keeps DLSS-G off where auto, with the same estimates,
+//    budget and usage, would run it (DecideVramHeadroom) is switched to auto
+//    in the same check, so DLSS-G turns on without a restart: the number's
+//    check lines at INFO, then "fg: fg_vram_headroom_mib=<h> kept frame
+//    generation off; switched to auto and saved it to ac-dlssg.ini" (INFO;
+//    WriteIniKeys on env.config_path, every line of the key in [bridge]) or,
+//    when the save fails, "...; switched to auto until the game is closed;
+//    could not save ac-dlssg.ini: <why>" (WARN), then auto's check lines;
+//    the status' autoFixNote says so for the rest of the session
+//    (VramHeadroomSwitchNote). Once per presenter: the config says auto
+//    from then on.
 //  - the options carry numFramesToGenerate = the multiplier used - 1, and
 //    are sent only when the mode changes or, while on, the hints or the
 //    count change (DlssgOptionsDue); a new count while on sets reset for
@@ -175,8 +186,9 @@ struct PresenterCreateInfo {
 //  - the status is published again after every statistics line (fps, bridge
 //    GPU ms, video memory, per-second counts), at the end of every frame
 //    whose DLSS-G mode or user switch changed, and at the end of a frame
-//    that changed the multiplier's request, Streamline's maximum or the
-//    video memory guard's outcome or note; the final release publishes
+//    that changed the multiplier's request, Streamline's maximum, the video
+//    memory guard's outcome or note, or switched the headroom to auto; the
+//    final release publishes
 //    kPanelPassThrough, "the game's swap chain was released".
 
 class D3D12Presenter {
