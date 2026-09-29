@@ -169,13 +169,9 @@ VramCheck DecideVram(const VramInputs& in);
 // the render resolution", which is also the note. Only 2X is ever tight.
 //
 // A number (autoHeadroom false) decides as before auto existed: never tight,
-// and the refusal keeps "video memory: need <x> MiB, free <y> MiB". Its note
-// is for the panel: when auto would run DLSS-G with the same 2X estimate and
-// free memory (it fits with AutoVramHeadroomMib of the budget, or is tight),
-// "fg_vram_headroom_mib=<h> keeps frame generation off (<need> MiB needed,
-// <free> MiB free): set it to auto in ac-dlssg.ini and restart the game",
-// since lowering the textures is not what helps there; else the actionable
-// text above.
+// and the refusal keeps "video memory: need <x> MiB, free <y> MiB"; its note
+// is the actionable text above. Where auto would run DLSS-G instead, the
+// presenter switches to auto (DecideVramHeadroom), so no note asks for it.
 struct VramMultiplierDecision {
     VramCheck check;          // ok, or the refusal DLSS-G stays off with (2X's when both were made)
     unsigned multiplier = 2;  // the multiplier the guard allows
