@@ -226,7 +226,7 @@ local STATUS_VERSION = 1
 
 local STATUS_LAYOUT = [[
   uint32_t magic; uint32_t version; uint32_t seq; uint32_t heartbeat;
-  uint32_t ownerPid; uint32_t bridgeState; uint32_t mode; uint32_t fgOn; uint32_t fgUserOn;
+  uint32_t ownerPid; uint32_t bridgeState; uint32_t mode; uint32_t fgOn; uint32_t fgUserOn; uint32_t fgPaused;
   uint32_t spoofLoaded; uint32_t rtx30; uint32_t vsyncNote; uint32_t driverWarning;
   uint32_t cameraFlipHandedness; uint32_t cameraNegateSide; uint32_t startWithFg;
   uint32_t controlApplied; uint32_t saveCounter; uint32_t saveOk;
@@ -277,6 +277,8 @@ local TEXT_NOT_RUNNING_HINT = 'No status from ac-dlssg. Check that it is install
   .. ' game folder\'s dxgi.dll in standalone mode) and enabled in ac-dlssg\\ac-dlssg.ini, then see'
   .. ' ac-dlssg\\logs\\bridge.log in the game folder.'
 local TEXT_STOPPED_HINT = 'The bridge stopped publishing its status. See ac-dlssg\\logs\\bridge.log in the game folder.'
+local TEXT_PAUSED = 'On, but paused: no frames were generated in the last second (Streamline pauses frame'
+  .. ' generation while the game window is not focused)'
 local TEXT_VSYNC = 'VSync is not available with frame generation here: presenting without VSync (the borderless'
   .. ' window stays tear-free).'
 
@@ -290,7 +292,7 @@ local desired = { fg = false, flip = false, negate = false }
 
 local function newStatus()
   return {
-    valid = false, heartbeat = 0, bridgeState = STATE_NOT_LOADED, mode = 0, fgOn = 0, fgUserOn = 0,
+    valid = false, heartbeat = 0, bridgeState = STATE_NOT_LOADED, mode = 0, fgOn = 0, fgUserOn = 0, fgPaused = 0,
     spoofLoaded = 0, rtx30 = 0, vsyncNote = 0, driverWarning = 0, cameraFlipHandedness = 0, cameraNegateSide = 0,
     startWithFg = 0, controlApplied = 0, saveCounter = 0, saveOk = 0, baseFps = 0, presentedFps = 0,
     bridgeGpuMs = -1, vramUsageMib = 0, vramBudgetMib = 0, capturesPerSec = 0, cameraFreshPerSec = 0,
@@ -360,6 +362,7 @@ local function readStatus()
     c.mode = st.mode
     c.fgOn = st.fgOn
     c.fgUserOn = st.fgUserOn
+    c.fgPaused = st.fgPaused
     c.spoofLoaded = st.spoofLoaded
     c.rtx30 = st.rtx30
     c.vsyncNote = st.vsyncNote
@@ -434,7 +437,9 @@ end
 
 local function rebuildTexts()
   local s = status
-  if s.fgOn ~= 0 then
+  if s.fgOn ~= 0 and s.fgPaused ~= 0 then
+    texts.status = TEXT_PAUSED
+  elseif s.fgOn ~= 0 then
     texts.status = 'On: frame generation is running'
   else
     texts.status = 'Off: ' .. s.reason
@@ -560,7 +565,10 @@ function script.windowMain(dt)
   if clicked and available then sendRequest(not on, currentFlip(), currentNegate(), false) end
   if not available then ui.textWrapped(texts.unavailable) end
 
-  ui.textColored(texts.status, s.fgOn ~= 0 and COLOR_GOOD or COLOR_WARN)
+  -- Wrapped: an off reason or the pause note is longer than the window is wide.
+  ui.pushStyleColor(ui.StyleColor.Text, (s.fgOn ~= 0 and s.fgPaused == 0) and COLOR_GOOD or COLOR_WARN)
+  ui.textWrapped(texts.status)
+  ui.popStyleColor(1)
   ui.text(texts.fps)
   ui.text(texts.gpuMs)
   if vramLevel == 0 then

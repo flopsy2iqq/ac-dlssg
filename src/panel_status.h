@@ -61,6 +61,8 @@ struct StatusLayout {
     uint32_t mode;        // PanelModeCode
     uint32_t fgOn;        // Streamline has DLSS-G on
     uint32_t fgUserOn;    // the user's switch: start_with_fg, then the hotkey and the panel
+    uint32_t fgPaused;    // fgOn, but Streamline generated no frame in the last statistics second
+                          // (it pauses DLSS-G while the game window is not focused): FgPausedInSecond
     uint32_t spoofLoaded; // dlssg_for_sm86's version.dll is loaded from the game folder
     uint32_t rtx30;       // the render GPU is an SM86 Ampere chip (RTX 30)
     uint32_t vsyncNote;   // VSync was asked for but is not available with DLSS-G here
@@ -87,7 +89,7 @@ struct StatusLayout {
     char bridgeVersion[32];               // ACDB_VERSION
 };
 
-static_assert(sizeof(StatusLayout) == 812);
+static_assert(sizeof(StatusLayout) == 816);
 static_assert(alignof(StatusLayout) == 4);
 static_assert(offsetof(StatusLayout, magic) == 0);
 static_assert(offsetof(StatusLayout, version) == 4);
@@ -98,30 +100,31 @@ static_assert(offsetof(StatusLayout, bridgeState) == 20);
 static_assert(offsetof(StatusLayout, mode) == 24);
 static_assert(offsetof(StatusLayout, fgOn) == 28);
 static_assert(offsetof(StatusLayout, fgUserOn) == 32);
-static_assert(offsetof(StatusLayout, spoofLoaded) == 36);
-static_assert(offsetof(StatusLayout, rtx30) == 40);
-static_assert(offsetof(StatusLayout, vsyncNote) == 44);
-static_assert(offsetof(StatusLayout, driverWarning) == 48);
-static_assert(offsetof(StatusLayout, cameraFlipHandedness) == 52);
-static_assert(offsetof(StatusLayout, cameraNegateSide) == 56);
-static_assert(offsetof(StatusLayout, startWithFg) == 60);
-static_assert(offsetof(StatusLayout, controlApplied) == 64);
-static_assert(offsetof(StatusLayout, saveCounter) == 68);
-static_assert(offsetof(StatusLayout, saveOk) == 72);
-static_assert(offsetof(StatusLayout, baseFps) == 76);
-static_assert(offsetof(StatusLayout, presentedFps) == 80);
-static_assert(offsetof(StatusLayout, bridgeGpuMs) == 84);
-static_assert(offsetof(StatusLayout, vramUsageMib) == 88);
-static_assert(offsetof(StatusLayout, vramBudgetMib) == 92);
-static_assert(offsetof(StatusLayout, capturesPerSec) == 96);
-static_assert(offsetof(StatusLayout, cameraFreshPerSec) == 100);
-static_assert(offsetof(StatusLayout, taggedPerSec) == 104);
-static_assert(offsetof(StatusLayout, reason) == 108);
-static_assert(offsetof(StatusLayout, stateReason) == 268);
-static_assert(offsetof(StatusLayout, warning) == 524);
-static_assert(offsetof(StatusLayout, gpuName) == 684);
-static_assert(offsetof(StatusLayout, hotkey) == 748);
-static_assert(offsetof(StatusLayout, bridgeVersion) == 780);
+static_assert(offsetof(StatusLayout, fgPaused) == 36);
+static_assert(offsetof(StatusLayout, spoofLoaded) == 40);
+static_assert(offsetof(StatusLayout, rtx30) == 44);
+static_assert(offsetof(StatusLayout, vsyncNote) == 48);
+static_assert(offsetof(StatusLayout, driverWarning) == 52);
+static_assert(offsetof(StatusLayout, cameraFlipHandedness) == 56);
+static_assert(offsetof(StatusLayout, cameraNegateSide) == 60);
+static_assert(offsetof(StatusLayout, startWithFg) == 64);
+static_assert(offsetof(StatusLayout, controlApplied) == 68);
+static_assert(offsetof(StatusLayout, saveCounter) == 72);
+static_assert(offsetof(StatusLayout, saveOk) == 76);
+static_assert(offsetof(StatusLayout, baseFps) == 80);
+static_assert(offsetof(StatusLayout, presentedFps) == 84);
+static_assert(offsetof(StatusLayout, bridgeGpuMs) == 88);
+static_assert(offsetof(StatusLayout, vramUsageMib) == 92);
+static_assert(offsetof(StatusLayout, vramBudgetMib) == 96);
+static_assert(offsetof(StatusLayout, capturesPerSec) == 100);
+static_assert(offsetof(StatusLayout, cameraFreshPerSec) == 104);
+static_assert(offsetof(StatusLayout, taggedPerSec) == 108);
+static_assert(offsetof(StatusLayout, reason) == 112);
+static_assert(offsetof(StatusLayout, stateReason) == 272);
+static_assert(offsetof(StatusLayout, warning) == 528);
+static_assert(offsetof(StatusLayout, gpuName) == 688);
+static_assert(offsetof(StatusLayout, hotkey) == 752);
+static_assert(offsetof(StatusLayout, bridgeVersion) == 784);
 
 struct ControlLayout {
     uint32_t magic;           // kControlMagic once the app has written a request

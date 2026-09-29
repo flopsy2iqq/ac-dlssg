@@ -44,6 +44,7 @@ const FieldSpec kStatusFields[] = {
     STATUS_FIELD("uint32_t", mode, 1),
     STATUS_FIELD("uint32_t", fgOn, 1),
     STATUS_FIELD("uint32_t", fgUserOn, 1),
+    STATUS_FIELD("uint32_t", fgPaused, 1),
     STATUS_FIELD("uint32_t", spoofLoaded, 1),
     STATUS_FIELD("uint32_t", rtx30, 1),
     STATUS_FIELD("uint32_t", vsyncNote, 1),
@@ -726,6 +727,25 @@ TEST(PanelReason_OnThenTheUsersSwitchThenTheGate) {
           "off by the user (panel)");
     CHECK(PanelReason(false, true, "off by the user (panel)", "game paused") == "game paused");
     CHECK(PanelReason(false, true, "off by the user (panel)", "") == "off");
+}
+
+// Streamline pauses DLSS-G while the game window is not focused ("DLSS-G
+// disabled: window not focused" in sl.log) and then generates nothing with
+// the mode still eOn; the M3 run had minutes of that. The status then says
+// so instead of "running": a statistics second in which DLSS-G was on for
+// at least half of the Presents, slDLSSGGetState answered, and no frame was
+// generated. The first second after an enable (DLSS-G on for one Present)
+// is not a pause.
+TEST(PanelStatus_DlssgOnWithoutGeneratedFramesIsAPause) {
+    CHECK(FgPausedInSecond(52, 31, 0, true));
+    CHECK(FgPausedInSecond(52, 52, 0, true));
+    CHECK(!FgPausedInSecond(52, 52, 51, true));
+    CHECK(!FgPausedInSecond(52, 52, 1, true));
+    CHECK(!FgPausedInSecond(56, 1, 0, true));   // the first second after the enable
+    CHECK(!FgPausedInSecond(52, 25, 0, true));  // on for less than half the second
+    CHECK(!FgPausedInSecond(52, 0, 0, true));   // DLSS-G off
+    CHECK(!FgPausedInSecond(52, 52, 0, false)); // slDLSSGGetState never answered: unknown
+    CHECK(!FgPausedInSecond(0, 0, 0, true));
 }
 
 TEST(PanelText_HotkeyTextNamesTheChord) {

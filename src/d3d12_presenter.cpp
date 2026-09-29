@@ -381,6 +381,7 @@ struct D3D12Presenter::Impl {
         float capturesPerSec = 0;
         float cameraFreshPerSec = 0;
         float taggedPerSec = 0;
+        bool fgPaused = false;  // FgPausedInSecond of the last statistics second
     } panel_numbers;
 
     struct FrameDecision {
@@ -860,6 +861,7 @@ void D3D12Presenter::Impl::PublishStatus() {
         s.bridgeState = sl && fg_supported ? kPanelFgAvailable : kPanelProxyNoFg;
         s.fgOn = mode_on ? 1u : 0u;
         s.fgUserOn = fg_user_on ? 1u : 0u;
+        s.fgPaused = mode_on && n.fgPaused ? 1u : 0u;
         s.spoofLoaded = env.spoof_loaded ? 1u : 0u;
         s.rtx30 = rtx30 ? 1u : 0u;
         s.vsyncNote = vsync_note ? 1u : 0u;
@@ -890,6 +892,7 @@ void D3D12Presenter::Impl::PublishReleased() {
     panel_status->Update([](StatusLayout& s) {
         s.bridgeState = kPanelPassThrough;
         s.fgOn = 0;
+        s.fgPaused = 0;
         s.baseFps = s.presentedFps = 0;
         s.bridgeGpuMs = -1;
         s.capturesPerSec = s.cameraFreshPerSec = s.taggedPerSec = 0;
@@ -1726,6 +1729,7 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     pn.capturesPerSec = static_cast<float>(stats_captures / seconds);
     pn.cameraFreshPerSec = static_cast<float>(stats_camera_fresh / seconds);
     pn.taggedPerSec = static_cast<float>(stats_tagged / seconds);
+    pn.fgPaused = FgPausedInSecond(stats_presents, stats_fg_frames, stats_generated, polled_state);
     status_due = true;
     stats_captures = stats_camera_fresh = stats_tagged = stats_fg_frames = stats_double = 0;
     stats_generated = 0;

@@ -163,6 +163,7 @@ void PublishPassThrough(const std::string& reason, const RenderAdapter& adapter)
     PanelStatusChannel::Get().Update([&](StatusLayout& s) {
         s.bridgeState = kPanelPassThrough;
         s.fgOn = 0;
+        s.fgPaused = 0;
         s.rtx30 = adapter.known && IsAmpereSm86(adapter.vendor_id, adapter.device_id) ? 1u : 0u;
         CopyText(s.gpuName, adapter.known ? adapter.description : std::string());
         CopyText(s.reason, reason);

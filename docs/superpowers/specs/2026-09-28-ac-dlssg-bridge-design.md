@@ -320,7 +320,7 @@ One UI in both modes: a normal CSP app window titled "AC DLSS-G", drawn by the L
 - **Status record.**
   - `magic`, `version`, `seq`, `heartbeat` (+1 per publish) and `ownerPid`;
   - `bridgeState`: 0 not loaded (waiting for the game's swap chain), 1 pass-through, 2 proxied without DLSS-G, 3 DLSS-G available; `stateReason` (256 chars) says why it is below 3;
-  - `fgOn` (the mode Streamline has), `fgUserOn` (the user's switch) and `reason` (160 chars): "on", or why DLSS-G is off. The user's switch comes first ("off by the user (panel)", naming what switched it off), then the gate's reason of the last frame (7 step 5.4);
+  - `fgOn` (the mode Streamline has), `fgUserOn` (the user's switch), `fgPaused` (the mode is on, but in the last statistics second DLSS-G was on for at least half of the Presents and Streamline generated no frame: it pauses interpolation while the game window is not focused) and `reason` (160 chars): "on", or why DLSS-G is off. The user's switch comes first ("off by the user (panel)", naming what switched it off), then the gate's reason of the last frame (7 step 5.4);
   - the mode (ReShade or standalone), the render GPU's name, whether the spoof is loaded and whether the GPU is an RTX 30 (SM86);
   - base fps, presented fps (generated frames included), the bridge's GPU time, the render adapter's video memory usage and budget in MiB, and captures, fresh camera snapshots and tagged frames per second;
   - the VSync-with-DLSS-G note (7 step 6), and the first driver-profile warning (6.8) as a flag and a text;
@@ -338,7 +338,7 @@ One UI in both modes: a normal CSP app window titled "AC DLSS-G", drawn by the L
   The hotkey and the panel share one state, and the status shows the result.
 - **The window.**
   - A big switch for frame generation, disabled with `stateReason` when DLSS-G is not available.
-  - The status line (on, or off and the reason), real and output fps, the bridge's GPU time, video memory used and budget (orange from 90% of the budget, red above it), the GPU with the spoof state, the mode, the hotkey, and the VSync note and driver warning when set.
+  - The status line (on, on but paused, or off and the reason; wrapped), real and output fps, the bridge's GPU time, video memory used and budget (orange from 90% of the budget, red above it), the GPU with the spoof state, the mode, the hotkey, and the VSync note and driver warning when set.
   - "Save as default".
   - A collapsible "Debug" part with the two camera switches and the per-second counts.
   - While a request is not yet applied, the window shows what was asked for.
@@ -412,7 +412,7 @@ Bridge frame N. Test presents do not take part (6.3).
 - **Start.** The game starts. ReShade loads our DLL as its `ProxyLibrary`, and `Bootstrap` runs on the first factory call. When CSP creates its swap chain, the hook either returns a `ProxySwapChain` or passes through, and logs the decision. `start_with_fg` sets the initial DLSS-G mode.
 - **Resize, fullscreen change or target resize.** Handled by 6.3. DLSS-G is switched off, and one present is issued with it off before the change.
 - **Hotkey or panel toggle.** `slDLSSGSetOptions` switches between `eOn` and `eOff` on the next Present; a panel request is read at the start of that Present (6.9). The next DLSS-G frame has `reset = eTrue`.
-- **Focus loss.** Streamline pauses interpolation when the window loses independent flip, and the panel shows it.
+- **Focus loss.** Streamline pauses interpolation while the game window is not focused, with the mode still `eOn` (`DLSS-G disabled: window not focused` in `sl.log`; in the M3 run the generated count stayed 0 for minutes at a time). The panel shows it as paused (6.9 `fgPaused`).
 - **Shutdown.** The final `Release` of `ProxySwapChain` follows the order in 6.3. After `slShutdown`, the cached Bootstrap decision becomes "not possible (Streamline already shut down)". Every later `CreateSwapChainForHwnd` passes through, and no Streamline function is called for the rest of the process. `DLL_PROCESS_DETACH` tears nothing down, because ReShade frees the ProxyLibrary under the loader lock.
 
 ## 9. Error handling

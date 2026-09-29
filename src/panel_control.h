@@ -55,6 +55,13 @@ IniKeyValues SavedDefaultKeys(const PanelSettings& settings);
 // last frame; else "off".
 std::string PanelReason(bool fgOn, bool userOn, const std::string& userOffReason, const std::string& gateReason);
 
+// StatusLayout::fgPaused for one statistics second: DLSS-G was on for at
+// least half of its Presents (so not the second of an enable), slDLSSGGetState
+// has answered (stateAnswered), and Streamline generated no frame. Streamline
+// pauses interpolation while the game window is not focused, with the mode
+// still eOn ("DLSS-G disabled: window not focused" in sl.log).
+bool FgPausedInSecond(uint32_t presents, uint32_t fgFrames, uint64_t generated, bool stateAnswered);
+
 // The hotkey as the panel shows it: "Ctrl+F10", "Ctrl+Shift+G", "Alt+5".
 std::string HotkeyText(const Hotkey& hotkey);
 

@@ -44,6 +44,10 @@ std::string PanelReason(bool fgOn, bool userOn, const std::string& userOffReason
     return "off";
 }
 
+bool FgPausedInSecond(uint32_t presents, uint32_t fgFrames, uint64_t generated, bool stateAnswered) {
+    return stateAnswered && fgFrames > 0 && uint64_t{fgFrames} * 2 >= presents && generated == 0;
+}
+
 std::string HotkeyText(const Hotkey& hotkey) {
     std::string text;
     if (hotkey.ctrl) text += "Ctrl+";
