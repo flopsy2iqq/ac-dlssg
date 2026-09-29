@@ -31,9 +31,15 @@
       of this script installed is refused in every mode, even with -Force;
     - records the dlssg_for_sm86 files: the ones it copied as installed, the
       ones named with -SpoofFound as found (dev-uninstall.ps1 leaves those);
-    - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults, the M3 keys
-      and log_level=debug when it does not exist, and names the M3 keys an
-      existing one lacks (the bridge then uses their defaults).
+    - writes <game>\ac-dlssg\ac-dlssg.ini with the defaults, the M3 keys,
+      fg_vram_headroom_mib=auto, fg_multiplier=2 and log_level=debug when it
+      does not exist, and names the M3 keys an existing one lacks (the
+      bridge then uses their defaults). In an existing one, a default
+      headroom block an earlier install wrote (its comment line, then
+      fg_vram_headroom_mib=512, or =0 from 2026-09-29) becomes today's
+      comment and fg_vram_headroom_mib=auto, every other byte and the line
+      endings kept ("updated the old default fg_vram_headroom_mib=512 to
+      auto"); a value without that comment is the user's and stays.
   When Windows denies writing into the game folder (a game under Program
   Files), it says to run it again from an elevated PowerShell.
 
@@ -215,8 +221,11 @@ function Get-DefaultConfigText {
         '; 1 sets the DLSS-G tags and constants every frame even while DLSS-G is',
         '; unsupported or off (a test switch).',
         'tag_without_fg=0',
-        '; Extra video memory (MiB) that must stay free on top of the DLSS-G estimate before it is turned on (0 = only the estimate).',
-        'fg_vram_headroom_mib=0',
+        $script:AcdbHeadroomComment,
+        'fg_vram_headroom_mib=auto',
+        '; Frame generation multiplier: 2, 3 or 4 (3 and 4 need a GPU and driver that allow them;',
+        '; the settings window has the same buttons).',
+        'fg_multiplier=2',
         '; Camera checks for frame generation: 1 takes the other side of the CSP camera',
         '; as the screen''s right (mirrors the reprojection).',
         'camera_flip_handedness=0',
@@ -230,6 +239,38 @@ function Get-DefaultConfigText {
 # bridge's defaults for them.
 $script:AcdbM3ConfigKeys = @('proxy_without_fg', 'tag_without_fg', 'fg_vram_headroom_mib', 'camera_flip_handedness',
     'camera_negate_side')
+
+# fg_vram_headroom_mib: the comment of today's default, and the default
+# blocks earlier installs wrote (comment line, then the key line). An
+# upgrade that keeps an ini replaces such a block, exactly as written, with
+# today's; any other value, or one without its comment, is the user's.
+$script:AcdbHeadroomComment = '; Video memory kept free on top of the DLSS-G estimate: auto adapts to the GPU, or a number of MiB.'
+$script:AcdbOldHeadroomDefaults = @(
+    # The first installs; 512 kept DLSS-G off on the 4 GB laptop.
+    [pscustomobject]@{ Comment = '; Video memory (MiB) that must stay free in the budget before DLSS-G is turned on.'; Value = '512' },
+    # From 2026-09-29 until auto existed.
+    [pscustomobject]@{ Comment = '; Extra video memory (MiB) that must stay free on top of the DLSS-G estimate before it is turned on (0 = only the estimate).'; Value = '0' }
+)
+
+# The ini's bytes with every old default headroom block replaced by today's;
+# the line endings and every other byte stay. Returns the new bytes (the
+# same array when nothing matched) and one action per replaced block.
+function Update-OldHeadroomDefault([byte[]]$Bytes) {
+    $text = $script:Latin1.GetString($Bytes)
+    $actions = @()
+    foreach ($old in $script:AcdbOldHeadroomDefaults) {
+        # A whole comment line, its line ending, a whole key line.
+        $pattern = '(?<=^|\n)' + [regex]::Escape($old.Comment) + '(\r?\n)fg_vram_headroom_mib=' +
+            [regex]::Escape($old.Value) + '(?=\r?\n|$)'
+        $re = New-Object System.Text.RegularExpressions.Regex($pattern)
+        if (-not $re.IsMatch($text)) { continue }
+        $replacement = (ConvertTo-RawText $script:AcdbHeadroomComment).Replace('$', '$$') + '$1fg_vram_headroom_mib=auto'
+        $text = $re.Replace($text, $replacement)
+        $actions += "updated the old default fg_vram_headroom_mib=$($old.Value) to auto"
+    }
+    if ($actions.Count -eq 0) { return [pscustomobject]@{ Bytes = $Bytes; Actions = $actions } }
+    return [pscustomobject]@{ Bytes = $script:Latin1.GetBytes($text); Actions = $actions }
+}
 
 # The CSP Lua app that publishes the camera (spec 6.6): installed as
 # <game>\apps\lua\AcDlssg, like CSP's other Lua apps.
@@ -781,6 +822,14 @@ try {
 
     if ($configExisted) {
         Step "kept the existing $config"
+        $configBytes = [System.IO.File]::ReadAllBytes($config)
+        $headroom = Update-OldHeadroomDefault $configBytes
+        if ($headroom.Actions.Count -gt 0) {
+            $rollback += @{ Kind = 'restorebytes'; Path = $config; Bytes = $configBytes }
+            $tempFiles += "$config.new"
+            [void](Write-BytesViaTemp $config $headroom.Bytes)
+            foreach ($action in $headroom.Actions) { Step $action }
+        }
         $configDoc = Read-IniDoc $config
         $lacking = @($script:AcdbM3ConfigKeys | Where-Object { $null -eq (Get-IniFirstValue $configDoc 'bridge' $_) })
         if ($lacking.Count -gt 0) {

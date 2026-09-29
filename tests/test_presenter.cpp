@@ -544,6 +544,7 @@ TEST(Presenter_FgMultiplierIsAppliedAtTheNextFrame) {
         CHECK_EQ(s.requested, 3u);
         CHECK_EQ(s.used, 3u);
         CHECK_EQ(s.framesMax, 0u);
+        CHECK(!s.maxKnown);  // the plain path never asks Streamline
         CHECK(s.note.empty());
         Source src = CreateSource(d.device11.Get(), 640, 360);
         REQUIRE(src.rtv);
@@ -896,6 +897,12 @@ TEST(Presenter_AppliesPanelRequestsAndPublishesItsStatus) {
         CHECK(!TextOf(s.gpuName).empty());
         CHECK(TextOf(s.hotkey) == "Ctrl+F10");
         CHECK(TextOf(s.reason) == "not supported on this adapter");
+        CHECK_EQ(s.fgMultRequested, 2u);
+        CHECK_EQ(s.fgMultUsed, 2u);
+        CHECK_EQ(s.fgMultMax, 0u);  // Streamline was never asked on the plain path
+        CHECK(TextOf(s.fgMultNote).empty());
+        CHECK(TextOf(s.vramNote).empty());
+        CHECK(TextOf(s.restartNote).empty());
         frames(3);
         REQUIRE(panel.ReadStatus(&s));
         CHECK_EQ(s.fgUserOn, 1u);
@@ -932,15 +939,30 @@ TEST(Presenter_AppliesPanelRequestsAndPublishesItsStatus) {
         panel.Request(false, true, false, false);
         frames(1);
 
+        // 3X, as the window's button asks for it: through SetFgMultiplier,
+        // applied and published in the same frame.
+        panel.Request(false, true, false, false, 3);
+        frames(1);
+        REQUIRE(panel.ReadStatus(&s));
+        CHECK_EQ(s.controlApplied, panel.Counter());
+        CHECK_EQ(s.fgMultRequested, 3u);
+        CHECK_EQ(s.fgMultUsed, 3u);
+        CHECK(TextOf(s.fgMultNote).empty());
+        CHECK_EQ(p->FgMultiplier().requested, 3u);
+        CHECK(TextOf(s.restartNote).empty());  // applied at once
+
         // Save as default: the current switches go into ac-dlssg.ini.
-        panel.Request(false, true, false, true);
+        panel.Request(false, true, false, true, 3);
         frames(1);
         REQUIRE(panel.ReadStatus(&s));
         CHECK_EQ(s.saveCounter, panel.Counter());
         CHECK_EQ(s.saveOk, 1u);
         CHECK_EQ(s.startWithFg, 0u);
+        CHECK(TextOf(s.restartNote) ==
+              "Saved. start_with_fg and the other saved switches apply the next time the game starts.");
         CHECK(acdb_test::ReadAll(iniPath) ==
-              "[bridge]\r\nstart_with_fg=0\r\nlog_level=info\r\ncamera_flip_handedness=1\r\ncamera_negate_side=0\r\n");
+              "[bridge]\r\nstart_with_fg=0\r\nlog_level=info\r\ncamera_flip_handedness=1\r\ncamera_negate_side=0\r\n"
+              "fg_multiplier=3\r\n");
 
         // On again; then the same state once more changes nothing.
         panel.Request(true, true, false, false);
@@ -951,6 +973,10 @@ TEST(Presenter_AppliesPanelRequestsAndPublishesItsStatus) {
         CHECK_EQ(s.controlApplied, panel.Counter());
         CHECK_EQ(s.fgUserOn, 1u);
         CHECK_EQ(s.cameraFlipHandedness, 1u);
+        // Requests without a multiplier (0, an older window) keep 3X, and the
+        // note of the save stays for the session.
+        CHECK_EQ(s.fgMultRequested, 3u);
+        CHECK(!TextOf(s.restartNote).empty());
 
         // Without requests the statistics path keeps the heartbeat going.
         beatBefore = s.heartbeat;
@@ -982,7 +1008,10 @@ TEST(Presenter_AppliesPanelRequestsAndPublishesItsStatus) {
     CHECK_EQ(Count(log, " INFO panel: camera_negate_side 1 -> 0\n"), 1u);
     std::string narrowIni;
     for (wchar_t c : iniPath) narrowIni.push_back(static_cast<char>(c));
-    CHECK_EQ(Count(log, " INFO panel: saved start_with_fg=0 camera_flip_handedness=1 camera_negate_side=0 to " +
+    CHECK_EQ(Count(log, " INFO fg: multiplier 2X -> 3X requested\n"), 1u);
+    CHECK_EQ(Count(log, "fg: multiplier "), 1u);
+    CHECK_EQ(Count(log, " INFO panel: saved start_with_fg=0 camera_flip_handedness=1 camera_negate_side=0 "
+                        "fg_multiplier=3 to " +
                             narrowIni + "\n"),
              1u);
     if (Count(log, "fg: panel -> ") != 2) std::printf("  log:\n%s\n", log.c_str());
@@ -1027,6 +1056,7 @@ TEST(Presenter_ReportsAFailedSaveAsDefault) {
         CHECK_EQ(s.saveCounter, panel.Counter());
         CHECK_EQ(s.saveOk, 0u);
         CHECK_EQ(s.startWithFg, 1u);
+        CHECK(TextOf(s.restartNote).empty());  // nothing was saved
     }
     LogClose();
     d.ctx11->ClearState();

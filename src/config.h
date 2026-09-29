@@ -33,10 +33,14 @@ struct Config {
     // even while DLSS-G is unsupported or off (test app).
     bool tag_without_fg = false;  // tag_without_fg=0|1
     // Video memory guard (spec 6.11): free budget must cover the DLSS-G
-    // estimate plus this much. 0..65536. 0 since 2026-09-29: on the 4 GB
-    // RTX 3050 Ti laptop 346 MiB were free for a 283 MiB estimate, and 512
-    // kept DLSS-G off.
-    unsigned fg_vram_headroom_mib = 0;  // fg_vram_headroom_mib=<MiB>
+    // estimate plus a headroom. fg_vram_headroom_mib=auto (the default) sets
+    // fg_vram_headroom_auto: the headroom follows the render adapter's budget
+    // (AutoVramHeadroomMib), and a 2X shortfall within VramTightToleranceMib
+    // turns DLSS-G on anyway as "tight". A number 0..65536 clears it and is
+    // the headroom, with the guard as before auto existed (a 512 kept DLSS-G
+    // off on the 4 GB RTX 3050 Ti laptop: 346 MiB free for 283 MiB).
+    bool fg_vram_headroom_auto = true;  // fg_vram_headroom_mib=auto
+    unsigned fg_vram_headroom_mib = 0;  // fg_vram_headroom_mib=<MiB>, used when not auto
     // When the process bound VERSION.dll to System32 (Windows 11 25H2), the
     // bootstrap loads the game folder's version.dll itself only if it is the
     // pinned dlssg_for_sm86 release; 1 loads any version.dll there.

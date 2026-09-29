@@ -391,23 +391,29 @@ TEST(TestappFakes_FakePanelTalksToTheBridgesChannels) {
     CHECK_EQ(c.cameraFlipHandedness, 1u);
     CHECK_EQ(c.cameraNegateSide, 0u);
     CHECK_EQ(c.saveAsDefault, 1u);
+    CHECK_EQ(c.desiredMultiplier, 0u);  // no multiplier asked for
     CHECK_EQ(panel.ControlSeq(), control.Seq());
 
     status.Update([](StatusLayout& s) {
         s.bridgeState = kPanelProxyNoFg;
         s.controlApplied = 1;
+        s.fgMultRequested = 3;
         CopyText(s.reason, "off by the user (panel)");
+        CopyText(s.restartNote, "restart");
     });
     StatusLayout s{};
     REQUIRE(panel.ReadStatus(&s));
     CHECK_EQ(s.bridgeState, static_cast<uint32_t>(kPanelProxyNoFg));
     CHECK_EQ(s.controlApplied, 1u);
     CHECK(TextOf(s.reason) == "off by the user (panel)");
+    CHECK_EQ(s.fgMultRequested, 3u);
+    CHECK(TextOf(s.restartNote) == "restart");
 
-    // A second fake (a reloaded Lua app) continues the counter.
+    // A second fake (a reloaded Lua app) continues the counter; the 3X button.
     testapp::FakePanel reloaded;
     REQUIRE(reloaded.Open(statusName.c_str(), controlName.c_str(), &err));
-    reloaded.Request(true, true, false, false);
+    reloaded.Request(true, true, false, false, 3);
     REQUIRE(control.Read(&c) == PanelControlChannel::ReadResult::Ok);
     CHECK_EQ(c.requestCounter, 2u);
+    CHECK_EQ(c.desiredMultiplier, 3u);
 }

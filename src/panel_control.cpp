@@ -4,6 +4,8 @@
 
 #include <cstdio>
 
+#include "fg_policy.h"
+
 namespace acdb {
 
 ControlRequest ControlRequestFrom(const ControlLayout& layout) {
@@ -13,6 +15,7 @@ ControlRequest ControlRequestFrom(const ControlLayout& layout) {
     r.desired.flipHandedness = layout.cameraFlipHandedness != 0;
     r.desired.negateSide = layout.cameraNegateSide != 0;
     r.saveAsDefault = layout.saveAsDefault != 0;
+    r.desiredMultiplier = layout.desiredMultiplier;
     return r;
 }
 
@@ -22,9 +25,12 @@ ControlDecision DecideControl(uint32_t lastApplied, const ControlRequest& reques
     if (request.counter == lastApplied) return d;
     d.apply = true;
     d.next = request.desired;
+    d.next.multiplier = request.desiredMultiplier >= 2 && request.desiredMultiplier <= 4 ? request.desiredMultiplier
+                                                                                       : current.multiplier;
     d.fgChanged = request.desired.fgUserOn != current.fgUserOn;
     d.flipChanged = request.desired.flipHandedness != current.flipHandedness;
     d.negateChanged = request.desired.negateSide != current.negateSide;
+    d.multiplierChanged = d.next.multiplier != current.multiplier;
     d.save = request.saveAsDefault;
     return d;
 }
@@ -34,7 +40,18 @@ IniKeyValues SavedDefaultKeys(const PanelSettings& settings) {
         {"start_with_fg", settings.fgUserOn ? "1" : "0"},
         {"camera_flip_handedness", settings.flipHandedness ? "1" : "0"},
         {"camera_negate_side", settings.negateSide ? "1" : "0"},
+        {"fg_multiplier", std::to_string(settings.multiplier)},
     };
+}
+
+uint32_t PanelMultiplierMax(bool maxKnown, uint32_t numFramesToGenerateMax) {
+    if (!maxKnown) return 0;
+    return ChooseFgMultiplier(4, numFramesToGenerateMax).multiplier;
+}
+
+std::string PanelRestartNote(const std::string& current, bool saved, bool saveOk) {
+    if (saved && saveOk) return "Saved. start_with_fg and the other saved switches apply the next time the game starts.";
+    return current;
 }
 
 std::string PanelReason(bool fgOn, bool userOn, const std::string& userOffReason, const std::string& gateReason) {

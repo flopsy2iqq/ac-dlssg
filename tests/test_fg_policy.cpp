@@ -644,6 +644,233 @@ TEST(VramGuard_ANewOrFallenBackMultiplierIsAChange) {
     CHECK(g.Record(40, VramCheck{}, 3, 2));   // now a fallback
 }
 
+// ---------------------------------------------------------------- fg_vram_headroom_mib=auto
+
+TEST(VramAuto_HeadroomFollowsTheBudget) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    // The 4 GB RTX 3050 Ti laptop reports a budget of about 3.5 GiB.
+    CHECK_EQ(AutoVramHeadroomMib(3500 * MiB), 0u);
+    CHECK_EQ(AutoVramHeadroomMib(6144 * MiB - 1), 0u);
+    CHECK_EQ(AutoVramHeadroomMib(6144 * MiB), 256u);
+    CHECK_EQ(AutoVramHeadroomMib(9800 * MiB), 256u);  // the RTX 3080
+    CHECK_EQ(AutoVramHeadroomMib(0), 0u);
+    // A number is used as it is, whatever the budget.
+    CHECK_EQ(VramHeadroomMib(false, 512, 3500 * MiB), 512u);
+    CHECK_EQ(VramHeadroomMib(false, 0, 9800 * MiB), 0u);
+    CHECK_EQ(VramHeadroomMib(true, 512, 3500 * MiB), 0u);
+    CHECK_EQ(VramHeadroomMib(true, 0, 9800 * MiB), 256u);
+}
+
+TEST(VramAuto_TheCheckKnowsTheEstimateItHadToFit) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck r = CheckVideoMemory(4000 * MiB, 3500 * MiB, 300 * MiB + 1, 512);
+    CHECK_EQ(r.estimateMib, 301u);  // rounded up, without the headroom
+    CHECK_EQ(r.needMib, 813u);
+    CHECK_EQ(CheckVideoMemory(4000 * MiB, 3500 * MiB, 0, 512).estimateMib, 0u);
+}
+
+TEST(VramAuto_ToleranceIs128MiBOrATenthOfTheEstimate) {
+    CHECK_EQ(VramTightToleranceMib(0, 256), 128u);  // no estimate: the 256 MiB headroom only
+    CHECK_EQ(VramTightToleranceMib(283, 283), 128u);
+    CHECK_EQ(VramTightToleranceMib(1280, 1536), 128u);
+    CHECK_EQ(VramTightToleranceMib(2000, 2000), 200u);
+    // Never more than half of the need.
+    CHECK_EQ(VramTightToleranceMib(120, 120), 60u);
+    CHECK_EQ(VramTightToleranceMib(121, 121), 60u);
+    CHECK_EQ(VramTightToleranceMib(0, 0), 0u);
+}
+
+// The laptop: 346 MiB free for a 380 MiB estimate at 2X. With auto, DLSS-G
+// runs anyway and the video memory is marked tight; a number keeps today's
+// refusal, and the panel's note says that auto would run it.
+TEST(VramAuto_ASmallShortfallAt2XIsTight) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0);
+    REQUIRE(!at2.ok);
+    VramMultiplierDecision d = DecideVramMultiplier(2, at2, nullptr, true);
+    CHECK(d.check.ok);
+    CHECK(d.check.reason.empty());
+    CHECK(d.tight);
+    CHECK_EQ(d.multiplier, 2u);
+    CHECK(d.fallback.empty());
+    CHECK_EQ(d.note,
+             std::string("video memory is tight (346 MiB free for 380 MiB); frame generation on anyway "
+                         "(fg_vram_headroom_mib=auto)"));
+    // A number: exactly the refusal of before, with the note for the panel.
+    d = DecideVramMultiplier(2, at2, nullptr, false);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.check.reason, std::string("video memory: need 380 MiB, free 346 MiB"));
+    CHECK_EQ(d.note, std::string("fg_vram_headroom_mib=0 keeps frame generation off (380 MiB needed, 346 MiB free): "
+                                 "set it to auto in ac-dlssg.ini and restart the game"));
+}
+
+TEST(VramAuto_ALargerShortfallKeepsDlssgOffWithAnActionableReason) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3400 * MiB, 380 * MiB, 0);
+    const VramMultiplierDecision d = DecideVramMultiplier(2, at2, nullptr, true);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    const std::string text =
+        "not enough video memory: frame generation needs 380 MiB, 100 MiB free; lower CSP texture quality, shadows "
+        "or the render resolution";
+    CHECK_EQ(d.check.reason, text);
+    CHECK_EQ(d.note, text);
+    CHECK(text.size() < 160u);  // fits the status record's reason
+}
+
+TEST(VramAuto_TheToleranceBoundaries) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    // 128 MiB short is tight, 129 MiB is not (estimate below 1280 MiB).
+    CHECK(DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3328 * MiB, 300 * MiB, 0), nullptr, true).tight);
+    CHECK(!DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3329 * MiB, 300 * MiB, 0), nullptr, true).tight);
+    // A 2000 MiB estimate tolerates 200 MiB.
+    CHECK(DecideVramMultiplier(2, CheckVideoMemory(8000 * MiB, 6200 * MiB, 2000 * MiB, 0), nullptr, true).tight);
+    CHECK(!DecideVramMultiplier(2, CheckVideoMemory(8000 * MiB, 6201 * MiB, 2000 * MiB, 0), nullptr, true).tight);
+    // The headroom counts: 256 MiB on an 8 GB card, 492 MiB free for 283 + 256.
+    const VramMultiplierDecision d =
+        DecideVramMultiplier(2, CheckVideoMemory(8192 * MiB, 7700 * MiB, 283 * MiB, 256), nullptr, true);
+    CHECK(d.tight);
+    CHECK_EQ(d.note, std::string("video memory is tight (492 MiB free for 539 MiB); frame generation on anyway "
+                                 "(fg_vram_headroom_mib=auto)"));
+    // Enough memory: nothing to note.
+    const VramMultiplierDecision fits = DecideVramMultiplier(2, VramCheck{}, nullptr, true);
+    CHECK(fits.check.ok);
+    CHECK(!fits.tight);
+    CHECK(fits.note.empty());
+}
+
+// A number that keeps DLSS-G off where auto would run it (the first
+// installs' 512 on the 4 GB laptop: 346 MiB free for a 283 MiB estimate):
+// the panel's note names the number and says to set auto and restart the
+// game, rather than to lower the textures. The guard's reason stays.
+TEST(VramNumber_AHeadroomThatKeepsDlssgOffWhereAutoWouldRunItSaysSo) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    VramMultiplierDecision d =
+        DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3154 * MiB, 283 * MiB, 512), nullptr, false);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.check.reason, std::string("video memory: need 795 MiB, free 346 MiB"));
+    const std::string hint = "fg_vram_headroom_mib=512 keeps frame generation off (795 MiB needed, 346 MiB free): set "
+                             "it to auto in ac-dlssg.ini and restart the game";
+    CHECK_EQ(d.note, hint);
+    CHECK(hint.size() < 160u);  // fits the status record's vramNote
+    // The longest one fits too.
+    d = DecideVramMultiplier(2, CheckVideoMemory(99999 * MiB, 0, 65535 * MiB, 65536), nullptr, false);
+    CHECK(!d.check.ok);
+    CHECK(d.note.size() < 160u);
+    // An 8 GB card with 1024: auto's 256 MiB would fit (692 MiB free for 539).
+    d = DecideVramMultiplier(2, CheckVideoMemory(8192 * MiB, 7500 * MiB, 283 * MiB, 1024), nullptr, false);
+    CHECK(d.note.find("fg_vram_headroom_mib=1024 keeps frame generation off (1307 MiB needed, 692 MiB free)") == 0);
+    // 3X falling back: the 2X check decides.
+    const VramCheck at3 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 500 * MiB, 512);
+    const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 283 * MiB, 512);
+    d = DecideVramMultiplier(3, at3, &at2, false);
+    CHECK(!d.check.ok);
+    CHECK_EQ(d.note, hint);
+    // 0, where auto would run it as tight.
+    d = DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0), nullptr, false);
+    CHECK(d.note.find("fg_vram_headroom_mib=0 keeps frame generation off (380 MiB needed, 346 MiB free)") == 0);
+    // Where auto would not run it either, the note says what to lower.
+    d = DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3400 * MiB, 283 * MiB, 512), nullptr, false);
+    CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 795 MiB, 100 MiB free; lower CSP "
+                                 "texture quality, shadows or the render resolution"));
+}
+
+// A small output (a 1280x720 window) needs little, less than the 128 MiB
+// tolerance. With nothing, or almost nothing, free that is not a little
+// short but clearly not enough: at least half of the need must be free.
+TEST(VramAuto_NothingFreeIsNeverTight) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    // Usage above the budget counts as nothing free.
+    const VramCheck none = CheckVideoMemory(3500 * MiB, 3600 * MiB, 120 * MiB, 0);
+    REQUIRE(!none.ok);
+    const VramMultiplierDecision d = DecideVramMultiplier(2, none, nullptr, true);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 120 MiB, 0 MiB free; lower CSP "
+                                 "texture quality, shadows or the render resolution"));
+    // 59 MiB free for 120 MiB is not enough; 60 MiB, half of it, is tight.
+    CHECK(!DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3441 * MiB, 120 * MiB, 0), nullptr, true).tight);
+    CHECK(DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3440 * MiB, 120 * MiB, 0), nullptr, true).tight);
+    // The same for 3X falling back to a 2X that has nothing free.
+    const VramCheck at3 = CheckVideoMemory(3500 * MiB, 3600 * MiB, 180 * MiB, 0);
+    const VramMultiplierDecision d3 = DecideVramMultiplier(3, at3, &none, true);
+    CHECK(!d3.check.ok);
+    CHECK(!d3.tight);
+}
+
+// The multiplier fallback stays: a higher multiplier that does not fit falls
+// back to 2X, which may itself be tight. Only 2X is ever tight.
+TEST(VramAuto_AHigherMultiplierFallsBackTo2XWhichMayBeTight) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const VramCheck at4 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 700 * MiB, 0);
+    const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0);
+    VramMultiplierDecision d = DecideVramMultiplier(4, at4, &at2, true);
+    CHECK(d.check.ok);
+    CHECK(d.tight);
+    CHECK_EQ(d.multiplier, 2u);
+    CHECK_EQ(d.fallback, std::string("video memory: 4X needs 700 MiB, free 346 MiB; falling back to 2X"));
+    CHECK(d.note.find("video memory is tight (346 MiB free for 380 MiB)") == 0);
+    // 3X a little short, 2X fits: a plain fallback, not tight.
+    const VramCheck at3 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 400 * MiB, 0);
+    const VramCheck at2fits = CheckVideoMemory(3500 * MiB, 3154 * MiB, 300 * MiB, 0);
+    d = DecideVramMultiplier(3, at3, &at2fits, true);
+    CHECK(d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.multiplier, 2u);
+    CHECK(d.note.empty());
+    // 3X a little short and no 2X check made: refused, never tight at 3X.
+    d = DecideVramMultiplier(3, at3, nullptr, true);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.multiplier, 3u);
+}
+
+TEST(VramAuto_TheGuardReportsATightChangeOnce) {
+    VramGuard g;
+    CHECK(g.Record(10, VramCheck{}, 2, 2, true));
+    CHECK(g.Passed());
+    CHECK(g.Tight());
+    CHECK(!g.Record(20, VramCheck{}, 2, 2, true));  // the same outcome
+    CHECK(g.Record(30, VramCheck{}, 2, 2, false));  // no longer tight
+    CHECK(!g.Tight());
+    CHECK(g.Record(40, VramCheck{false, "x"}, 2, 2, false));
+    CHECK(!g.Tight());
+}
+
+// The presenter's loop: a check whenever CheckDue, decided and recorded. A
+// tight pass is a pass, so once DLSS-G is on (and its resources make the
+// budget tighter still) it is not checked again every 60 frames and cannot
+// go off and on with the budget; only a new wanted multiplier checks again.
+// A refusal is still checked every 60 frames.
+TEST(VramAuto_ATightPassIsNotCheckedAgainEvery60Frames) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    const auto run = [&](uint64_t usageMib, uint64_t frames, int* checks) {
+        VramGuard g;
+        *checks = 0;
+        for (uint64_t f = 0; f < frames; ++f) {
+            if (!g.CheckDue(f, 2)) continue;
+            ++*checks;
+            const VramCheck at2 = CheckVideoMemory(3500 * MiB, usageMib * MiB, 380 * MiB, AutoVramHeadroomMib(3500 * MiB));
+            const VramMultiplierDecision d = DecideVramMultiplier(2, at2, nullptr, true);
+            g.Record(f, d.check, 2, d.multiplier, d.tight);
+            // DLSS-G on: its resources are in the usage from now on.
+            if (g.Passed()) usageMib += 380;
+        }
+        return g;
+    };
+    int checks = 0;
+    VramGuard tight = run(3154, 600, &checks);  // 346 MiB free for 380 MiB: tight
+    CHECK(tight.Passed());
+    CHECK(tight.Tight());
+    CHECK_EQ(checks, 1);
+    CHECK(tight.CheckDue(10000, 3));  // a new multiplier is checked again
+    VramGuard refused = run(3400, 600, &checks);  // 100 MiB free: not enough
+    CHECK(!refused.Passed());
+    CHECK_EQ(checks, 10);
+}
+
 // ---------------------------------------------------------------- the multiplier on the present thread
 
 TEST(FgMultTracker_StartsWithTheConfiguredRequestAndNoMax) {

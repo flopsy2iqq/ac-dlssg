@@ -11,17 +11,19 @@
 
 namespace acdb {
 
-// What the panel can change: the DLSS-G switch the hotkey toggles too, and
-// the two camera switches of spec 6.7.
+// What the panel can change: the DLSS-G switch the hotkey toggles too, the
+// two camera switches of spec 6.7 and the multiplier (2X/3X/4X buttons).
 struct PanelSettings {
     bool fgUserOn = false;
     bool flipHandedness = false;  // camera_flip_handedness
     bool negateSide = false;      // camera_negate_side
+    unsigned multiplier = 2;      // the multiplier asked for (FgMultiplier().requested)
 };
 
 struct ControlRequest {
     uint32_t counter = 0;   // requestCounter
-    PanelSettings desired;  // the state of every switch the app wants, not only the one clicked
+    PanelSettings desired;  // the state of every switch the app wants, not only the one clicked (not the multiplier)
+    uint32_t desiredMultiplier = 0;  // 2..4, or 0 (anything else too): keep the current multiplier
     bool saveAsDefault = false;
 };
 
@@ -33,21 +35,38 @@ struct ControlDecision {
     bool fgChanged = false;      // desired.fgUserOn differs from the current switch
     bool flipChanged = false;
     bool negateChanged = false;
+    bool multiplierChanged = false;  // a valid desiredMultiplier that differs from the current one
     bool save = false;           // write SavedDefaultKeys(next) into ac-dlssg.ini
     PanelSettings next;          // the settings after the request (current when !apply)
 };
 
 // A request is new when its counter differs from the last one applied (any
 // difference: the counter wraps from 0x7FFFFFFF to 1, and a restarted app
-// might count again). A new request sets every switch to its desired value;
-// only the switches that differ count as changed, so a request that repeats
-// the bridge's state (the hotkey got there first) changes nothing. An old
-// counter changes nothing and saves nothing.
+// might count again). A new request sets every switch to its desired value,
+// and the multiplier to desiredMultiplier when that is 2..4; only what
+// differs counts as changed, so a request that repeats the bridge's state
+// (the hotkey got there first) changes nothing. An old counter changes
+// nothing and saves nothing.
 ControlDecision DecideControl(uint32_t lastApplied, const ControlRequest& request, const PanelSettings& current);
 
 // "Save as default": start_with_fg, camera_flip_handedness and
-// camera_negate_side of the [bridge] section, as "0" or "1".
+// camera_negate_side of the [bridge] section, as "0" or "1", and
+// fg_multiplier as "2", "3" or "4".
 IniKeyValues SavedDefaultKeys(const PanelSettings& settings);
+
+// StatusLayout::fgMultMax: 0 while Streamline's numFramesToGenerateMax is
+// not known (the window keeps every button usable), else the highest
+// multiplier it allows (ChooseFgMultiplier): 2 for a max of 0 or 1, 3 for
+// 2, 4 from 3 on.
+uint32_t PanelMultiplierMax(bool maxKnown, uint32_t numFramesToGenerateMax);
+
+// StatusLayout::restartNote after a request was applied: a successful
+// "Save as default" (saved and saveOk) sets "Saved. start_with_fg and the
+// other saved switches apply the next time the game starts.", and the note
+// stays for the rest of the session; otherwise current is kept. The panel's
+// live switches (DLSS-G, the multiplier and the camera switches) apply at
+// once and need no restart.
+std::string PanelRestartNote(const std::string& current, bool saved, bool saveOk);
 
 // The status record's reason: "on" while DLSS-G is on; else, while the
 // user's switch is off, userOffReason (the switch is what the panel changes,

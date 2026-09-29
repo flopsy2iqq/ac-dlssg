@@ -1520,17 +1520,21 @@ Invoke-Case 'LA5: -LuaApp checks and the rollback of a failed install' {
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg')) -and -not (Test-Path -LiteralPath (Join-Path $game $ourDll))) 'nothing else is left'
 }
 
+$newHeadroomComment = '; Video memory kept free on top of the DLSS-G estimate: auto adapts to the GPU, or a number of MiB.'
+
 Invoke-Case 'CF: the ac-dlssg.ini the install writes has the M3 keys with their defaults' {
     $game = New-FakeGame 'CF' -NoDxgi
     $r = Install $game $dllV1
     Check ($r.Code -eq 0) 'install exits 0'
     $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
     $lines = @([IO.File]::ReadAllLines($cfg))
-    foreach ($kv in @('proxy_without_fg=0', 'tag_without_fg=0', 'fg_vram_headroom_mib=0', 'camera_flip_handedness=0',
-            'camera_negate_side=0')) {
+    foreach ($kv in @('proxy_without_fg=0', 'tag_without_fg=0', 'fg_vram_headroom_mib=auto', 'fg_multiplier=2',
+            'camera_flip_handedness=0', 'camera_negate_side=0')) {
         $i = [array]::IndexOf($lines, $kv)
         Check ($i -gt 0 -and $lines[$i - 1].StartsWith(';')) "config has $kv under a comment"
     }
+    $i = [array]::IndexOf($lines, 'fg_vram_headroom_mib=auto')
+    Check ($i -gt 0 -and $lines[$i - 1] -ceq $newHeadroomComment) 'the headroom comment says what auto and a number do'
     $bridge = [array]::IndexOf($lines, '[bridge]')
     Check ($bridge -ge 0 -and [array]::IndexOf($lines, 'camera_negate_side=0') -gt $bridge) 'the keys are in [bridge]'
     Check (@($lines | Where-Object { $_ -match '^[a-z_]+=' } | ForEach-Object { ($_ -split '=')[0] } | Group-Object | Where-Object { $_.Count -gt 1 }).Count -eq 0) 'no key twice'
@@ -1545,6 +1549,95 @@ Invoke-Case 'CF: the ac-dlssg.ini the install writes has the M3 keys with their 
     Check ($r.Text -match 'tag_without_fg' -and $r.Text -match 'camera_negate_side' -and $r.Text -notmatch 'lacks [^\r\n]*proxy_without_fg') 'the install names the M3 keys the existing ini lacks'
     $r = Uninstall $game -RemoveData
     Check ($r.Code -eq 0) 'uninstall exits 0'
+}
+
+# The default headroom blocks earlier installs wrote. The first installs
+# wrote 512 (it kept DLSS-G off on the 4 GB laptop); from 2026-09-29 0.
+$oldHeadroomBlock512 = "; Video memory (MiB) that must stay free in the budget before DLSS-G is turned on.`r`nfg_vram_headroom_mib=512"
+$oldHeadroomComment0 = '; Extra video memory (MiB) that must stay free on top of the DLSS-G estimate before it is turned on (0 = only the estimate).'
+$newHeadroomBlock = "$newHeadroomComment`r`nfg_vram_headroom_mib=auto"
+
+# The ac-dlssg.ini of the first installs (tools\dev-install.ps1 at 9c60af4),
+# with $Top right under [bridge].
+function Get-OldDefaultIni([string]$Top = '') {
+    $lines = @('; ac-dlssg settings. Written by tools\dev-install.ps1; edit freely.', '[bridge]')
+    if ($Top) { $lines += $Top }
+    $lines += @('enabled=1', 'start_with_fg=1', 'hotkey=ctrl+f10',
+        '; max_frame_latency=1..16 overrides the value CSP sets; unset by default.', 'log_level=debug',
+        '; Frame generation (M3). When Streamline says this GPU cannot run DLSS-G (an RTX 30',
+        '; without the dlssg_for_sm86 files), 0 lets the game run without the bridge;',
+        '; 1 keeps the bridge presenting without frame generation.', 'proxy_without_fg=0',
+        '; 1 sets the DLSS-G tags and constants every frame even while DLSS-G is',
+        '; unsupported or off (a test switch).', 'tag_without_fg=0',
+        '; Video memory (MiB) that must stay free in the budget before DLSS-G is turned on.',
+        'fg_vram_headroom_mib=512',
+        '; Camera checks for frame generation: 1 takes the other side of the CSP camera',
+        '; as the screen''s right (mirrors the reprojection).', 'camera_flip_handedness=0',
+        '; 1 negates only the right vector DLSS-G receives; the matrices stay.', 'camera_negate_side=0')
+    return ($lines -join "`r`n") + "`r`n"
+}
+
+Invoke-Case 'CF3: an upgrade turns the old default headroom block into auto and keeps a user''s value' {
+    # The friend's laptop: fg_vram_headroom_mib=0 added by hand under
+    # [bridge], above the first installs' default block with 512.
+    $game = New-FakeGame 'CF3' -NoDxgi
+    $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    $old = Get-OldDefaultIni 'fg_vram_headroom_mib=0'
+    Write-Text $cfg $old
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0) 'install exits 0'
+    $expected = $old.Replace($oldHeadroomBlock512, $newHeadroomBlock)
+    Check ($expected -cne $old) 'the test ini has the old block'
+    Check (Test-SameBytes (Read-Bytes $cfg) (Get-Utf8Bytes $expected)) 'only the old block changed, every other byte kept'
+    Check ($r.Text -match 'updated the old default fg_vram_headroom_mib=512 to auto') 'the install says it updated the block'
+    Check ($r.Text -match 'kept the existing') 'the ini is still the kept one'
+    # Once updated, a re-run has nothing to update.
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and $r.Text -notmatch 'updated the old default' -and
+        (Test-SameBytes (Read-Bytes $cfg) (Get-Utf8Bytes $expected))) 'a re-run changes nothing'
+    $r = Uninstall $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+
+    # A 512 without the old comment is the user's choice: kept byte for byte.
+    $game = New-FakeGame 'CF3b' -NoDxgi
+    $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    $mine = Get-Utf8Bytes "[bridge]`r`nenabled=1`r`n; mine`r`nfg_vram_headroom_mib=512`r`n"
+    Write-Bytes $cfg $mine
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $cfg) $mine)) 'a user''s 512 is kept byte for byte'
+    Check ($r.Text -notmatch 'updated the old default') 'nothing is reported as updated'
+    # The old comment above another value is the user's value too.
+    $edited = Get-Utf8Bytes ((Get-OldDefaultIni).Replace('fg_vram_headroom_mib=512', 'fg_vram_headroom_mib=1024'))
+    Write-Bytes $cfg $edited
+    $r = Install $game $dllV1
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $cfg) $edited)) 'the old comment above 1024 is kept byte for byte'
+
+    # The 0 default of 2026-09-29, LF line endings and no final newline: the
+    # line endings stay as they are.
+    $lf = "[bridge]`nenabled=1`n$oldHeadroomComment0`nfg_vram_headroom_mib=0`ncamera_negate_side=0"
+    Write-Text $cfg $lf
+    $r = Install $game $dllV1
+    $expected = "[bridge]`nenabled=1`n$newHeadroomComment`nfg_vram_headroom_mib=auto`ncamera_negate_side=0"
+    Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $cfg) (Get-Utf8Bytes $expected))) 'the 0 default block becomes auto with LF kept'
+    Check ($r.Text -match 'updated the old default fg_vram_headroom_mib=0 to auto') 'the install says it updated the 0 block'
+    $r = Uninstall $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+
+    # An install that fails after the update puts the old ini back.
+    $game = New-FakeGame 'CF3c'
+    $ini = Join-Path $game 'ReShade.ini'
+    Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
+    $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    $old = Get-OldDefaultIni
+    Write-Text $cfg $old
+    $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $r = Install $game $dllV1
+    } finally {
+        $lock.Dispose()
+    }
+    Check ($r.Code -ne 0 -and $r.Text -match 'FAILED:') 'the install fails at ReShade.ini'
+    Check (Test-SameBytes (Read-Bytes $cfg) (Get-Utf8Bytes $old)) 'the old ini is back byte for byte'
 }
 
 # ---------------------------------------------------------------------------

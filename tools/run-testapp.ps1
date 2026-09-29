@@ -94,14 +94,17 @@
   The panel scenario (spec 6.9): the test app plays the CSP Lua app's settings
   window (--fake-panel). It reads Local\AcDlssg.Status.v1, which the bridge
   creates at bootstrap, and writes the window's requests into
-  Local\AcDlssg.Control.v1: frame generation off, a camera switch, "Save as
-  default", frame generation on. The bridge must apply each at its next frame
-  (the log lines "fg: panel -> off|on", "panel: camera_flip_handedness 0 -> 1"
-  and "panel: saved ..."), publish the result in the status, edit the
-  scenario's ac-dlssg.ini key by key (start_with_fg=1 becomes 0 in place, the
-  camera keys are added under [bridge]), keep the heartbeat going and publish
-  pass-through after the release. Those sections are per logon session too,
-  so the scenario SKIPs while acs.exe runs.
+  Local\AcDlssg.Control.v1: frame generation off, a camera switch, the 3X
+  button, "Save as default", frame generation on. The bridge must apply each
+  at its next frame (the log lines "fg: panel -> off|on", "panel:
+  camera_flip_handedness 0 -> 1", "fg: multiplier 2X -> 3X requested" and
+  "panel: saved ..."), publish the result in the status (3X asked for, and
+  used unless the multiplier note says why not; the restart note after the
+  save), edit the scenario's ac-dlssg.ini key by key (start_with_fg=1 becomes
+  0 in place, the camera keys and fg_multiplier=3 are added under [bridge]),
+  keep the heartbeat going and publish pass-through after the release. Those
+  sections are per logon session too, so the scenario SKIPs while acs.exe
+  runs.
 
   -ReShadeDll names ReShade's dxgi.dll. By default it is the dxgi.dll in the
   Assetto Corsa folder found through Steam's libraryfolders.vdf; it is only

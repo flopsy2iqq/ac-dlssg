@@ -13,7 +13,8 @@
 //  - ReadStatus: readStatus() of apps/lua/AcDlssg/AcDlssg.lua, a seqlock
 //    reader, repeated until a copy is stable.
 //  - Request: sendRequest(), statement by statement: seq odd, barrier, magic,
-//    version, the desired switches, the new counter, barrier, seq even.
+//    version, the desired switches and multiplier, the new counter, barrier,
+//    seq even.
 #include <windows.h>
 
 #include <atomic>
@@ -82,7 +83,8 @@ public:
         return false;
     }
 
-    void Request(bool fg, bool flip, bool negate, bool save) {
+    // multiplier: the 2X/3X/4X button (desiredMultiplier); 0 keeps the bridge's.
+    void Request(bool fg, bool flip, bool negate, bool save, uint32_t multiplier = 0) {
         if (!control_) return;
         acdb::ControlLayout* c = control_;
         const uint32_t s = (Load(c->seq) | 1u) & 0x7FFFFFFFu;  // bit.band(bit.bor(ctl.seq, 1), 0x7FFFFFFF)
@@ -95,6 +97,7 @@ public:
         Store(c->cameraFlipHandedness, flip ? 1u : 0u);
         Store(c->cameraNegateSide, negate ? 1u : 0u);
         Store(c->saveAsDefault, save ? 1u : 0u);
+        Store(c->desiredMultiplier, multiplier);
         Store(c->requestCounter, counter_);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         Store(c->seq, s + 1);

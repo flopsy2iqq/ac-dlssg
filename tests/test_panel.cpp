@@ -69,6 +69,15 @@ const FieldSpec kStatusFields[] = {
     STATUS_FIELD("char", gpuName, 64),
     STATUS_FIELD("char", hotkey, 32),
     STATUS_FIELD("char", bridgeVersion, 32),
+    // Appended for the multiplier selector and the notes: the fields above
+    // keep their offsets, so a window and a bridge of different builds still
+    // agree on them (the new ones read as zeros from an older bridge).
+    STATUS_FIELD("uint32_t", fgMultRequested, 1),
+    STATUS_FIELD("uint32_t", fgMultUsed, 1),
+    STATUS_FIELD("uint32_t", fgMultMax, 1),
+    STATUS_FIELD("char", fgMultNote, 160),
+    STATUS_FIELD("char", vramNote, 160),
+    STATUS_FIELD("char", restartNote, 160),
 };
 #undef STATUS_FIELD
 
@@ -82,6 +91,7 @@ const FieldSpec kControlFields[] = {
     CONTROL_FIELD("uint32_t", cameraFlipHandedness, 1),
     CONTROL_FIELD("uint32_t", cameraNegateSide, 1),
     CONTROL_FIELD("uint32_t", saveAsDefault, 1),
+    CONTROL_FIELD("uint32_t", desiredMultiplier, 1),  // appended: an older window leaves it 0 (no change)
 };
 #undef CONTROL_FIELD
 
@@ -222,6 +232,7 @@ TEST(LuaApp_SendRequestFollowsTheSeqlockWriterOrder) {
         "ctl.cameraFlipHandedness = ",
         "ctl.cameraNegateSide = ",
         "ctl.saveAsDefault = ",
+        "ctl.desiredMultiplier = ",
         "ctl.requestCounter = requestCounter",
         "memoryBarrier()",
         "ctl.seq = s + 1",
@@ -258,6 +269,87 @@ TEST(LuaApp_ReadStatusFollowsTheSeqlockReaderOrder) {
         CHECK(found != std::string::npos);
         if (found != std::string::npos) at = found + std::strlen(step);
     }
+}
+
+// readStatus() copies every field the window uses into its table, and
+// newStatus() gives each a default: a field added to the layout and never
+// copied would stay at its default in the window.
+TEST(LuaApp_ReadStatusCopiesEveryField) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string body = acdb_test::LuaFunctionBody(lua, "readStatus");
+    const std::string defaults = acdb_test::LuaFunctionBody(lua, "newStatus");
+    REQUIRE(!body.empty());
+    REQUIRE(!defaults.empty());
+    for (const auto& f : kStatusFields) {
+        const std::string name = f.name;
+        if (name == "magic" || name == "version" || name == "seq" || name == "ownerPid") continue;
+        const std::string copy = std::string("c.") + name + (f.count > 1 ? " = ffi.string(st." : " = st.") + name;
+        if (body.find(copy) == std::string::npos) std::printf("  readStatus(): no '%s'\n", copy.c_str());
+        CHECK(body.find(copy) != std::string::npos);
+        const bool hasDefault = std::regex_search(defaults, std::regex("[{,\\s]" + name + " = "));
+        if (!hasDefault) std::printf("  newStatus(): no default for %s\n", name.c_str());
+        CHECK(hasDefault);
+    }
+}
+
+// The window's parts for the notes and the multiplier (spec 6.9): the texts
+// the owner asked for, the three buttons and the hover text of a disabled one.
+TEST(LuaApp_WindowShowsTheNotesAndTheMultiplierButtons) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaString(lua, "TEXT_RESTART") == "Restart the game to apply");
+    CHECK(acdb_test::LuaString(lua, "TEXT_MULT_UNSUPPORTED") == "not supported by this GPU/driver");
+    // Disabled buttons answer the hover test only with AllowWhenDisabled.
+    CHECK(lua.find("ui.itemHovered(ui.HoveredFlags.AllowWhenDisabled)") != std::string::npos);
+    CHECK(lua.find("ui.setTooltip(TEXT_MULT_UNSUPPORTED)") != std::string::npos);
+    for (const char* label : {"'2X###fgMult2'", "'3X###fgMult3'", "'4X###fgMult4'"}) {
+        if (lua.find(label) == std::string::npos) std::printf("  no button label %s\n", label);
+        CHECK(lua.find(label) != std::string::npos);
+    }
+    const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
+    CHECK(window.find("texts.vramNote") != std::string::npos);
+    CHECK(window.find("texts.restartNote") != std::string::npos);
+    CHECK(window.find("multiplierButtons(") != std::string::npos);
+    const std::string buttons = acdb_test::LuaFunctionBody(lua, "multiplierButtons");
+    REQUIRE(!buttons.empty());
+    CHECK(buttons.find("texts.multNote") != std::string::npos);
+    CHECK(buttons.find("MULT_LABELS[m]") != std::string::npos);
+}
+
+// A bridge whose status record has another version (a later build with a
+// changed layout, the window of an older one): the window must say that the
+// versions differ, not misread the record and not "Bridge not running".
+TEST(LuaApp_WindowSaysWhenBridgeAndWindowVersionsDiffer) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaString(lua, "TEXT_VERSIONS_DIFFER") == "Bridge and window versions differ");
+    const std::string read = acdb_test::LuaFunctionBody(lua, "readStatus");
+    const size_t check = read.find("if st.magic ~= STATUS_MAGIC or st.version ~= STATUS_VERSION then");
+    REQUIRE(check != std::string::npos);
+    // Only the version of a record with our magic counts; nothing else is read.
+    const size_t other = read.find("c.otherVersion = st.magic == STATUS_MAGIC and st.version or 0", check);
+    CHECK(other != std::string::npos);
+    CHECK(other < read.find("else", check));
+    CHECK(read.find("c.otherVersion = 0", read.find("else", check)) != std::string::npos);
+    CHECK(std::regex_search(acdb_test::LuaFunctionBody(lua, "newStatus"), std::regex("[{,\\s]otherVersion = 0")));
+    CHECK(acdb_test::LuaFunctionBody(lua, "bridgeProblem").find("return status.otherVersion ~= 0 and 3 or 1") !=
+          std::string::npos);
+    const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
+    CHECK(window.find("ui.textColored(TEXT_VERSIONS_DIFFER, COLOR_BAD)") != std::string::npos);
+    CHECK(window.find("texts.versions") != std::string::npos);
+    CHECK(acdb_test::LuaFunctionBody(lua, "refreshStatus").find("texts.versions = string.format(TEXT_VERSIONS_HINT") !=
+          std::string::npos);
+}
+
+// While the guard keeps DLSS-G off with auto, the status line already says
+// "Off: not enough video memory: ..."; the note under the video memory line
+// does not repeat it. A different note (tight, or the fixed headroom's) stays.
+TEST(LuaApp_VramNoteDoesNotRepeatTheStatusLine) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaFunctionBody(lua, "rebuildTexts").find("texts.vramNote = s.vramNote ~= s.reason and s.vramNote or ''") !=
+          std::string::npos);
 }
 
 // No Lua interpreter runs in these tests; a block that is never closed (or
@@ -368,7 +460,8 @@ private:
 };
 
 // sendRequest() of apps/lua/AcDlssg/AcDlssg.lua, statement by statement.
-void LuaStyleRequest(ControlLayout* m, uint32_t* counter, bool fg, bool flip, bool negate, bool save) {
+void LuaStyleRequest(ControlLayout* m, uint32_t* counter, bool fg, bool flip, bool negate, bool save,
+                     uint32_t multiplier = 0) {
     const uint32_t s = (Load(m->seq) | 1u) & 0x7FFFFFFFu;  // bit.band(bit.bor(ctl.seq, 1), 0x7FFFFFFF)
     Store(m->seq, s);
     Barrier();
@@ -379,6 +472,7 @@ void LuaStyleRequest(ControlLayout* m, uint32_t* counter, bool fg, bool flip, bo
     Store(m->cameraFlipHandedness, flip ? 1u : 0u);
     Store(m->cameraNegateSide, negate ? 1u : 0u);
     Store(m->saveAsDefault, save ? 1u : 0u);
+    Store(m->desiredMultiplier, multiplier);
     Store(m->requestCounter, *counter);
     Barrier();
     Store(m->seq, s + 1);
@@ -586,12 +680,15 @@ TEST(PanelControl_LuaRequestsReadBackEveryField) {
     CHECK_EQ(c.saveAsDefault, 0u);
     CHECK_EQ(c.seq, 2u);
 
-    LuaStyleRequest(lua.get(), &counter, true, true, true, true);
+    CHECK_EQ(c.desiredMultiplier, 0u);
+
+    LuaStyleRequest(lua.get(), &counter, true, true, true, true, 3);
     REQUIRE(ch.Read(&c) == PanelControlChannel::ReadResult::Ok);
     CHECK_EQ(c.requestCounter, 2u);
     CHECK_EQ(c.fgEnabled, 1u);
     CHECK_EQ(c.cameraNegateSide, 1u);
     CHECK_EQ(c.saveAsDefault, 1u);
+    CHECK_EQ(c.desiredMultiplier, 3u);
     CHECK_EQ(ch.Seq(), 4u);
 
     // A write in progress (odd seq) is torn; the bridge tries again next frame.
@@ -649,6 +746,7 @@ TEST(PanelApply_AnAppliedCounterIsNotAppliedAgain) {
     CHECK(!d.flipChanged);
     CHECK(!d.negateChanged);
     CHECK(!d.save);
+    CHECK(!d.multiplierChanged);
     // Nothing changes: the settings stay the bridge's.
     CHECK(d.next.fgUserOn);
     CHECK(!d.next.flipHandedness);
@@ -691,17 +789,55 @@ TEST(PanelApply_AnyOtherCounterIsANewRequest) {
 }
 
 TEST(PanelApply_SaveAsDefaultWritesTheSettingsAfterTheRequest) {
-    const ControlDecision d = DecideControl(1, Request(2, false, true, false, true), Settings(true, false, false));
+    ControlRequest request = Request(2, false, true, false, true);
+    request.desiredMultiplier = 3;
+    const ControlDecision d = DecideControl(1, request, Settings(true, false, false));
     CHECK(d.apply);
     CHECK(d.save);
     const IniKeyValues keys = SavedDefaultKeys(d.next);
-    REQUIRE(keys.size() == 3u);
+    REQUIRE(keys.size() == 4u);
     CHECK(keys[0].first == "start_with_fg");
     CHECK(keys[0].second == "0");
     CHECK(keys[1].first == "camera_flip_handedness");
     CHECK(keys[1].second == "1");
     CHECK(keys[2].first == "camera_negate_side");
     CHECK(keys[2].second == "0");
+    CHECK(keys[3].first == "fg_multiplier");
+    CHECK(keys[3].second == "3");
+}
+
+// The 2X/3X/4X buttons: desiredMultiplier 2..4 asks for that multiplier
+// (D3D12Presenter::SetFgMultiplier); 0, what an older window writes, and
+// anything else leave it as it is.
+TEST(PanelApply_AMultiplierRequestSetsTheMultiplier) {
+    PanelSettings current = Settings(true, false, false);
+    CHECK_EQ(current.multiplier, 2u);
+    ControlRequest request = Request(6, true, false, false);
+    request.desiredMultiplier = 3;
+    ControlDecision d = DecideControl(5, request, current);
+    CHECK(d.apply);
+    CHECK(d.multiplierChanged);
+    CHECK(!d.fgChanged);
+    CHECK_EQ(d.next.multiplier, 3u);
+    for (uint32_t keep : {0u, 1u, 5u, 0xFFFFFFFFu}) {
+        request.desiredMultiplier = keep;
+        d = DecideControl(5, request, current);
+        CHECK(d.apply);
+        CHECK(!d.multiplierChanged);
+        CHECK_EQ(d.next.multiplier, 2u);
+    }
+    // The multiplier the bridge already has changes nothing.
+    current.multiplier = 4;
+    request.desiredMultiplier = 4;
+    d = DecideControl(5, request, current);
+    CHECK(!d.multiplierChanged);
+    CHECK_EQ(d.next.multiplier, 4u);
+    // An applied counter changes nothing.
+    request.desiredMultiplier = 2;
+    d = DecideControl(6, request, current);
+    CHECK(!d.apply);
+    CHECK(!d.multiplierChanged);
+    CHECK_EQ(d.next.multiplier, 4u);
 }
 
 TEST(PanelApply_RequestFromTheLayoutReadsNonZeroAsOn) {
@@ -711,12 +847,39 @@ TEST(PanelApply_RequestFromTheLayoutReadsNonZeroAsOn) {
     c.cameraFlipHandedness = 0;
     c.cameraNegateSide = 7;
     c.saveAsDefault = 1;
+    c.desiredMultiplier = 4;
     const ControlRequest r = ControlRequestFrom(c);
     CHECK_EQ(r.counter, 12u);
     CHECK(r.desired.fgUserOn);
     CHECK(!r.desired.flipHandedness);
     CHECK(r.desired.negateSide);
     CHECK(r.saveAsDefault);
+    CHECK_EQ(r.desiredMultiplier, 4u);
+}
+
+// fgMultMax: 0 while Streamline has not been asked (every button stays
+// usable), else the highest multiplier numFramesToGenerateMax allows.
+TEST(PanelStatus_MultiplierMaxIsZeroUntilKnown) {
+    CHECK_EQ(PanelMultiplierMax(false, 0), 0u);
+    CHECK_EQ(PanelMultiplierMax(false, 3), 0u);
+    CHECK_EQ(PanelMultiplierMax(true, 0), 2u);  // a failed query: 2X only
+    CHECK_EQ(PanelMultiplierMax(true, 1), 2u);  // RTX 40, or NGX without MultiFrameCountMax
+    CHECK_EQ(PanelMultiplierMax(true, 2), 3u);
+    CHECK_EQ(PanelMultiplierMax(true, 3), 4u);
+    CHECK_EQ(PanelMultiplierMax(true, 5), 4u);
+}
+
+// restartNote: a successful "Save as default" sets it, and it stays for the
+// rest of the session; a failed save leaves it as it was. The panel's live
+// switches (DLSS-G, the multiplier, the camera switches) need no restart.
+TEST(PanelStatus_RestartNoteAfterASave) {
+    const std::string saved = "Saved. start_with_fg and the other saved switches apply the next time the game starts.";
+    CHECK_EQ(PanelRestartNote("", true, true), saved);
+    CHECK_EQ(PanelRestartNote("", true, false), std::string());
+    CHECK_EQ(PanelRestartNote(saved, false, false), saved);
+    CHECK_EQ(PanelRestartNote(saved, true, false), saved);
+    CHECK_EQ(PanelRestartNote("", false, false), std::string());
+    CHECK(saved.size() < kPanelReasonChars);
 }
 
 // The status line: on, else the user's switch (the thing the panel
