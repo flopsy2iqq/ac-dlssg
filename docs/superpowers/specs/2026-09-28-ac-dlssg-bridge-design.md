@@ -354,6 +354,7 @@ One UI in both modes: a normal CSP app window titled "AC DLSS-G", drawn by the L
   - A collapsible "Debug" part with the two camera switches and the per-second counts.
   - While a request is not yet applied, the window shows what was asked for.
   - With no status record, or when a presenter's heartbeat has not changed for 3 s: "Bridge not running", with a hint where the log is.
+  - A status record with our magic but another `version`: "Bridge and window versions differ", both version numbers and to run `install.bat` of one release again; nothing of that record is read and no control is shown. The versions and the section names stay 1 and `.v1` while fields are only appended (an older window reads the fields it knows, a newer window sees zeros from an older bridge); a change that moves or changes an existing field raises both versions.
   - Per frame the window allocates nothing: it compares the status seq and draws texts that are rebuilt only when the status changes.
 - **Hotkey.** Default Ctrl+F10, configurable, polled on the present thread while the game window has the focus.
 

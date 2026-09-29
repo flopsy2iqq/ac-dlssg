@@ -282,6 +282,11 @@ local TEXT_NOT_RUNNING_HINT = 'No status from ac-dlssg. Check that it is install
   .. ' game folder\'s dxgi.dll in standalone mode) and enabled in ac-dlssg\\ac-dlssg.ini, then see'
   .. ' ac-dlssg\\logs\\bridge.log in the game folder.'
 local TEXT_STOPPED_HINT = 'The bridge stopped publishing its status. See ac-dlssg\\logs\\bridge.log in the game folder.'
+-- A status record with our magic but another version: the bridge and this
+-- window come from different releases, and the record is not read.
+local TEXT_VERSIONS_DIFFER = 'Bridge and window versions differ'
+local TEXT_VERSIONS_HINT = 'The bridge publishes status version %d and this window reads version %d. Run install.bat'
+  .. ' of one release again, so that ac-dlssg and this app (apps\\lua\\AcDlssg) come from the same release.'
 local TEXT_PAUSED = 'On, but paused: no frames were generated in the last second (Streamline pauses frame'
   .. ' generation while the game window is not focused)'
 local TEXT_VSYNC = 'VSync is not available with frame generation here: presenting without VSync (the borderless'
@@ -309,7 +314,10 @@ local function newStatus()
     startWithFg = 0, controlApplied = 0, saveCounter = 0, saveOk = 0, baseFps = 0, presentedFps = 0,
     bridgeGpuMs = -1, vramUsageMib = 0, vramBudgetMib = 0, capturesPerSec = 0, cameraFreshPerSec = 0,
     taggedPerSec = 0, reason = '', stateReason = '', warning = '', gpuName = '', hotkey = '', bridgeVersion = '',
-    fgMultRequested = 0, fgMultUsed = 0, fgMultMax = 0, fgMultNote = '', vramNote = '', restartNote = ''
+    fgMultRequested = 0, fgMultUsed = 0, fgMultMax = 0, fgMultNote = '', vramNote = '', restartNote = '',
+    -- Not a field: the version of a record with our magic that this window
+    -- cannot read, else 0.
+    otherVersion = 0
   }
 end
 
@@ -319,7 +327,8 @@ local status, spare = newStatus(), newStatus()
 -- The window's texts, rebuilt when the status changes.
 local texts = {
   status = '', unavailable = '', state = '', fps = '', gpuMs = '', vram = '', gpu = '', mode = '', hotkey = '',
-  warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '', vramNote = '', restartNote = ''
+  warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '', vramNote = '', restartNote = '',
+  versions = ''
 }
 local vramLevel = 0 -- 0 fine, 1 near the budget, 2 over it
 
@@ -369,7 +378,9 @@ local function readStatus()
   c.valid = true
   if st.magic ~= STATUS_MAGIC or st.version ~= STATUS_VERSION then
     c.valid = false
+    c.otherVersion = st.magic == STATUS_MAGIC and st.version or 0
   else
+    c.otherVersion = 0
     c.heartbeat = st.heartbeat
     c.bridgeState = st.bridgeState
     c.mode = st.mode
@@ -543,13 +554,19 @@ local function refreshStatus(now)
       lastBeat = status.heartbeat
       lastBeatTime = now
     end
-    if status.valid then rebuildTexts() end
+    if status.valid then
+      rebuildTexts()
+    elseif status.otherVersion ~= 0 then
+      texts.versions = string.format(TEXT_VERSIONS_HINT, status.otherVersion, STATUS_VERSION)
+    end
   end
 end
 
--- 0: running; 1: no status at all; 2: a presenter stopped publishing.
+-- 0: running; 1: no status at all; 2: a presenter stopped publishing; 3: a
+-- status of another version (bridge and window of different releases).
 local function bridgeProblem(now)
-  if not st or not status.valid then return 1 end
+  if not st then return 1 end
+  if not status.valid then return status.otherVersion ~= 0 and 3 or 1 end
   if status.bridgeState >= STATE_PROXY_NO_FG and now - lastBeatTime > HEARTBEAT_TIMEOUT then return 2 end
   return 0
 end
@@ -606,6 +623,11 @@ function script.windowMain(dt)
   local now = os.preciseClock()
   refreshStatus(now)
   local problem = bridgeProblem(now)
+  if problem == 3 then
+    ui.textColored(TEXT_VERSIONS_DIFFER, COLOR_BAD)
+    ui.textWrapped(texts.versions)
+    return
+  end
   if problem ~= 0 then
     ui.textColored(TEXT_NOT_RUNNING, COLOR_BAD)
     ui.textWrapped(problem == 1 and TEXT_NOT_RUNNING_HINT or texts.stopped)

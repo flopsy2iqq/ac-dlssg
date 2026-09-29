@@ -317,6 +317,31 @@ TEST(LuaApp_WindowShowsTheNotesAndTheMultiplierButtons) {
     CHECK(buttons.find("MULT_LABELS[m]") != std::string::npos);
 }
 
+// A bridge whose status record has another version (a later build with a
+// changed layout, the window of an older one): the window must say that the
+// versions differ, not misread the record and not "Bridge not running".
+TEST(LuaApp_WindowSaysWhenBridgeAndWindowVersionsDiffer) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaString(lua, "TEXT_VERSIONS_DIFFER") == "Bridge and window versions differ");
+    const std::string read = acdb_test::LuaFunctionBody(lua, "readStatus");
+    const size_t check = read.find("if st.magic ~= STATUS_MAGIC or st.version ~= STATUS_VERSION then");
+    REQUIRE(check != std::string::npos);
+    // Only the version of a record with our magic counts; nothing else is read.
+    const size_t other = read.find("c.otherVersion = st.magic == STATUS_MAGIC and st.version or 0", check);
+    CHECK(other != std::string::npos);
+    CHECK(other < read.find("else", check));
+    CHECK(read.find("c.otherVersion = 0", read.find("else", check)) != std::string::npos);
+    CHECK(std::regex_search(acdb_test::LuaFunctionBody(lua, "newStatus"), std::regex("[{,\\s]otherVersion = 0")));
+    CHECK(acdb_test::LuaFunctionBody(lua, "bridgeProblem").find("return status.otherVersion ~= 0 and 3 or 1") !=
+          std::string::npos);
+    const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
+    CHECK(window.find("ui.textColored(TEXT_VERSIONS_DIFFER, COLOR_BAD)") != std::string::npos);
+    CHECK(window.find("texts.versions") != std::string::npos);
+    CHECK(acdb_test::LuaFunctionBody(lua, "refreshStatus").find("texts.versions = string.format(TEXT_VERSIONS_HINT") !=
+          std::string::npos);
+}
+
 // No Lua interpreter runs in these tests; a block that is never closed (or
 // closed twice) is the easiest mistake to make in the app, so the block
 // keywords are counted: every function, if and do has its end, every
