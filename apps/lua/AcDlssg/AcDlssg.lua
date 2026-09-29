@@ -232,7 +232,7 @@ local STATUS_LAYOUT = [[
   uint32_t controlApplied; uint32_t saveCounter; uint32_t saveOk;
   float baseFps; float presentedFps; float bridgeGpuMs; uint32_t vramUsageMib; uint32_t vramBudgetMib;
   float capturesPerSec; float cameraFreshPerSec; float taggedPerSec;
-  char reason[160]; char stateReason[160]; char warning[160]; char gpuName[64]; char hotkey[32];
+  char reason[160]; char stateReason[256]; char warning[160]; char gpuName[64]; char hotkey[32];
   char bridgeVersion[32];
 ]]
 

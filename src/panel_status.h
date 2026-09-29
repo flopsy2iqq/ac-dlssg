@@ -49,6 +49,7 @@ enum PanelModeCode : uint32_t {
 };
 
 constexpr size_t kPanelReasonChars = 160;
+constexpr size_t kPanelStateReasonChars = 256;  // pass-through and unsupported-adapter reasons are long
 
 struct StatusLayout {
     uint32_t magic;       // kStatusMagic
@@ -79,14 +80,14 @@ struct StatusLayout {
     float cameraFreshPerSec;  // ... whose camera snapshot was fresh
     float taggedPerSec;       // Presents with tags and constants
     char reason[kPanelReasonChars];       // "on", or why DLSS-G is off now
-    char stateReason[kPanelReasonChars];  // why bridgeState is below kPanelFgAvailable
+    char stateReason[kPanelStateReasonChars];  // why bridgeState is below kPanelFgAvailable
     char warning[kPanelReasonChars];      // the first driver-profile warning
     char gpuName[64];                     // the render adapter
     char hotkey[32];                      // e.g. "Ctrl+F10"
     char bridgeVersion[32];               // ACDB_VERSION
 };
 
-static_assert(sizeof(StatusLayout) == 716);
+static_assert(sizeof(StatusLayout) == 812);
 static_assert(alignof(StatusLayout) == 4);
 static_assert(offsetof(StatusLayout, magic) == 0);
 static_assert(offsetof(StatusLayout, version) == 4);
@@ -117,10 +118,10 @@ static_assert(offsetof(StatusLayout, cameraFreshPerSec) == 100);
 static_assert(offsetof(StatusLayout, taggedPerSec) == 104);
 static_assert(offsetof(StatusLayout, reason) == 108);
 static_assert(offsetof(StatusLayout, stateReason) == 268);
-static_assert(offsetof(StatusLayout, warning) == 428);
-static_assert(offsetof(StatusLayout, gpuName) == 588);
-static_assert(offsetof(StatusLayout, hotkey) == 652);
-static_assert(offsetof(StatusLayout, bridgeVersion) == 684);
+static_assert(offsetof(StatusLayout, warning) == 524);
+static_assert(offsetof(StatusLayout, gpuName) == 684);
+static_assert(offsetof(StatusLayout, hotkey) == 748);
+static_assert(offsetof(StatusLayout, bridgeVersion) == 780);
 
 struct ControlLayout {
     uint32_t magic;           // kControlMagic once the app has written a request

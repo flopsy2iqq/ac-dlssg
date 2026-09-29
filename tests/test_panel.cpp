@@ -63,7 +63,7 @@ const FieldSpec kStatusFields[] = {
     STATUS_FIELD("float", cameraFreshPerSec, 1),
     STATUS_FIELD("float", taggedPerSec, 1),
     STATUS_FIELD("char", reason, 160),
-    STATUS_FIELD("char", stateReason, 160),
+    STATUS_FIELD("char", stateReason, 256),
     STATUS_FIELD("char", warning, 160),
     STATUS_FIELD("char", gpuName, 64),
     STATUS_FIELD("char", hotkey, 32),
