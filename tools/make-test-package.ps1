@@ -79,6 +79,14 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'dev-common.ps1')
 
 $repo = Split-Path -Parent $PSScriptRoot
+# Removes links to Patreon from a document and keeps the words: a Markdown
+# link [text](https://www.patreon.com/...) becomes its text, and a bare
+# Patreon URL, with the ": " before it, is dropped.
+function Remove-PatreonLinks([string]$Text) {
+    $Text = [regex]::Replace($Text, '\[([^\]]+)\]\(https?://(?:www\.)?patreon\.com/[^)\s]*\)', '$1')
+    return [regex]::Replace($Text, ':?[ \t]*https?://(?:www\.)?patreon\.com/[^\s)]*', '')
+}
+
 # Copied from the repository root into docs\ of the package.
 # Repository paths; each lands in the package's docs\ under its file name.
 $script:PackageDocs = @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt',
@@ -174,13 +182,24 @@ try {
     $readme = $readme.Replace('{VERSION}', $Version).Replace('{COMMIT}', $commit).Replace('{DLL_SHA256}', $dllHash).
         Replace('{DATE}', [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm') + ' UTC')
     $readme = ($readme -replace "`r?`n", "`r`n")
-    [System.IO.File]::WriteAllText((Join-Path $docsDir 'README-test.txt'), $readme, (New-Object System.Text.UTF8Encoding($true)))
+    [System.IO.File]::WriteAllText((Join-Path $docsDir 'README-test.txt'), (Remove-PatreonLinks $readme), (New-Object System.Text.UTF8Encoding($true)))
     # The license, its exceptions, the third-party notices and both READMEs.
+    # The Markdown files lose their Patreon links (the text stays), since the
+    # zip is also uploaded to Nexus Mods, which does not allow links to paid
+    # early-access builds such as the CSP previews.
     foreach ($f in $script:PackageDocs) {
         $from = Join-Path $repo $f
         if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { throw "$from is missing; the package must carry it" }
-        Copy-Item -LiteralPath $from -Destination (Join-Path $docsDir (Split-Path -Leaf $f))
+        $to = Join-Path $docsDir (Split-Path -Leaf $f)
+        if ($f -like '*.md') {
+            $text = [System.IO.File]::ReadAllText($from, $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText($to, (Remove-PatreonLinks $text), $script:Utf8NoBom)
+        } else {
+            Copy-Item -LiteralPath $from -Destination $to
+        }
     }
+    $withPatreon = @(Get-ChildItem -LiteralPath $docsDir -File | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match '(?i)patreon\.com' } | ForEach-Object { $_.Name })
+    if ($withPatreon.Count -gt 0) { throw "docs\ still links to Patreon: $($withPatreon -join ', ')" }
 
     # The root holds only install.bat and the four folders; docs\ holds its files.
     $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })

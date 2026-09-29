@@ -1903,8 +1903,18 @@ Invoke-Case 'PK: the friend test package' {
     foreach ($f in @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt', 'docs\INSTALL.md',
             'docs\INSTALL.ru.md')) {
         $leaf = Split-Path -Leaf $f
-        Check ((Get-Sha (Join-Path $pkg "docs\$leaf")) -eq (Get-Sha (Join-Path $tools "..\$f"))) "docs\$leaf is the repository's $f"
+        if ($f -like '*.md') {
+            # The Markdown docs are the repository's, with each Patreon link reduced to its text.
+            $repoText = [System.IO.File]::ReadAllText((Join-Path $tools "..\$f"))
+            $want = [regex]::Replace($repoText, '\[([^\]]+)\]\(https?://(?:www\.)?patreon\.com/[^)\s]*\)', '$1')
+            Check ([System.IO.File]::ReadAllText((Join-Path $pkg "docs\$leaf")) -ceq $want) "docs\$leaf is the repository's $f without its Patreon links"
+        } else {
+            Check ((Get-Sha (Join-Path $pkg "docs\$leaf")) -eq (Get-Sha (Join-Path $tools "..\$f"))) "docs\$leaf is the repository's $f"
+        }
     }
+    $patreonDocs = @(Get-ChildItem -LiteralPath (Join-Path $pkg 'docs') -File | Where-Object { [System.IO.File]::ReadAllText($_.FullName) -match '(?i)patreon\.com' } | ForEach-Object { $_.Name })
+    Check ($patreonDocs.Count -eq 0) "no document in the package links to Patreon ($($patreonDocs -join ', '))"
+    Check ([System.IO.File]::ReadAllText((Join-Path $pkg 'docs\README.md')) -match 'Patreon') 'README.md in the package still says where CSP preview builds come from'
     Check ((Test-Path -LiteralPath $zip -PathType Leaf) -and (Split-Path -Leaf $zip) -eq 'ac-dlssg-9.8.7.zip') 'the zip is ac-dlssg-<version>.zip, without -test'
     $bats = @(Get-ChildItem -LiteralPath $pkg -Recurse -File -Filter '*.bat')
     Check (@($bats | Where-Object { $b = Read-Bytes $_.FullName; @($b | Where-Object { $_ -gt 0x7E }).Count -gt 0 -or $utf8.GetString($b) -match '[^\r]\n' }).Count -eq 0) 'the .bat files are ASCII with CRLF line ends'
@@ -1927,7 +1937,7 @@ Invoke-Case 'PK: the friend test package' {
     Check ($readmeText -match 'RTX 30' -and $readmeText -match 'dlssg_for_sm86' -and $readmeText -match '(?i)ctrl\s*\+\s*f10' -and
         $readmeText -match 'apps\\lua\\AcDlssg') 'README-test.txt covers RTX 30, dlssg_for_sm86, Ctrl+F10 and the Lua app'
     $urls = @([regex]::Matches($readmeText, 'https?://[^\s)\u00bb"]+') | ForEach-Object { $_.Value.TrimEnd('.', ',') } | Sort-Object -Unique)
-    Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86 https://www.patreon.com/c/x4fab/home') "the only links are the dlssg_for_sm86 repository and CSP's Patreon (for the preview build), no binary ($($urls -join ', '))"
+    Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86') "the only link is the dlssg_for_sm86 repository, no binary and no Patreon ($($urls -join ', '))"
     Check ($readmeText -notmatch '(?i)defender|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438|\u043e\u0442\u043a\u043b\u044e\u0447|smartscreen|smart app control') 'README-test.txt asks for no security feature to be turned off'
 
     # install.ps1 from the package layout, standalone, Streamline from
