@@ -28,6 +28,15 @@
 // bridge log must then show the capture -> camera -> constants -> tags path
 // (the log lines of the M3 contract). DLSS-G itself never runs here.
 //
+// The in-game panel (spec 6.9): --fake-panel plays the CSP Lua app's
+// settings window (tools/testapp/fake_panel.h). It reads the bridge's status
+// from Local\AcDlssg.Status.v1 and writes requests into
+// Local\AcDlssg.Control.v1 as the window's switches do: DLSS-G off, a camera
+// switch, "Save as default", DLSS-G on. Each must show up in the status a few
+// frames later and in the bridge log, the save must edit
+// <exe dir>\ac-dlssg\ac-dlssg.ini key by key, and the heartbeat must keep
+// advancing without requests.
+//
 // Exit codes: 0 every check passed, 1 a check failed (the reason is printed),
 // 2 usage or set-up error.
 #include <windows.h>
@@ -46,6 +55,7 @@
 #include <vector>
 
 #include "fake_csp.h"
+#include "fake_panel.h"
 #include "log_checks.h"
 
 using Microsoft::WRL::ComPtr;
@@ -105,6 +115,15 @@ constexpr double kFgMinShare = 0.9;
 // The bridge logs each distinct per-frame DLSS-G-off reason at most once per
 // 10 s (M3 contract); the timestamps have millisecond resolution.
 constexpr double kFgReasonPeriodMs = 10000.0 - 50.0;
+// --fake-panel: the frames of its requests; each is checked kPanelCheckDelay
+// frames later. The heartbeat is sampled at kPanelBeatFrame and at the end.
+constexpr int kPanelOffFrame = 200;
+constexpr int kPanelFlipFrame = 300;
+constexpr int kPanelSaveFrame = 400;
+constexpr int kPanelOnFrame = 500;
+constexpr int kPanelBeatFrame = 600;
+constexpr int kPanelCheckDelay = 10;
+constexpr int kPanelMinFrames = 1500;
 
 enum class Expect { Any, Proxy, Passthrough };
 enum class ExpectFg { None, Pipeline, NoCamera };
@@ -126,6 +145,7 @@ struct Options {
     std::string passthrough_reason;  // --expect-passthrough-reason: the text the pass-through must name
     bool fake_ngx = false;           // CSP's DLSS calls against fake_nvngx.dll
     bool fake_camera = false;        // the CSP Lua app's camera writer
+    bool fake_panel = false;         // the CSP Lua app's settings window
     ExpectFg expect_fg = ExpectFg::None;
     std::wstring fixture = L"default";
 };
@@ -394,6 +414,13 @@ struct App {
     testapp::CameraWriter camera;
     uint32_t camera_writes = 0;
     double camera_last_ms = 0;
+    // --fake-panel.
+    testapp::FakePanel panel;
+    acdb::StatusLayout panel_start{};
+    std::wstring ini_path;
+    std::string ini_before;
+    uint32_t panel_beat = 0;          // the heartbeat at kPanelBeatFrame
+    int panel_requests = 0;
     bool frames_done = false;          // RunFrames presented every frame
 };
 
@@ -933,6 +960,174 @@ bool CreateFakeFeature(App& a) {
     return true;
 }
 
+std::string ReadFileBytes(const std::wstring& path) {
+    const HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return {};
+    std::string text;
+    char buf[4096];
+    DWORD got = 0;
+    while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) text.append(buf, got);
+    CloseHandle(h);
+    return text;
+}
+
+std::string TextOf(const char* field, size_t size) {
+    size_t n = 0;
+    while (n < size && field[n] != '\0') ++n;
+    return std::string(field, n);
+}
+#define PANEL_TEXT(field) TextOf(field, sizeof(field))
+
+// --fake-panel: the Lua app opens the sections when its window first draws.
+// The bridge created them at bootstrap and published the proxied chain.
+bool SetUpFakePanel(App& a) {
+    std::string err;
+    if (!a.panel.Open(acdb::kStatusSectionName, acdb::kControlSectionName, &err))
+        return Fail("fake panel: %s", err.c_str());
+    acdb::StatusLayout& s = a.panel_start;
+    if (!a.panel.ReadStatus(&s)) return Fail("fake panel: no stable status record");
+    if (s.ownerPid != GetCurrentProcessId())
+        return Fail("fake panel: the status belongs to process %u, not to this one", s.ownerPid);
+    if (s.bridgeState != acdb::kPanelProxyNoFg && s.bridgeState != acdb::kPanelFgAvailable)
+        return Fail("fake panel: bridge state %u (%s), expected a proxied chain (2 or 3)", s.bridgeState,
+                    PANEL_TEXT(s.stateReason).c_str());
+    if (s.fgUserOn != 1 || s.cameraFlipHandedness != 0 || s.cameraNegateSide != 0)
+        return Fail("fake panel: the scenario needs start_with_fg=1 and both camera switches off, the status has %u, "
+                    "%u, %u",
+                    s.fgUserOn, s.cameraFlipHandedness, s.cameraNegateSide);
+    a.ini_path = a.exe_dir + L"\\ac-dlssg\\ac-dlssg.ini";
+    a.ini_before = ReadFileBytes(a.ini_path);
+    Print("fake panel: status: bridge state %u (%s), mode %u, DLSS-G switch %u, heartbeat %u, hotkey %s, GPU %s, "
+          "bridge %s; request counter %u",
+          s.bridgeState, PANEL_TEXT(s.stateReason).c_str(), s.mode, s.fgUserOn, s.heartbeat, PANEL_TEXT(s.hotkey).c_str(),
+          PANEL_TEXT(s.gpuName).c_str(), PANEL_TEXT(s.bridgeVersion).c_str(), a.panel.Counter());
+    return true;
+}
+
+// The save of kPanelSaveFrame: start_with_fg=1 of the scenario's ini becomes
+// 0 in place, the two camera keys it lacks come after the last line of its
+// [bridge] section (the last section), and nothing else changes.
+bool CheckPanelIni(const App& a) {
+    const std::string& before = a.ini_before;
+    const size_t at = before.find("\r\nstart_with_fg=1\r\n");
+    const size_t section = before.rfind("[bridge]\r\n");
+    if (at == std::string::npos || section == std::string::npos || section > at ||
+        before.find("camera_") != std::string::npos || before.size() < 2 || before.compare(before.size() - 2, 2, "\r\n") != 0 ||
+        before.find('[', section + 1) != std::string::npos)
+        return Fail("fake panel: the scenario's ac-dlssg.ini must end with a [bridge] section that has start_with_fg=1 "
+                    "and no camera keys, in CRLF lines");
+    std::string expected = before;
+    expected.replace(at, 19, "\r\nstart_with_fg=0\r\n");
+    expected += "camera_flip_handedness=1\r\ncamera_negate_side=0\r\n";
+    const std::string after = ReadFileBytes(a.ini_path);
+    if (after != expected)
+        return Fail("fake panel: after Save as default ac-dlssg.ini is:\n%s\nexpected:\n%s", after.c_str(),
+                    expected.c_str());
+    if (FileExists(a.ini_path + L".new")) return Fail("fake panel: ac-dlssg.ini.new was left behind");
+    Print("fake panel: ac-dlssg.ini after Save as default: start_with_fg=0 in place, camera_flip_handedness=1 and "
+          "camera_negate_side=0 added under [bridge], every other byte kept");
+    return true;
+}
+
+void PanelRequest(App& a, const char* what, bool fg, bool flip, bool negate, bool save) {
+    a.panel.Request(fg, flip, negate, save);
+    ++a.panel_requests;
+    Print("fake panel: request %u: %s", a.panel.Counter(), what);
+}
+
+// One frame of the fake window, after the frame's Present: the bridge applies
+// a request at its next Present and publishes the result at once.
+bool PanelFrame(App& a, int f) {
+    if (f == kPanelOffFrame) PanelRequest(a, "frame generation off", false, false, false, false);
+    if (f == kPanelFlipFrame) PanelRequest(a, "camera_flip_handedness on", false, true, false, false);
+    if (f == kPanelSaveFrame) PanelRequest(a, "Save as default", false, true, false, true);
+    if (f == kPanelOnFrame) PanelRequest(a, "frame generation on", true, true, false, false);
+    const bool check = f == kPanelOffFrame + kPanelCheckDelay || f == kPanelFlipFrame + kPanelCheckDelay ||
+                       f == kPanelSaveFrame + kPanelCheckDelay || f == kPanelOnFrame + kPanelCheckDelay ||
+                       f == kPanelBeatFrame;
+    if (!check) return true;
+    acdb::StatusLayout s{};
+    if (!a.panel.ReadStatus(&s)) return Fail("frame %d: fake panel: no stable status record", f);
+    if (f == kPanelBeatFrame) {
+        a.panel_beat = s.heartbeat;
+        return true;
+    }
+    if (s.controlApplied != a.panel.Counter())
+        return Fail("frame %d: fake panel: the status says request %u was applied, the last one is %u", f,
+                    s.controlApplied, a.panel.Counter());
+    if (f == kPanelOffFrame + kPanelCheckDelay) {
+        if (s.fgUserOn != 0 || s.fgOn != 0 || PANEL_TEXT(s.reason) != "off by the user (panel)")
+            return Fail("frame %d: fake panel: after \"off\" the status has switch %u, DLSS-G %u, reason \"%s\"", f,
+                        s.fgUserOn, s.fgOn, PANEL_TEXT(s.reason).c_str());
+        Print("fake panel: status after \"off\": switch 0, DLSS-G 0, reason \"%s\"", PANEL_TEXT(s.reason).c_str());
+    } else if (f == kPanelFlipFrame + kPanelCheckDelay) {
+        if (s.cameraFlipHandedness != 1 || s.cameraNegateSide != 0 || s.fgUserOn != 0)
+            return Fail("frame %d: fake panel: after the camera switch the status has flip %u, negate %u, switch %u", f,
+                        s.cameraFlipHandedness, s.cameraNegateSide, s.fgUserOn);
+        Print("fake panel: status after the camera switch: camera_flip_handedness 1");
+    } else if (f == kPanelSaveFrame + kPanelCheckDelay) {
+        if (s.saveCounter != a.panel.Counter() || s.saveOk != 1 || s.startWithFg != 0)
+            return Fail("frame %d: fake panel: after Save as default the status has save %u (ok %u), start_with_fg %u",
+                        f, s.saveCounter, s.saveOk, s.startWithFg);
+        if (!CheckPanelIni(a)) return false;
+    } else if (f == kPanelOnFrame + kPanelCheckDelay) {
+        if (s.fgUserOn != 1)
+            return Fail("frame %d: fake panel: after \"on\" the status has switch %u", f, s.fgUserOn);
+        Print("fake panel: status after \"on\": switch 1, reason \"%s\"", PANEL_TEXT(s.reason).c_str());
+    }
+    return true;
+}
+
+// After the frames: the statistics path kept the heartbeat going.
+bool CheckFakePanel(App& a) {
+    if (!a.opt.fake_panel || !a.panel.IsOpen()) return true;
+    acdb::StatusLayout s{};
+    if (!a.panel.ReadStatus(&s)) return Fail("fake panel: no stable status record at the end");
+    Print("fake panel: %d requests; heartbeat %u at frame %d, %u at the end; base %.1f fps, presented %.1f fps, bridge "
+          "GPU %.3f ms, video memory %u/%u MiB",
+          a.panel_requests, a.panel_beat, kPanelBeatFrame, s.heartbeat, s.baseFps, s.presentedFps, s.bridgeGpuMs,
+          s.vramUsageMib, s.vramBudgetMib);
+    if (a.frames_done && s.heartbeat == a.panel_beat)
+        return Fail("fake panel: the heartbeat did not advance after frame %d", kPanelBeatFrame);
+    if (a.frames_done && s.baseFps <= 0.0f) return Fail("fake panel: the status has no base fps");
+    return true;
+}
+
+// After the release of the proxy: every later chain passes through.
+bool CheckFakePanelAfterRelease(App& a) {
+    if (!a.opt.fake_panel || !a.panel.IsOpen()) return true;
+    acdb::StatusLayout s{};
+    const bool ok = a.panel.ReadStatus(&s);
+    a.panel.Close();
+    if (!ok) return Fail("fake panel: no stable status record after the release");
+    if (s.bridgeState != acdb::kPanelPassThrough)
+        return Fail("fake panel: after the release the bridge state is %u, expected pass-through (1)", s.bridgeState);
+    Print("fake panel: after the release: pass-through, \"%s\"", PANEL_TEXT(s.stateReason).c_str());
+    return true;
+}
+
+// The bridge's lines for the fake panel's requests, each exactly once.
+bool CheckPanelLog(const BridgeLog& log) {
+    bool ok = true;
+    const char* const once[] = {
+        "] INFO panel: status section Local\\AcDlssg.Status.v1 and control section Local\\AcDlssg.Control.v1 ready",
+        "] INFO fg: panel -> off",
+        "] INFO panel: camera_flip_handedness 0 -> 1",
+        "] INFO panel: saved start_with_fg=0 camera_flip_handedness=1 camera_negate_side=0 to ",
+        "] INFO fg: panel -> on",
+    };
+    for (const char* line : once) {
+        const int n = log.Count(line);
+        if (n != 1) ok = Fail("the bridge log has \"%s\" %d times, expected once", line + 2, n);
+    }
+    for (const auto& l : log.lines) {
+        if (l.find(" panel: ") != std::string::npos || l.find("fg: panel") != std::string::npos)
+            Print("note: panel: %s", l.c_str());
+    }
+    return ok;
+}
+
 // After the swap chain exists, as CSP initialises DLSS and its Lua apps.
 bool SetUpCspFakes(App& a) {
     if (a.opt.fake_ngx) {
@@ -945,6 +1140,7 @@ bool SetUpCspFakes(App& a) {
         Print("fake NGX: loaded %s", Narrow(path).c_str());
         if (!CreateFakeFeature(a)) return false;
     }
+    if (a.opt.fake_panel && !SetUpFakePanel(a)) return false;
     if (a.opt.fake_camera) {
         std::string err;
         if (!a.camera.Open(testapp::kCameraSectionName, &err))
@@ -1235,6 +1431,7 @@ bool RunFrames(App& a) {
             return Fail("frame %d: Present(%u, 0x%X) returned 0x%08lX (%s)", f, sync, flags,
                         static_cast<unsigned long>(hr), HrName(hr));
         if (hr == DXGI_STATUS_OCCLUDED) ++a.occluded;
+        if (a.opt.fake_panel && !PanelFrame(a, f)) return false;
 
         const UINT index = a.chain3->GetCurrentBackBufferIndex();
         // The proxy always reports buffer 0 (spec 6.3).
@@ -1427,6 +1624,7 @@ bool CheckLogAfterRun(App& a) {
             ok = false;
         }
     }
+    if (a.opt.fake_panel && !CheckPanelLog(log)) ok = false;
     return ok;
 }
 
@@ -1437,7 +1635,7 @@ void Usage() {
         "usage: testapp [--frames N] [--vsync] [--resize] [--test-present] [--recreate] [--stall]\n"
         "               [--expect-proxy | --expect-passthrough] [--fixture NAME] [--fps-cap N] [--hidden]\n"
         "               [--via-dxgi | --standalone] [--expect-passthrough-reason TEXT]\n"
-        "               [--fake-ngx] [--fake-camera] [--expect-fg pipeline|no-camera]\n"
+        "               [--fake-ngx] [--fake-camera] [--expect-fg pipeline|no-camera] [--fake-panel]\n"
         "  --frames N            frames to present (default 600)\n"
         "  --vsync               Present(1, 0) instead of Present(0, ALLOW_TEARING)\n"
         "  --resize              ResizeBuffers to 1600x900 at frame 200 and back to 1280x720 at frame 400\n"
@@ -1468,7 +1666,11 @@ void Usage() {
         "  --expect-fg MODE      pipeline: the bridge log shows the capture, camera, constants and first-tags\n"
         "                        lines, and the statistics captures, camera_fresh and tagged at 90% of base_fps;\n"
         "                        no-camera: captures, but no fresh camera and no tags, and a warning naming\n"
-        "                        the camera");
+        "                        the camera\n"
+        "  --fake-panel          the CSP Lua app's settings window: reads Local\\AcDlssg.Status.v1, writes\n"
+        "                        requests into Local\\AcDlssg.Control.v1 (off, a camera switch, Save as default,\n"
+        "                        on) and checks the status, the log and ac-dlssg.ini; needs --expect-proxy and\n"
+        "                        at least 1500 frames (refused while acs.exe runs, which shares those sections)");
 }
 
 bool ParseInt(const wchar_t* s, int minimum, int* out) {
@@ -1525,6 +1727,8 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
             o->fake_ngx = true;
         } else if (arg == L"--fake-camera") {
             o->fake_camera = true;
+        } else if (arg == L"--fake-panel") {
+            o->fake_panel = true;
         } else if (arg == L"--expect-fg" && hasValue) {
             const std::wstring mode = argv[++i];
             if (mode == L"pipeline") {
@@ -1543,6 +1747,8 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
     if (o->expect_fg != ExpectFg::None && !o->fake_ngx) return false;
     if (o->expect_fg == ExpectFg::Pipeline && !o->fake_camera) return false;
     if (o->expect_fg == ExpectFg::NoCamera && o->fake_camera) return false;
+    // The panel's checks need a presenter and the whole request sequence.
+    if (o->fake_panel && (o->expect != Expect::Proxy || o->frames < kPanelMinFrames)) return false;
     return true;
 }
 
@@ -1561,6 +1767,13 @@ int Run(App& a) {
     if ((a.opt.fake_camera || a.opt.fake_ngx) && GameRunning()) {
         Print("acs.exe is running; --fake-camera and --fake-ngx would share %s with it",
               Narrow(testapp::kCameraSectionName).c_str());
+        return 2;
+    }
+    // The panel's sections too: the game's bridge would apply the fake
+    // panel's requests (and save them into the game's ac-dlssg.ini).
+    if (a.opt.fake_panel && GameRunning()) {
+        Print("acs.exe is running; --fake-panel would share %s and %s with it", Narrow(acdb::kStatusSectionName).c_str(),
+              Narrow(acdb::kControlSectionName).c_str());
         return 2;
     }
 
@@ -1584,9 +1797,11 @@ int Run(App& a) {
 
     bool ok = CreateDevice(a) && CreateChain(a) && SetUpCspFakes(a) && RunFrames(a);
     if (!CheckCspFakes(a)) ok = false;
+    if (!CheckFakePanel(a)) ok = false;
     ReleaseCspFakes(a);
     const int created = a.chains_created;
     ReleaseChain(a);
+    if (!CheckFakePanelAfterRelease(a)) ok = false;
     if (const int hidden = CountBridgeHiddenWindows(); hidden != 0)
         ok = Fail("%d hidden bridge windows remain after the swap chain was released", hidden);
     if (created > 0 && !CheckLogAfterRun(a)) ok = false;
