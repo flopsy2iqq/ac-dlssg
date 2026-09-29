@@ -235,6 +235,33 @@ TEST(IniEdit_WriteIniKeysReportsAnUnwritableTarget) {
     CHECK(GetFileAttributesW((path + L".new").c_str()) == INVALID_FILE_ATTRIBUTES);
 }
 
+// A file saved as UTF-16 (Notepad's "Unicode"), or anything else with NUL
+// bytes, is not text the key-level edit understands: appending UTF-8 lines to
+// it would leave a file of two encodings. It is refused and left as it was.
+TEST(IniEdit_WriteIniKeysRefusesAUtf16File) {
+    TempDir dir(L"ini_write_utf16");
+    const auto utf16 = [](const std::string& ascii, bool bigEndian) {
+        std::string out = bigEndian ? "\xFE\xFF" : "\xFF\xFE";
+        for (char c : ascii) {
+            if (bigEndian) out.push_back('\0');
+            out.push_back(c);
+            if (!bigEndian) out.push_back('\0');
+        }
+        return out;
+    };
+    const std::string ascii = "[bridge]\r\nstart_with_fg=1\r\n";
+    const std::string nul = ascii + std::string(1, '\0') + "\r\n";
+    for (const std::string& text : {utf16(ascii, false), utf16(ascii, true), nul}) {
+        const auto path = dir.Write(L"ac-dlssg.ini", text);
+        std::string err;
+        CHECK(!WriteIniKeys(path.wstring(), "bridge", {{"start_with_fg", "0"}}, &err));
+        if (err.find("not UTF-8") == std::string::npos) std::printf("  error: %s\n", err.c_str());
+        CHECK(err.find("not UTF-8") != std::string::npos);
+        CHECK(ReadAll(path) == text);
+        CHECK(GetFileAttributesW((path.wstring() + L".new").c_str()) == INVALID_FILE_ATTRIBUTES);
+    }
+}
+
 // ---------------------------------------------------------------- Hotkey
 
 TEST(Hotkey_CtrlF10) {

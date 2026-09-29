@@ -257,6 +257,11 @@ bool WriteIniKeys(const std::wstring& path, const std::string& section, const In
         CloseHandle(in);
         if (!ok) return fail(Win32Failure("reading", path, code));
     }
+    // UTF-16 (with or without a BOM) has NUL bytes; UTF-8 lines appended to
+    // it would leave a file of two encodings.
+    if (text.find('\0') != std::string::npos || text.compare(0, 2, "\xFF\xFE") == 0 ||
+        text.compare(0, 2, "\xFE\xFF") == 0)
+        return fail(Narrow(path) + " is not UTF-8 text (saved as UTF-16?); it was not changed");
 
     const std::string out = SetIniKeys(text, section, keys);
     CreateParentDirs(path);

@@ -51,7 +51,8 @@ std::string SetIniKeys(const std::string& text, const std::string& section, cons
 
 // SetIniKeys on the file at path (a missing file counts as empty, its folder
 // is created), written as <path>.new, flushed, then renamed over path with
-// MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH). On any failure the file is
+// MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH). A file that is not UTF-8
+// text (a UTF-16 BOM, or any NUL byte) is refused. On any failure the file is
 // left as it was, <path>.new is removed and *error says what failed.
 bool WriteIniKeys(const std::wstring& path, const std::string& section, const IniKeyValues& keys,
                   std::string* error);
