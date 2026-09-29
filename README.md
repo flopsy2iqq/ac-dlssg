@@ -45,25 +45,24 @@ On a 4 GB card the video memory is tight: if the game stutters, lower CSP's text
 - **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it.
 - **An NVIDIA RTX GPU:**
   - RTX 40 and RTX 50 support DLSS-G themselves.
-  - RTX 30, including laptop GPUs such as the RTX 3050 Ti, needs the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). It is not part of this project; install it yourself from its page, and see [RTX 30 and dlssg_for_sm86](#rtx-30-and-dlssg_for_sm86). It needs NVIDIA driver R580 or newer.
+  - RTX 30, including laptop GPUs such as the RTX 3050 Ti, needs the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). You do not install it yourself: on an RTX 30 the installer downloads the pinned release 0.3.5 from the author's repository, checks its hashes and puts it next to `acs.exe`. See [RTX 30 and dlssg_for_sm86](#rtx-30-and-dlssg_for_sm86). It needs NVIDIA driver R580 or newer.
   - RTX 20 is not supported by this project.
 - **Windows 10 version 2004 or newer, or Windows 11.** Hardware-accelerated GPU scheduling must be on: Settings > System > Display > Graphics > Change default graphics settings.
 - **Laptops:** set `acs.exe` to "High performance" in the same Graphics settings, so the game runs on the NVIDIA GPU.
-- **Internet on the first install.** The installer downloads NVIDIA Streamline 2.14.1 (about 276 MB) from NVIDIA's GitHub release and checks its hash and NVIDIA's signatures. This project never ships NVIDIA files.
+- **Internet on the first install.** The installer downloads NVIDIA Streamline 2.14.1 (about 276 MB) from NVIDIA's GitHub release and checks its hash and NVIDIA's signatures, and on an RTX 30 also dlssg_for_sm86 (about 30 MB). This project never ships NVIDIA files or dlssg_for_sm86.
 - **ReShade is optional.** With ReShade 6.8+ (add-on build) installed as `dxgi.dll`, the bridge loads through ReShade. Without it, the bridge itself is installed as `dxgi.dll`. The installer picks the mode.
 
 ## Install
 
 1. Close Assetto Corsa and Content Manager's game session.
-2. **RTX 30 only:** install dlssg_for_sm86 as its page describes: `version.dll` and `dlssg_sm86.ini` go next to `acs.exe`.
-3. Download `ac-dlssg-<version>-test.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere.
-4. Right-click `install.ps1` and choose **Run with PowerShell**. If that does not start it, open PowerShell in the folder and run:
-   ```
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-   ```
-   The script finds the game through Steam. It then downloads Streamline and shows NVIDIA's license files; type `y` to accept them. If the game is under `C:\Program Files (x86)` and the script reports "access denied", run the same command from PowerShell opened as administrator.
-5. Start the game as usual and make sure DLSS is the upscaler in CSP's graphics settings.
-6. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.
+2. Download `ac-dlssg-<version>-test.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `files`, `scripts` and `tools`.
+3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30 dlssg_for_sm86), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. At the end the window waits for Enter.
+4. Start the game as usual and make sure DLSS is the upscaler in CSP's graphics settings.
+5. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.
+
+**Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`.
+
+**Advanced:** `install.bat -NoSpoof` installs without dlssg_for_sm86; on an RTX 30 frame generation then does not run.
 
 ## Use
 
@@ -74,13 +73,13 @@ On a 4 GB card the video memory is tight: if the game stutters, lower CSP's text
 
 ## Uninstall
 
-Run `uninstall.ps1` from the same folder. It restores every file the installer changed, and removes the bridge, the Streamline files and the Lua app. Logs and settings stay in `<game>\ac-dlssg` unless you add `-RemoveData`.
+Double-click `tools\uninstall.bat`. It restores every file the installer changed, and removes the bridge, the Streamline files, the Lua app and the dlssg_for_sm86 files the installer put there; a dlssg_for_sm86 you had before stays. Logs and settings stay in `<game>\ac-dlssg` unless you run `tools\uninstall.bat -RemoveData`, which also deletes dlssg_for_sm86's logs and cache when the installer installed it.
 
 ## If something goes wrong
 
 - **The game starts but the frame rate does not change.** Look at `<game>\ac-dlssg\logs\bridge.log`. The line `fg: DLSS-G on` means frame generation runs. A line `fg: frame without DLSS-G: <reason>`, or `DLSS-G is not supported on this adapter (...)`, says why it does not.
-- **The game crashes or does not start.** Run `uninstall.ps1`; the game is then back to how it was.
-- **Reporting a problem:** run `collect-logs.ps1` from the package after the game is closed. It only reads files and writes one zip next to itself. Attach that zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
+- **The game crashes or does not start.** Run `tools\uninstall.bat`; the game is then back to how it was.
+- **Reporting a problem:** double-click `tools\collect-logs.bat` after the game is closed. It only reads files and writes one zip into the `tools` folder. Attach that zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
 
 ## Known limitations
 
@@ -93,12 +92,12 @@ Run `uninstall.ps1` from the same folder. It restores every file the installer c
 
 NVIDIA locks DLSS Frame Generation to RTX 40 and newer. [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) by sdli1995, which includes Coldwood1026's RTX 20 work, lifts that lock on RTX 30. The author agreed to this project pointing to it.
 
-- ac-dlssg does not contain, download or modify it.
+- ac-dlssg does not contain or modify it. On an RTX 30 the installer downloads exactly `version.dll` and `dlssg_sm86.ini` of release 0.3.5 (commit `9621db5`) from the author's repository on your PC, checks their git hashes (and the SHA-256 of `version.dll`) before it installs anything, and prints this notice first. A `version.dll` that is already in the game folder is never replaced.
 - That repository has no LICENSE file. Its README says the source is GPLv3, but no source is published.
 - It embeds NVIDIA's `nvngx_dlssg.dll`, which is not relicensed.
 - Using it on RTX 30 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids for that license's licensees.
 
-Whether to use it is your decision.
+Whether to use it is your decision: `install.bat -NoSpoof` installs without it, and `tools\uninstall.bat` removes it again.
 
 ## How it works (short)
 
@@ -125,7 +124,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 
 ## Credits
 
-- [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) by sdli1995, with Coldwood1026's work: DLSS-G on RTX 30.
+- [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) by sdli1995, with Coldwood1026's work: DLSS-G on RTX 30. The installer downloads it from the author's repository on your PC.
 - [NVIDIA Streamline](https://github.com/NVIDIA-RTX/Streamline): the SDK that delivers DLSS Frame Generation and Reflex. Its DLLs are downloaded from NVIDIA's release on your PC.
 - [dlss5-bridge](https://github.com/NIGos/dlss5-bridge) (MIT): the approach for hooking CSP's DLSS call.
 - [open-shaders](https://github.com/alandtse/open-shaders) and [Community Shaders](https://github.com/doodlum/skyrim-community-shaders): the DirectX 11 game plus DirectX 12 Streamline swap chain design.
