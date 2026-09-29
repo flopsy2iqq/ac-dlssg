@@ -81,7 +81,7 @@ DLSS-G 2X в Assetto Corsa с CSP:
 
 **Обновление:** запустите `install.bat` новой сборки поверх старой. Он сам заменит файлы старой сборки, в том числе программу удаления в `ac-dlssg`, уберёт те, что новой больше не нужны, и сам переключится между режимом с ReShade и без него, если ReShade с тех пор поставили или убрали. Остановится он только на файлах, которые явно не от этого проекта, например на `dxgi.dll` другого мода. Streamline он заново не скачивает, если установленные файлы целы (у каждого закреплённый SHA-256 и подпись NVIDIA; тогда он пишет "Streamline 2.14.1 is already installed and verified; not downloaded again"), и dlssg_for_sm86 на RTX 30 тоже.
 
-**Что меняется в папке игры:** `dxgi.dll` (это мост; с ReShade вместо него `ac-dlssg.dll` и две строки в `ReShade.ini`), папка `ac-dlssg` (Streamline в `sl`, `ac-dlssg.ini`, `logs`, запись об установке в `install`, а также `uninstall.bat`, `collect-logs.bat` и папка `scripts` для них), Lua-приложение CSP в `apps\lua\AcDlssg`, а на RTX 30 ещё `version.dll` и `dlssg_sm86.ini` рядом с `acs.exe`. Больше ничего.
+**Что меняется в папке игры:** `dxgi.dll` (это мост; с ReShade вместо него `ac-dlssg.dll` и две строки в `ReShade.ini`), папка `ac-dlssg` (Streamline в `sl`, `ac-dlssg.ini`, `logs`, запись об установке в `install`, а также `uninstall.bat`, `collect-logs.bat` и папка `scripts` для них), Lua-приложение CSP в `apps\lua\AcDlssg`, а на RTX 30 ещё `version.dll` и `dlssg_sm86.ini` рядом с `acs.exe` и папка `dlssg_sm86` с логами dlssg_for_sm86. `collect-logs.bat` кладёт свои zip в `ac-dlssg`. Больше ничего.
 
 **Для опытных:** `install.bat -NoSpoof` ставит без dlssg_for_sm86; на RTX 30 генерации кадров тогда не будет.
 
@@ -99,7 +99,7 @@ DLSS-G 2X в Assetto Corsa с CSP:
 
 ## Удаление
 
-Откройте папку игры (в Steam: правой кнопкой по Assetto Corsa, Управление, Просмотреть локальные файлы), в ней папку `ac-dlssg`, и дважды щёлкните `uninstall.bat`. Он вернёт всё, что поменял установщик, и уберёт мост, Streamline, Lua-приложение и файлы dlssg_for_sm86, которые положил установщик; dlssg_for_sm86, стоявший у вас раньше, остаётся. После Enter в конце он удаляет и себя, `collect-logs.bat` и `scripts`. Логи и настройки остаются в `<игра>\ac-dlssg`. Чтобы удалить и их, запустите там `uninstall.bat -RemoveData`: так удаляется вся папка `<игра>\ac-dlssg`, а также логи и кэш dlssg_for_sm86, если его ставил установщик. То же делает `tools\uninstall.bat` из распакованной папки, если она у вас ещё есть.
+Откройте папку игры (в Steam: правой кнопкой по Assetto Corsa, Управление, Просмотреть локальные файлы), в ней папку `ac-dlssg`, и дважды щёлкните `uninstall.bat`. Он вернёт всё, что поменял установщик, и уберёт мост, Streamline, Lua-приложение и файлы dlssg_for_sm86, которые положил установщик; dlssg_for_sm86, стоявший у вас раньше, остаётся. После Enter в конце он удаляет и себя, `collect-logs.bat` и `scripts`. Логи и настройки остаются в `<игра>\ac-dlssg`; после удаления эту папку можно просто удалить. Чтобы удалить и их за один запуск, запустите там вместо этого `uninstall.bat -RemoveData`: так удаляется вся папка `<игра>\ac-dlssg`, а также логи и кэш dlssg_for_sm86, если его ставил установщик. То же делает `tools\uninstall.bat` из распакованной папки, если она у вас ещё есть; у версии 1.0.0 есть только он.
 
 ## Если что-то не так
 

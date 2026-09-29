@@ -81,7 +81,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 
 **Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, the uninstaller in `ac-dlssg` included, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`. It does not download Streamline again when the installed files are intact (each matches its pinned SHA-256 and carries NVIDIA's signature; it then says "Streamline 2.14.1 is already installed and verified; not downloaded again"), and the same goes for dlssg_for_sm86 on an RTX 30.
 
-**What changes in the game folder:** `dxgi.dll` (the bridge; with ReShade, `ac-dlssg.dll` and two lines in `ReShade.ini` instead), the folder `ac-dlssg` (Streamline in `sl`, `ac-dlssg.ini`, `logs`, the install record in `install`, and `uninstall.bat`, `collect-logs.bat` and the `scripts` they run), the CSP Lua app in `apps\lua\AcDlssg`, and on an RTX 30 `version.dll` and `dlssg_sm86.ini` next to `acs.exe`. Nothing else.
+**What changes in the game folder:** `dxgi.dll` (the bridge; with ReShade, `ac-dlssg.dll` and two lines in `ReShade.ini` instead), the folder `ac-dlssg` (Streamline in `sl`, `ac-dlssg.ini`, `logs`, the install record in `install`, and `uninstall.bat`, `collect-logs.bat` and the `scripts` they run), the CSP Lua app in `apps\lua\AcDlssg`, and on an RTX 30 `version.dll` and `dlssg_sm86.ini` next to `acs.exe` and the folder `dlssg_sm86` with dlssg_for_sm86's logs. `collect-logs.bat` writes its zips into `ac-dlssg`. Nothing else.
 
 **Advanced:** `install.bat -NoSpoof` installs without dlssg_for_sm86; on an RTX 30 frame generation then does not run.
 
@@ -99,7 +99,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 
 ## Uninstall
 
-Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local files), open `ac-dlssg` and double-click `uninstall.bat`. It restores every file the installer changed, and removes the bridge, the Streamline files, the Lua app and the dlssg_for_sm86 files the installer put there; a dlssg_for_sm86 you had before stays. After the Enter at its end it removes itself, `collect-logs.bat` and `scripts` too. Logs and settings stay in `<game>\ac-dlssg` unless you run `uninstall.bat -RemoveData` there, which deletes all of `<game>\ac-dlssg` and also dlssg_for_sm86's logs and cache when the installer installed it. The package's `tools\uninstall.bat` does the same, if you still have the unpacked folder.
+Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local files), open `ac-dlssg` and double-click `uninstall.bat`. It restores every file the installer changed, and removes the bridge, the Streamline files, the Lua app and the dlssg_for_sm86 files the installer put there; a dlssg_for_sm86 you had before stays. After the Enter at its end it removes itself, `collect-logs.bat` and `scripts` too. Logs and settings stay in `<game>\ac-dlssg`; after the uninstall you can simply delete that folder. To remove them in the same run, start `uninstall.bat -RemoveData` there instead, which deletes all of `<game>\ac-dlssg` and also dlssg_for_sm86's logs and cache when the installer installed it. The package's `tools\uninstall.bat` does the same, if you still have the unpacked folder; version 1.0.0 has only that one.
 
 ## If something goes wrong
 

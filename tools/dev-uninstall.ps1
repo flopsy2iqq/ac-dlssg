@@ -318,7 +318,7 @@ try {
         }
         $toolScriptsDir = Join-Path $dataDir $script:AcdbToolsScriptsDirName
         if ($KeepTools) {
-            Step "kept the uninstaller and the log collector in $dataDir ($($toolPaths.Count) files, -KeepTools)"
+            Step "the uninstaller and the log collector in $dataDir ($($toolPaths.Count) files) remove themselves at the end"
         } elseif ((Test-Path -LiteralPath $toolScriptsDir -PathType Container) -and @(Get-ChildItem -LiteralPath $toolScriptsDir -Force).Count -eq 0) {
             Remove-Item -LiteralPath $toolScriptsDir -Force
         }

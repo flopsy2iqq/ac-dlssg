@@ -31,7 +31,7 @@ $script:AcdbSlSignerCn = 'NVIDIA Corporation'
 # fetch-deps.ps1 checks every extraction against them. An upgrade uses the
 # installed copy again instead of downloading the zip when each of these
 # files is in <game>\ac-dlssg\sl with its hash and each DLL carries NVIDIA's
-# signature (Get-StreamlineRuntimeProblem). tools\test-dev-scripts.ps1 (IT0)
+# signature (Get-StreamlineRuntimeProblem). tools\test-dev-scripts.ps1 (SLP)
 # compares them with deps\streamline-2.14.1.sha256.
 $script:AcdbSlVersion = '2.14.1'
 $script:AcdbSlZipSize = 275994000

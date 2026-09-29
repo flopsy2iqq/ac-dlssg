@@ -31,7 +31,6 @@ section of a version as its GitHub release notes.
 ### Documentation
 
 - The install guides and READMEs say that the unpacked folder can be deleted after the install, that the uninstaller and the log collector are in the game folder's `ac-dlssg` folder (in Steam: right-click Assetto Corsa, Manage, Browse local files), and that an update does not download Streamline again.
-
 - The logo, a README header with it, and a square cover for the Steam guide (`docs/logo`, drawn by `tools/brand/make_logo.py`).
 - The install guides now say to turn on DLSS in CSP before the first start. With DLAA they also say to turn off MSAA and FXAA in the game's video settings, since either of them with DLAA leaves a ghost trail behind moving things.
 

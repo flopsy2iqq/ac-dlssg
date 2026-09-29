@@ -49,4 +49,6 @@ Download the new zip, unpack it and double-click its `install.bat`, as above. It
 2. **Open the `ac-dlssg` folder** and double-click **`uninstall.bat`**.
 3. Wait until the window says it is done, then press **Enter**. The uninstaller removes itself too.
 
-Your settings and logs stay in `ac-dlssg`. To delete them as well, run `uninstall.bat -RemoveData` from a command prompt in that folder.
+Your settings and logs stay in `ac-dlssg`. After the uninstall you can simply delete the `ac-dlssg` folder.
+
+Still on version 1.0.0? It has no `uninstall.bat` in `ac-dlssg`: double-click `tools\uninstall.bat` in its unpacked folder, or install this version first.

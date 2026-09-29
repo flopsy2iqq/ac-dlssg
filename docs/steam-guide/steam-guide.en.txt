@@ -152,7 +152,7 @@ No, it needs an RTX 30, 40 or 50.
 It works with ReShade. The mod only changes how the frame is shown on screen and does not touch the game logic.
 
 [b]How do I uninstall it?[/b]
-Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local files) and open the ac-dlssg folder. If you want to report a problem, first double-click collect-logs.bat there and keep the zip it makes, because the uninstall removes collect-logs.bat. Then double-click uninstall.bat. Everything goes back to how it was, and the uninstaller removes itself too. You do not need the unpacked folder for this: after the install you can delete it and the zip.
+Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local files) and open the ac-dlssg folder. If you want to report a problem, first double-click collect-logs.bat there and keep the zip it makes, because the uninstall removes collect-logs.bat. Then double-click uninstall.bat. Everything goes back to how it was, and the uninstaller removes itself too. You do not need the unpacked folder for this: after the install you can delete it and the zip. Still on version 1.0.0? It has no uninstall.bat in ac-dlssg: use tools\uninstall.bat in its unpacked folder, or install the new version first.
 
 [b]Does an update download everything again?[/b]
 No. Run install.bat of the new version: it replaces the old one and uses the NVIDIA files already in the game folder when they are intact.
