@@ -48,7 +48,7 @@ uint64_t Bits(sl::PreferenceFlags f) { return static_cast<uint64_t>(f); }
 
 TEST(SlPrefs_FlagsAreExactlyManualHookingFrameTaggingAndNoClStateTracking) {
     SlPreferencesStorage st;
-    const sl::Preferences p = BuildPreferences(L"C:\\g\\ac-dlssg\\sl", L"C:\\g\\ac-dlssg\\logs", "0.1.0",
+    const sl::Preferences p = BuildPreferences(L"C:\\g\\ac-dlssg\\sl", L"C:\\g\\ac-dlssg\\logs", ACDB_VERSION,
                                                &TestLogCallback, &st);
     const uint64_t expected = Bits(sl::PreferenceFlags::eUseManualHooking) |
                               Bits(sl::PreferenceFlags::eUseFrameBasedResourceTagging) |
@@ -60,7 +60,7 @@ TEST(SlPrefs_FlagsAreExactlyManualHookingFrameTaggingAndNoClStateTracking) {
 
 TEST(SlPrefs_LoadsDlssgReflexAndPcl) {
     SlPreferencesStorage st;
-    const sl::Preferences p = BuildPreferences(L"C:\\sl", L"C:\\logs", "0.1.0", nullptr, &st);
+    const sl::Preferences p = BuildPreferences(L"C:\\sl", L"C:\\logs", ACDB_VERSION, nullptr, &st);
     REQUIRE(p.featuresToLoad != nullptr);
     REQUIRE(p.numFeaturesToLoad == 3u);
     CHECK_EQ(p.featuresToLoad[0], sl::kFeatureDLSS_G);
@@ -75,7 +75,7 @@ TEST(SlPrefs_PathsPointAtOurFoldersAndOutliveTheCall) {
     {
         const std::wstring plugins = L"D:\\Games\\assettocorsa\\ac-dlssg\\sl";
         const std::wstring logs = L"D:\\Games\\assettocorsa\\ac-dlssg\\logs";
-        p = BuildPreferences(plugins, logs, "0.1.0", nullptr, &st);
+        p = BuildPreferences(plugins, logs, ACDB_VERSION, nullptr, &st);
     }
     // The arguments are gone; the storage holds the strings.
     REQUIRE(p.pathsToPlugins != nullptr);
@@ -113,13 +113,13 @@ TEST(SlPrefs_IdentifiesACustomD3D12EngineWithProjectAndVersion) {
 
 TEST(SlPrefs_LogsThroughTheCallbackWithoutConsole) {
     SlPreferencesStorage st;
-    const sl::Preferences p = BuildPreferences(L"C:\\sl", L"C:\\logs", "0.1.0", &TestLogCallback, &st);
+    const sl::Preferences p = BuildPreferences(L"C:\\sl", L"C:\\logs", ACDB_VERSION, &TestLogCallback, &st);
     CHECK(p.logMessageCallback == &TestLogCallback);
     CHECK(p.logLevel == sl::LogLevel::eDefault);
     CHECK(!p.showConsole);
     CHECK(p.allocateCallback == nullptr);
     CHECK(p.releaseCallback == nullptr);
-    const sl::Preferences noCallback = BuildPreferences(L"C:\\sl", L"C:\\logs", "0.1.0", nullptr, &st);
+    const sl::Preferences noCallback = BuildPreferences(L"C:\\sl", L"C:\\logs", ACDB_VERSION, nullptr, &st);
     CHECK(noCallback.logMessageCallback == nullptr);
 }
 

@@ -245,7 +245,7 @@ void Run(BootstrapState* s) {
     const bool keptPrevious = MoveFileExW(logPath.c_str(), prevLogPath.c_str(), MOVEFILE_REPLACE_EXISTING) != FALSE;
     LogOpen(logPath, s->config.log_level);
 
-    LOGI("ac-dlssg %s (M3: Streamline proxy chain, Reflex, PCL markers, NGX capture, CSP camera and DLSS-G)", ACDB_VERSION);
+    LOGI("%s", BannerLine().c_str());
     LOGI("host: %s (pid %lu)", ToUtf8(exe).c_str(), GetCurrentProcessId());
     const HMODULE bridge = g_module.load();
     const std::wstring bridgePath = bridge ? ModuleFileName(bridge) : std::wstring();
@@ -397,6 +397,11 @@ BridgeMode BridgeModeFromPath(const std::wstring& modulePath) {
 }
 
 const char* BridgeModeName(BridgeMode mode) { return mode == BridgeMode::Standalone ? "standalone" : "proxy"; }
+
+std::string BannerLine() {
+    return std::string("ac-dlssg ") + ACDB_VERSION +
+           " (DLSS Frame Generation 2X/3X/4X and Reflex through NVIDIA Streamline for Assetto Corsa with CSP)";
+}
 
 std::string GameFolderDxgiLine(bool loaded, bool isThisBridge, const std::string& path, const std::string& version) {
     if (isThisBridge) return "dxgi.dll: " + path + " is this bridge (standalone), not ReShade";

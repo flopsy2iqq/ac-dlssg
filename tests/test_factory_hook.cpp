@@ -535,7 +535,7 @@ TEST(Bootstrap_StateAndBanner) {
     CHECK(!s.compat.video_width.has_value());
 
     const std::string log = acdb_test::ReadAll(s.data_dir + L"\\logs\\bridge.log");
-    CHECK(log.find("ac-dlssg " ACDB_VERSION) != std::string::npos);
+    CHECK(log.find(BannerLine() + "\n") != std::string::npos);
     CHECK(log.find("host: ") != std::string::npos);
     CHECK(log.find("Windows ") != std::string::npos);
     CHECK(log.find("adapter 0: ") != std::string::npos);
@@ -890,7 +890,7 @@ TEST(DllExports_LoadExportsAndCreateFactory) {
     // The DLL's bootstrap wrote its banner next to the host exe, after moving
     // the earlier log aside.
     const std::string log = acdb_test::ReadAll(logDir + L"\\bridge.log");
-    CHECK(log.find("ac-dlssg " ACDB_VERSION) != std::string::npos);
+    CHECK(log.find(BannerLine() + "\n") != std::string::npos);
     CHECK(log.find("factory hook installed") != std::string::npos);
     CHECK(log.find(marker) == std::string::npos);
     CHECK(log.find("the previous log was kept as ") != std::string::npos);

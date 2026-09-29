@@ -1,11 +1,31 @@
-// Runtime mode (standalone or proxy) from the bridge's own module path, and
-// the banner line about the game folder's dxgi.dll.
+// Runtime mode (standalone or proxy) from the bridge's own module path, the
+// banner line about the game folder's dxgi.dll, and the banner's first line.
+#include <regex>
 #include <string>
 
 #include "bootstrap.h"
 #include "test_framework.h"
 
 using namespace acdb;
+
+// The version comes from CMakeLists.txt; the panel's bridgeVersion holds 31
+// characters, and the release workflow expects the tag v<major.minor.patch>.
+TEST(Banner_VersionIsMajorMinorPatch) {
+    CHECK(std::regex_match(std::string(ACDB_VERSION), std::regex(R"(\d+\.\d+\.\d+)")));
+}
+
+TEST(Banner_NamesTheVersionAndWhatTheBridgeDoes) {
+    const std::string line = BannerLine();
+    std::printf("  %s\n", line.c_str());
+    const std::string head = std::string("ac-dlssg ") + ACDB_VERSION + " (";
+    CHECK(line.compare(0, head.size(), head) == 0);
+    CHECK(!line.empty() && line.back() == ')');
+    CHECK(line.find("DLSS Frame Generation 2X/3X/4X") != std::string::npos);
+    CHECK(line.find("Reflex") != std::string::npos);
+    CHECK(line.find("Streamline") != std::string::npos);
+    // A release banner names no development milestone.
+    CHECK(!std::regex_search(line, std::regex(R"(\bM\d\b)")));
+}
 
 TEST(BridgeMode_DxgiDllIsStandalone) {
     CHECK(BridgeModeFromPath(L"C:\\Games\\assettocorsa\\dxgi.dll") == BridgeMode::Standalone);
