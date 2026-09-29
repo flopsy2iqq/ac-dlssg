@@ -113,9 +113,11 @@ unsigned VramHeadroomMib(bool autoHeadroom, unsigned configuredMib, uint64_t bud
     return autoHeadroom ? AutoVramHeadroomMib(budgetBytes) : configuredMib;
 }
 
-uint64_t VramTightToleranceMib(uint64_t estimateMib) {
+uint64_t VramTightToleranceMib(uint64_t estimateMib, uint64_t needMib) {
     const uint64_t tenth = estimateMib / 10;
-    return tenth > kTightMinMib ? tenth : kTightMinMib;
+    const uint64_t tolerance = tenth > kTightMinMib ? tenth : kTightMinMib;
+    const uint64_t half = needMib / 2;
+    return tolerance < half ? tolerance : half;
 }
 
 namespace {
@@ -146,7 +148,7 @@ std::string NotEnoughText(const VramCheck& c) {
 }
 
 bool WithinTolerance(const VramCheck& c) {
-    return !c.ok && c.needMib > c.freeMib && c.needMib - c.freeMib <= VramTightToleranceMib(c.estimateMib);
+    return !c.ok && c.needMib > c.freeMib && c.needMib - c.freeMib <= VramTightToleranceMib(c.estimateMib, c.needMib);
 }
 
 }  // namespace

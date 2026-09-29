@@ -121,8 +121,10 @@ unsigned AutoVramHeadroomMib(uint64_t budgetBytes);
 unsigned VramHeadroomMib(bool autoHeadroom, unsigned configuredMib, uint64_t budgetBytes);
 
 // How much a 2X check may fall short with auto and DLSS-G still turns on,
-// marked tight: max(128 MiB, a tenth of estimateMib).
-uint64_t VramTightToleranceMib(uint64_t estimateMib);
+// marked tight: max(128 MiB, a tenth of estimateMib), but never more than
+// half of needMib, so that at least half of the need is free (a small
+// output's estimate is below 128 MiB, and nothing free is never "tight").
+uint64_t VramTightToleranceMib(uint64_t estimateMib, uint64_t needMib);
 
 // Spec 6.11: DLSS-G stays off when budget - usage < estimate + headroom.
 // need is rounded up and free rounded down to MiB; usage above the budget

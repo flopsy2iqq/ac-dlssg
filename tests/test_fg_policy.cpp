@@ -670,10 +670,14 @@ TEST(VramAuto_TheCheckKnowsTheEstimateItHadToFit) {
 }
 
 TEST(VramAuto_ToleranceIs128MiBOrATenthOfTheEstimate) {
-    CHECK_EQ(VramTightToleranceMib(0), 128u);
-    CHECK_EQ(VramTightToleranceMib(283), 128u);
-    CHECK_EQ(VramTightToleranceMib(1280), 128u);
-    CHECK_EQ(VramTightToleranceMib(2000), 200u);
+    CHECK_EQ(VramTightToleranceMib(0, 256), 128u);  // no estimate: the 256 MiB headroom only
+    CHECK_EQ(VramTightToleranceMib(283, 283), 128u);
+    CHECK_EQ(VramTightToleranceMib(1280, 1536), 128u);
+    CHECK_EQ(VramTightToleranceMib(2000, 2000), 200u);
+    // Never more than half of the need.
+    CHECK_EQ(VramTightToleranceMib(120, 120), 60u);
+    CHECK_EQ(VramTightToleranceMib(121, 121), 60u);
+    CHECK_EQ(VramTightToleranceMib(0, 0), 0u);
 }
 
 // The laptop: 346 MiB free for a 380 MiB estimate at 2X. With auto, DLSS-G
@@ -734,6 +738,29 @@ TEST(VramAuto_TheToleranceBoundaries) {
     CHECK(fits.check.ok);
     CHECK(!fits.tight);
     CHECK(fits.note.empty());
+}
+
+// A small output (a 1280x720 window) needs little, less than the 128 MiB
+// tolerance. With nothing, or almost nothing, free that is not a little
+// short but clearly not enough: at least half of the need must be free.
+TEST(VramAuto_NothingFreeIsNeverTight) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    // Usage above the budget counts as nothing free.
+    const VramCheck none = CheckVideoMemory(3500 * MiB, 3600 * MiB, 120 * MiB, 0);
+    REQUIRE(!none.ok);
+    const VramMultiplierDecision d = DecideVramMultiplier(2, none, nullptr, true);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 120 MiB, 0 MiB free; lower CSP "
+                                 "texture quality, shadows or the render resolution"));
+    // 59 MiB free for 120 MiB is not enough; 60 MiB, half of it, is tight.
+    CHECK(!DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3441 * MiB, 120 * MiB, 0), nullptr, true).tight);
+    CHECK(DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3440 * MiB, 120 * MiB, 0), nullptr, true).tight);
+    // The same for 3X falling back to a 2X that has nothing free.
+    const VramCheck at3 = CheckVideoMemory(3500 * MiB, 3600 * MiB, 180 * MiB, 0);
+    const VramMultiplierDecision d3 = DecideVramMultiplier(3, at3, &none, true);
+    CHECK(!d3.check.ok);
+    CHECK(!d3.tight);
 }
 
 // The multiplier fallback stays: a higher multiplier that does not fit falls
