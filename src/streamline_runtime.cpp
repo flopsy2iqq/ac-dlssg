@@ -217,10 +217,11 @@ void LogThrottledFailure(const char* what, sl::Result r) {
 
 const char* SlResultName(sl::Result r) { return ResultName(r); }
 
-sl::DLSSGOptions BuildDlssgOptions(bool on, const DlssgSizeHints& hints, bool requestVramEstimate) {
+sl::DLSSGOptions BuildDlssgOptions(bool on, uint32_t numFramesToGenerate, const DlssgSizeHints& hints,
+                                   bool requestVramEstimate) {
     sl::DLSSGOptions o;
     o.mode = on ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
-    o.numFramesToGenerate = 1;
+    o.numFramesToGenerate = numFramesToGenerate > 0 ? numFramesToGenerate : 1;
     o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     if (requestVramEstimate) o.flags = o.flags | sl::DLSSGFlags::eRequestVRAMEstimate;
     o.numBackBuffers = hints.numBackBuffers;
@@ -616,7 +617,7 @@ bool StreamlineRuntime::DlssgFunctionsResolved() const {
     return initialized_ && !shut_down_ && api_ && api_->slDLSSGSetOptions && api_->slDLSSGGetState;
 }
 
-sl::Result StreamlineRuntime::SetDlssgOptions(bool on, const DlssgSizeHints& hints) {
+sl::Result StreamlineRuntime::SetDlssgOptions(bool on, uint32_t numFramesToGenerate, const DlssgSizeHints& hints) {
     Api* api = nullptr;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -624,15 +625,15 @@ sl::Result StreamlineRuntime::SetDlssgOptions(bool on, const DlssgSizeHints& hin
     }
     if (!api) return sl::Result::eErrorNotInitialized;
     if (!api->slDLSSGSetOptions) return sl::Result::eErrorFeatureMissing;
-    const sl::DLSSGOptions options = BuildDlssgOptions(on, hints, false);
+    const sl::DLSSGOptions options = BuildDlssgOptions(on, numFramesToGenerate, hints, false);
     InternalCallScope internal;
     const sl::Result r = api->slDLSSGSetOptions(sl::ViewportHandle(0u), options);
     if (r != sl::Result::eOk) LogThrottledFailure(on ? "slDLSSGSetOptions(eOn)" : "slDLSSGSetOptions(eOff)", r);
     return r;
 }
 
-sl::Result StreamlineRuntime::GetDlssgState(bool requestVramEstimate, const DlssgSizeHints& hints,
-                                            sl::DLSSGState* state) {
+sl::Result StreamlineRuntime::GetDlssgState(bool requestVramEstimate, uint32_t numFramesToGenerate,
+                                            const DlssgSizeHints& hints, sl::DLSSGState* state) {
     Api* api = nullptr;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -643,7 +644,7 @@ sl::Result StreamlineRuntime::GetDlssgState(bool requestVramEstimate, const Dlss
     if (!state) return sl::Result::eErrorMissingInputParameter;
     // Options only for the estimate: with them DLSS-G computes it, which is
     // too expensive for a status poll (DLSS-G programming guide, 13.0).
-    const sl::DLSSGOptions options = BuildDlssgOptions(true, hints, true);
+    const sl::DLSSGOptions options = BuildDlssgOptions(true, numFramesToGenerate, hints, true);
     sl::DLSSGState out;
     InternalCallScope internal;
     const sl::Result r =

@@ -822,7 +822,7 @@ void D3D12Presenter::Impl::RunVramCheck() {
     VramInputs in;
     in.headroomMib = config.fg_vram_headroom_mib;
     sl::DLSSGState st;
-    const sl::Result r = sl->GetDlssgState(true, Hints(), &st);
+    const sl::Result r = sl->GetDlssgState(true, 1, Hints(), &st);
     in.estimateOk = r == sl::Result::eOk;
     if (in.estimateOk) {
         in.estimateBytes = st.estimatedVRAMUsageInBytes;
@@ -859,7 +859,7 @@ bool D3D12Presenter::Impl::SetMode(bool on) {
     if (!sl || !fg_supported) return false;
     const DlssgSizeHints h = Hints();
     if (mode_known && on == mode_on && (!on || SameHints(h, mode_hints))) return mode_on;
-    if (sl->SetDlssgOptions(on, h) == sl::Result::eOk) {
+    if (sl->SetDlssgOptions(on, 1, h) == sl::Result::eOk) {
         mode_known = true;
         mode_on = on;
         mode_hints = h;
@@ -904,7 +904,7 @@ void D3D12Presenter::Impl::PollState(bool presentedOn) {
     const bool statusDue = status_clock.Due(true);
     if (statusDue) status_clock.Polled();
     sl::DLSSGState st;
-    const sl::Result r = sl->GetDlssgState(false, Hints(), &st);
+    const sl::Result r = sl->GetDlssgState(false, 1, Hints(), &st);
     if (r != sl::Result::eOk) {
         if (!statusDue) return;  // the runtime logs the failure, throttled
         state_failure = std::string("query failed: ") + SlResultName(r);

@@ -143,18 +143,32 @@ uint32_t FlagBits(sl::DLSSGFlags f) { return static_cast<uint32_t>(f); }
 
 TEST(SlDlssgOptions_OnOffWithOneGeneratedFrameAndRetainedResources) {
     const DlssgSizeHints h = ExampleHints();
-    sl::DLSSGOptions on = BuildDlssgOptions(true, h, false);
+    sl::DLSSGOptions on = BuildDlssgOptions(true, 1, h, false);
     CHECK(on.mode == sl::DLSSGMode::eOn);
     CHECK_EQ(on.numFramesToGenerate, 1u);
     CHECK_EQ(FlagBits(on.flags), FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff));
-    sl::DLSSGOptions off = BuildDlssgOptions(false, h, false);
+    sl::DLSSGOptions off = BuildDlssgOptions(false, 1, h, false);
     CHECK(off.mode == sl::DLSSGMode::eOff);
     CHECK_EQ(off.numFramesToGenerate, 1u);
     CHECK_EQ(FlagBits(off.flags), FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff));
 }
 
+// Multi frame generation (spec 6.8): numFramesToGenerate is the multiplier
+// - 1, on and off alike, and eRetainResourcesWhenOff stays.
+TEST(SlDlssgOptions_CarryTheNumberOfFramesToGenerate) {
+    const DlssgSizeHints h = ExampleHints();
+    for (uint32_t n : {1u, 2u, 3u}) {
+        const sl::DLSSGOptions on = BuildDlssgOptions(true, n, h, false);
+        CHECK_EQ(on.numFramesToGenerate, n);
+        CHECK_EQ(FlagBits(on.flags), FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff));
+        CHECK_EQ(BuildDlssgOptions(false, n, h, false).numFramesToGenerate, n);
+    }
+    // sl.dlss_g refuses 0 ("must be greater than 0"): it is sent as 1.
+    CHECK_EQ(BuildDlssgOptions(true, 0, h, false).numFramesToGenerate, 1u);
+}
+
 TEST(SlDlssgOptions_CarryEverySizeAndFormatHint) {
-    const sl::DLSSGOptions o = BuildDlssgOptions(true, ExampleHints(), false);
+    const sl::DLSSGOptions o = BuildDlssgOptions(true, 1, ExampleHints(), false);
     CHECK_EQ(o.numBackBuffers, 3u);
     CHECK_EQ(o.mvecDepthWidth, 1280u);
     CHECK_EQ(o.mvecDepthHeight, 720u);
@@ -174,9 +188,12 @@ TEST(SlDlssgOptions_CarryEverySizeAndFormatHint) {
 }
 
 TEST(SlDlssgOptions_VramEstimateOnlyWhenAsked) {
-    const sl::DLSSGOptions o = BuildDlssgOptions(true, ExampleHints(), true);
+    const sl::DLSSGOptions o = BuildDlssgOptions(true, 1, ExampleHints(), true);
     CHECK_EQ(FlagBits(o.flags),
              FlagBits(sl::DLSSGFlags::eRetainResourcesWhenOff) | FlagBits(sl::DLSSGFlags::eRequestVRAMEstimate));
+    // The estimate is for the multiplier asked about: sl.dlss_g 2.14.1 scales
+    // its colour buffers with numFramesToGenerate.
+    CHECK_EQ(BuildDlssgOptions(true, 3, ExampleHints(), true).numFramesToGenerate, 3u);
 }
 
 // --- Init failure paths (child processes) ------------------------------------
@@ -287,9 +304,9 @@ TEST(Child_SlRuntime_CallsBeforeInit) {
     struct FakeToken : sl::FrameToken {
         operator uint32_t() const override { return 1; }
     } token;
-    CHECK(rt.SetDlssgOptions(true, DlssgSizeHints()) == sl::Result::eErrorNotInitialized);
+    CHECK(rt.SetDlssgOptions(true, 1, DlssgSizeHints()) == sl::Result::eErrorNotInitialized);
     sl::DLSSGState state{};
-    CHECK(rt.GetDlssgState(false, DlssgSizeHints(), &state) == sl::Result::eErrorNotInitialized);
+    CHECK(rt.GetDlssgState(false, 1, DlssgSizeHints(), &state) == sl::Result::eErrorNotInitialized);
     CHECK(rt.SetTagsForFrame(token, 0, nullptr, nullptr, sl::Extent{}, nullptr) == sl::Result::eErrorNotInitialized);
     CHECK(rt.SetNullTags(token, 0) == sl::Result::eErrorNotInitialized);
     CHECK(rt.SetConstants(sl::Constants{}, token, 0) == sl::Result::eErrorNotInitialized);

@@ -685,8 +685,8 @@ TEST(Child_SlRuntime_RealDllsTagsConstantsAndDlssgCalls) {
     hints.mvecBufferFormat = DXGI_FORMAT_R16G16_FLOAT;
     hints.depthBufferFormat = DXGI_FORMAT_R32_FLOAT;
     sl::DLSSGState state{};
-    const sl::Result setOff = rt.SetDlssgOptions(false, hints);
-    const sl::Result estimate = rt.GetDlssgState(true, hints, &state);
+    const sl::Result setOff = rt.SetDlssgOptions(false, 1, hints);
+    const sl::Result estimate = rt.GetDlssgState(true, 1, hints, &state);
     std::printf("  SetDlssgOptions(eOff): %s, GetDlssgState(estimate): %s, estimate %llu bytes, status %u\n",
                 SlResultName(setOff), SlResultName(estimate),
                 static_cast<unsigned long long>(state.estimatedVRAMUsageInBytes), static_cast<unsigned>(state.status));

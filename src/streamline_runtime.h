@@ -60,10 +60,14 @@ struct DlssgSizeHints {
     uint32_t depthBufferFormat = 0;
 };
 
-// Spec 6.8 "DLSS-G mode": mode eOn or eOff, numFramesToGenerate 1 (2X),
-// flags eRetainResourcesWhenOff (plus eRequestVRAMEstimate when asked), and
-// every hint above. Everything else keeps Streamline's defaults.
-sl::DLSSGOptions BuildDlssgOptions(bool on, const DlssgSizeHints& hints, bool requestVramEstimate);
+// Spec 6.8 "DLSS-G mode": mode eOn or eOff, numFramesToGenerate (the
+// multiplier - 1: 1 for 2X, 3 for 4X; 0 is sent as 1, which sl.dlss_g
+// requires), flags eRetainResourcesWhenOff (plus eRequestVRAMEstimate when
+// asked), and every hint above. Everything else keeps Streamline's defaults.
+// The caller keeps numFramesToGenerate within DLSSGState::numFramesToGenerateMax
+// (ChooseFgMultiplier): sl.dlss_g 2.14.1 refuses a larger count.
+sl::DLSSGOptions BuildDlssgOptions(bool on, uint32_t numFramesToGenerate, const DlssgSizeHints& hints,
+                                   bool requestVramEstimate);
 
 // The sl::Result's enumerator name ("eOk", "eErrorFeatureMissing", ...).
 const char* SlResultName(sl::Result r);
@@ -119,15 +123,17 @@ public:
     // M3. The DLSS-G calls exist only when SetDevice resolved them, which it
     // does only when slIsFeatureSupported accepts the adapter.
     bool DlssgFunctionsResolved() const;
-    // slDLSSGSetOptions(viewport 0, BuildDlssgOptions(on, hints, false)), on
-    // the presenting thread. eErrorNotInitialized before Init or after
-    // Shutdown, eErrorFeatureMissing without the DLSS-G functions.
-    sl::Result SetDlssgOptions(bool on, const DlssgSizeHints& hints);
+    // slDLSSGSetOptions(viewport 0, BuildDlssgOptions(on, numFramesToGenerate,
+    // hints, false)), on the presenting thread. eErrorNotInitialized before
+    // Init or after Shutdown, eErrorFeatureMissing without the DLSS-G functions.
+    sl::Result SetDlssgOptions(bool on, uint32_t numFramesToGenerate, const DlssgSizeHints& hints);
     // slDLSSGGetState(viewport 0, *state, options): options is null for a
-    // plain status poll, and BuildDlssgOptions(true, hints, true) when the
-    // video memory estimate is requested (expensive; spec 6.11 only). Same
-    // refusals as SetDlssgOptions; *state is left alone then.
-    sl::Result GetDlssgState(bool requestVramEstimate, const DlssgSizeHints& hints, sl::DLSSGState* state);
+    // plain status poll (numFramesToGenerate is then unused), and
+    // BuildDlssgOptions(true, numFramesToGenerate, hints, true) when the video
+    // memory estimate for that count is requested (expensive; spec 6.11
+    // only). Same refusals as SetDlssgOptions; *state is left alone then.
+    sl::Result GetDlssgState(bool requestVramEstimate, uint32_t numFramesToGenerate, const DlssgSizeHints& hints,
+                             sl::DLSSGState* state);
     // slSetTagForFrame(token, viewport, {depth: kBufferTypeDepth, mvec:
     // kBufferTypeMotionVectors}, 2, cmdList): both eValidUntilPresent, state
     // D3D12_RESOURCE_STATE_COMMON, extent for both. cmdList may be null:
