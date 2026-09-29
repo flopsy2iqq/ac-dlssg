@@ -169,13 +169,9 @@ VramCheck DecideVram(const VramInputs& in);
 // the render resolution", which is also the note. Only 2X is ever tight.
 //
 // A number (autoHeadroom false) decides as before auto existed: never tight,
-// and the refusal keeps "video memory: need <x> MiB, free <y> MiB". Its note
-// is for the panel: when auto would run DLSS-G with the same 2X estimate and
-// free memory (it fits with AutoVramHeadroomMib of the budget, or is tight),
-// "fg_vram_headroom_mib=<h> keeps frame generation off (<need> MiB needed,
-// <free> MiB free): set it to auto in ac-dlssg.ini and restart the game",
-// since lowering the textures is not what helps there; else the actionable
-// text above.
+// and the refusal keeps "video memory: need <x> MiB, free <y> MiB"; its note
+// is the actionable text above. Where auto would run DLSS-G instead, the
+// presenter switches to auto (DecideVramHeadroom), so no note asks for it.
 struct VramMultiplierDecision {
     VramCheck check;          // ok, or the refusal DLSS-G stays off with (2X's when both were made)
     unsigned multiplier = 2;  // the multiplier the guard allows
@@ -187,6 +183,34 @@ struct VramMultiplierDecision {
 };
 VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x,
                                             bool autoHeadroom = false);
+
+// A number that keeps DLSS-G off (spec 6.11): the bridge switches the
+// session to auto and saves auto in ac-dlssg.ini.
+enum class VramHeadroomAction {
+    Keep,          // auto already, the number lets DLSS-G run, or auto would keep it off too
+    SwitchToAuto,  // the number keeps DLSS-G off, and auto runs it (it fits, falls back to 2X or is tight)
+};
+
+// withNumber: DecideVramMultiplier for fg_vram_headroom_mib=<number>;
+// withAuto: DecideVramMultiplier with auto for the same estimates, budget
+// and usage (AutoVramHeadroomMib of the budget). SwitchToAuto only when
+// autoHeadroom is false, withNumber keeps DLSS-G off (check not ok) and
+// withAuto's check is ok.
+VramHeadroomAction DecideVramHeadroom(bool autoHeadroom, const VramMultiplierDecision& withNumber,
+                                      const VramMultiplierDecision& withAuto);
+
+// The texts of a switch from the number <h> to auto. The log line, after
+// "fg: ": saved, "fg_vram_headroom_mib=<h> kept frame generation off;
+// switched to auto and saved it to ac-dlssg.ini"; not saved, "...; switched
+// to auto until the game is closed; could not save ac-dlssg.ini:
+// <saveError>".
+std::string VramHeadroomSwitchLog(unsigned headroomMib, bool saved, const std::string& saveError);
+// The panel's autoFixNote: saved, "Video memory setting fixed:
+// fg_vram_headroom_mib was <h>, now auto (saved). Frame generation is on.";
+// not saved, "Video memory setting fixed: fg_vram_headroom_mib was <h>, now
+// auto. Frame generation is on; this applies until the game is closed; could
+// not save ac-dlssg.ini: <saveError>".
+std::string VramHeadroomSwitchNote(unsigned headroomMib, bool saved, const std::string& saveError);
 
 // When the guard runs: before DLSS-G is first enabled, whenever the wanted
 // multiplier is not the one it last checked, and every 60 frames while it

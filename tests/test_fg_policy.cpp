@@ -681,8 +681,9 @@ TEST(VramAuto_ToleranceIs128MiBOrATenthOfTheEstimate) {
 }
 
 // The laptop: 346 MiB free for a 380 MiB estimate at 2X. With auto, DLSS-G
-// runs anyway and the video memory is marked tight; a number keeps today's
-// refusal, and the panel's note says that auto would run it.
+// runs anyway and the video memory is marked tight; a number keeps the
+// refusal of before (and the presenter switches it to auto, see
+// VramHeadroomFix below).
 TEST(VramAuto_ASmallShortfallAt2XIsTight) {
     constexpr uint64_t MiB = 1024ull * 1024ull;
     const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0);
@@ -701,8 +702,8 @@ TEST(VramAuto_ASmallShortfallAt2XIsTight) {
     CHECK(!d.check.ok);
     CHECK(!d.tight);
     CHECK_EQ(d.check.reason, std::string("video memory: need 380 MiB, free 346 MiB"));
-    CHECK_EQ(d.note, std::string("fg_vram_headroom_mib=0 keeps frame generation off (380 MiB needed, 346 MiB free): "
-                                 "set it to auto in ac-dlssg.ini and restart the game"));
+    CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 380 MiB, 346 MiB free; lower CSP "
+                                 "texture quality, shadows or the render resolution"));
 }
 
 TEST(VramAuto_ALargerShortfallKeepsDlssgOffWithAnActionableReason) {
@@ -740,38 +741,32 @@ TEST(VramAuto_TheToleranceBoundaries) {
     CHECK(fits.note.empty());
 }
 
-// A number that keeps DLSS-G off where auto would run it (the first
-// installs' 512 on the 4 GB laptop: 346 MiB free for a 283 MiB estimate):
-// the panel's note names the number and says to set auto and restart the
-// game, rather than to lower the textures. The guard's reason stays.
-TEST(VramNumber_AHeadroomThatKeepsDlssgOffWhereAutoWouldRunItSaysSo) {
+// A number that keeps DLSS-G off keeps the guard's reason of before, and
+// the panel's note says what to lower. Where auto would run DLSS-G instead
+// (the first installs' 512 on the 4 GB laptop: 346 MiB free for a 283 MiB
+// estimate), the presenter switches the session to auto (VramHeadroomFix
+// below), so no note asks the user to do it.
+TEST(VramNumber_ARefusalKeepsTheReasonOfBeforeAndSaysWhatToLower) {
     constexpr uint64_t MiB = 1024ull * 1024ull;
+    const std::string lower = "not enough video memory: frame generation needs 795 MiB, 346 MiB free; lower CSP "
+                              "texture quality, shadows or the render resolution";
     VramMultiplierDecision d =
         DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3154 * MiB, 283 * MiB, 512), nullptr, false);
     CHECK(!d.check.ok);
     CHECK(!d.tight);
     CHECK_EQ(d.check.reason, std::string("video memory: need 795 MiB, free 346 MiB"));
-    const std::string hint = "fg_vram_headroom_mib=512 keeps frame generation off (795 MiB needed, 346 MiB free): set "
-                             "it to auto in ac-dlssg.ini and restart the game";
-    CHECK_EQ(d.note, hint);
-    CHECK(hint.size() < 160u);  // fits the status record's vramNote
-    // The longest one fits too.
+    CHECK_EQ(d.note, lower);
+    // The longest one fits the status record's vramNote.
     d = DecideVramMultiplier(2, CheckVideoMemory(99999 * MiB, 0, 65535 * MiB, 65536), nullptr, false);
     CHECK(!d.check.ok);
     CHECK(d.note.size() < 160u);
-    // An 8 GB card with 1024: auto's 256 MiB would fit (692 MiB free for 539).
-    d = DecideVramMultiplier(2, CheckVideoMemory(8192 * MiB, 7500 * MiB, 283 * MiB, 1024), nullptr, false);
-    CHECK(d.note.find("fg_vram_headroom_mib=1024 keeps frame generation off (1307 MiB needed, 692 MiB free)") == 0);
-    // 3X falling back: the 2X check decides.
+    // 3X falling back: 2X's numbers.
     const VramCheck at3 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 500 * MiB, 512);
     const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 283 * MiB, 512);
     d = DecideVramMultiplier(3, at3, &at2, false);
     CHECK(!d.check.ok);
-    CHECK_EQ(d.note, hint);
-    // 0, where auto would run it as tight.
-    d = DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0), nullptr, false);
-    CHECK(d.note.find("fg_vram_headroom_mib=0 keeps frame generation off (380 MiB needed, 346 MiB free)") == 0);
-    // Where auto would not run it either, the note says what to lower.
+    CHECK_EQ(d.note, lower);
+    // Where auto would not run it either, the same kind of note.
     d = DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3400 * MiB, 283 * MiB, 512), nullptr, false);
     CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 795 MiB, 100 MiB free; lower CSP "
                                  "texture quality, shadows or the render resolution"));
@@ -869,6 +864,123 @@ TEST(VramAuto_ATightPassIsNotCheckedAgainEvery60Frames) {
     VramGuard refused = run(3400, 600, &checks);  // 100 MiB free: not enough
     CHECK(!refused.Passed());
     CHECK_EQ(checks, 10);
+}
+
+// ---------------------------------------------------------------- a number that blocks: switched to auto
+
+namespace {
+
+constexpr uint64_t kMiB = 1024ull * 1024ull;
+
+// The presenter's two decisions for one check of the guard (2X, or a higher
+// wanted multiplier with its 2X check): with the configured number, and with
+// auto's headroom for the same estimates, budget and usage.
+struct HeadroomCase {
+    VramMultiplierDecision withNumber;
+    VramMultiplierDecision withAuto;
+};
+
+HeadroomCase DecideBoth(unsigned wanted, uint64_t budgetMib, uint64_t usageMib, uint64_t estimateWantedMib,
+                        uint64_t estimate2xMib, unsigned number) {
+    const unsigned autoMib = AutoVramHeadroomMib(budgetMib * kMiB);
+    const auto check = [&](uint64_t estimateMib, unsigned headroom) {
+        return CheckVideoMemory(budgetMib * kMiB, usageMib * kMiB, estimateMib * kMiB, headroom);
+    };
+    HeadroomCase c;
+    const VramCheck numberWanted = check(estimateWantedMib, number);
+    const VramCheck number2x = check(estimate2xMib, number);
+    c.withNumber = DecideVramMultiplier(wanted, numberWanted, wanted > 2 && !numberWanted.ok ? &number2x : nullptr,
+                                        false);
+    const VramCheck autoWanted = check(estimateWantedMib, autoMib);
+    const VramCheck auto2x = check(estimate2xMib, autoMib);
+    c.withAuto = DecideVramMultiplier(wanted, autoWanted, wanted > 2 && !autoWanted.ok ? &auto2x : nullptr, true);
+    return c;
+}
+
+VramHeadroomAction Decide(const HeadroomCase& c, bool autoHeadroom = false) {
+    return DecideVramHeadroom(autoHeadroom, c.withNumber, c.withAuto);
+}
+
+}  // namespace
+
+// The friend's laptop: a stale 512 (an old default) on the 4 GB RTX 3050 Ti,
+// 346 MiB free for a 283 MiB estimate. The number keeps DLSS-G off, auto (no
+// headroom below a 6144 MiB budget) runs it: switch to auto.
+TEST(VramHeadroomFix_ANumberThatBlocksWhereAutoFitsIsSwitchedToAuto) {
+    const HeadroomCase c = DecideBoth(2, 3500, 3154, 283, 283, 512);
+    REQUIRE(!c.withNumber.check.ok);
+    REQUIRE(c.withAuto.check.ok);
+    CHECK(!c.withAuto.tight);
+    CHECK(Decide(c) == VramHeadroomAction::SwitchToAuto);
+    // An 8 GB card with 1024: auto's 256 MiB fits (692 MiB free for 539).
+    CHECK(Decide(DecideBoth(2, 8192, 7500, 283, 283, 1024)) == VramHeadroomAction::SwitchToAuto);
+}
+
+// Auto runs DLSS-G as tight where the number (0 here) refuses: that counts as
+// auto helping too.
+TEST(VramHeadroomFix_ANumberThatBlocksWhereAutoIsTightIsSwitchedToAuto) {
+    const HeadroomCase c = DecideBoth(2, 3500, 3154, 380, 380, 0);
+    REQUIRE(!c.withNumber.check.ok);
+    REQUIRE(c.withAuto.check.ok);
+    CHECK(c.withAuto.tight);
+    CHECK(Decide(c) == VramHeadroomAction::SwitchToAuto);
+}
+
+// Where auto would keep DLSS-G off too, the number is not touched: its
+// "not enough video memory ..." reason stays.
+TEST(VramHeadroomFix_ANumberIsKeptWhenAutoWouldNotRunDlssgEither) {
+    const HeadroomCase c = DecideBoth(2, 3500, 3400, 283, 283, 512);  // 100 MiB free
+    REQUIRE(!c.withNumber.check.ok);
+    REQUIRE(!c.withAuto.check.ok);
+    CHECK(Decide(c) == VramHeadroomAction::Keep);
+    CHECK_EQ(c.withNumber.check.reason, std::string("video memory: need 795 MiB, free 100 MiB"));
+}
+
+// A number that lets DLSS-G run (at the wanted multiplier, or at 2X after a
+// fallback) is the user's choice and stays; auto is never switched.
+TEST(VramHeadroomFix_ANumberThatLetsDlssgRunAndAutoAreKept) {
+    CHECK(Decide(DecideBoth(2, 9800, 5000, 283, 283, 512)) == VramHeadroomAction::Keep);
+    // 4X does not fit with 512, 2X does: DLSS-G runs at 2X (a fallback, not off).
+    const HeadroomCase fallback = DecideBoth(4, 9800, 8800, 700, 283, 512);
+    REQUIRE(fallback.withNumber.check.ok);
+    REQUIRE(fallback.withNumber.multiplier == 2u);
+    CHECK(Decide(fallback) == VramHeadroomAction::Keep);
+    // Already auto (the session was switched, or the ini says auto).
+    const HeadroomCase c = DecideBoth(2, 3500, 3154, 283, 283, 512);
+    CHECK(Decide(c, true) == VramHeadroomAction::Keep);
+}
+
+// A higher wanted multiplier: the number refuses it and its 2X; auto runs
+// DLSS-G, at 3X itself or at 2X after a fallback.
+TEST(VramHeadroomFix_AHigherMultiplierThatAutoRunsIsSwitchedToo) {
+    HeadroomCase c = DecideBoth(3, 3500, 3154, 330, 283, 512);
+    REQUIRE(!c.withNumber.check.ok);
+    REQUIRE(c.withAuto.check.ok);
+    CHECK_EQ(c.withAuto.multiplier, 3u);
+    CHECK(Decide(c) == VramHeadroomAction::SwitchToAuto);
+    c = DecideBoth(3, 3500, 3154, 500, 283, 512);
+    REQUIRE(c.withAuto.check.ok);
+    CHECK_EQ(c.withAuto.multiplier, 2u);
+    CHECK(Decide(c) == VramHeadroomAction::SwitchToAuto);
+}
+
+// The log line and the panel's note of the switch, saved or not.
+TEST(VramHeadroomFix_TheLogLineAndTheNoteSayWhatChanged) {
+    CHECK_EQ(VramHeadroomSwitchLog(512, true, ""),
+             std::string("fg_vram_headroom_mib=512 kept frame generation off; switched to auto and saved it to "
+                         "ac-dlssg.ini"));
+    CHECK_EQ(VramHeadroomSwitchNote(512, true, ""),
+             std::string("Video memory setting fixed: fg_vram_headroom_mib was 512, now auto (saved). Frame generation "
+                         "is on."));
+    const std::string why = "creating C:\\Games\\assettocorsa\\ac-dlssg\\ac-dlssg.ini.new failed: error 5";
+    CHECK_EQ(VramHeadroomSwitchLog(0, false, why),
+             "fg_vram_headroom_mib=0 kept frame generation off; switched to auto until the game is closed; could not "
+             "save ac-dlssg.ini: " +
+                 why);
+    CHECK_EQ(VramHeadroomSwitchNote(0, false, why),
+             "Video memory setting fixed: fg_vram_headroom_mib was 0, now auto. Frame generation is on; this applies "
+             "until the game is closed; could not save ac-dlssg.ini: " +
+                 why);
 }
 
 // ---------------------------------------------------------------- the multiplier on the present thread

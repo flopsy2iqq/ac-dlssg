@@ -78,6 +78,8 @@ const FieldSpec kStatusFields[] = {
     STATUS_FIELD("char", fgMultNote, 160),
     STATUS_FIELD("char", vramNote, 160),
     STATUS_FIELD("char", restartNote, 160),
+    // Appended after those: a setting the bridge fixed by itself (spec 6.11).
+    STATUS_FIELD("char", autoFixNote, 384),
 };
 #undef STATUS_FIELD
 
@@ -342,9 +344,40 @@ TEST(LuaApp_WindowSaysWhenBridgeAndWindowVersionsDiffer) {
           std::string::npos);
 }
 
+// A fg_vram_headroom_mib number that kept frame generation off is switched
+// to auto by the bridge (spec 6.11); the window says so at its top, above the
+// restart note and the big switch, whenever the status has the note.
+TEST(LuaApp_WindowShowsTheAutoFixNoteAtTheTop) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaFunctionBody(lua, "rebuildTexts").find("texts.autoFixNote = s.autoFixNote") !=
+          std::string::npos);
+    const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
+    const size_t note = window.find("if texts.autoFixNote ~= '' then");
+    REQUIRE(note != std::string::npos);
+    CHECK(window.find("ui.textWrapped(texts.autoFixNote)", note) != std::string::npos);
+    CHECK(note < window.find("texts.restartNote"));
+    CHECK(note < window.find("toggleSize.x = ui.availableSpaceX()"));
+    // The window's texts table has it from the start.
+    CHECK(std::regex_search(lua, std::regex("local texts = \\{[^}]*[{,\\s]autoFixNote = ''")));
+}
+
+// The note of an ac-dlssg.ini that could not be saved names the file's path
+// in its reason; a Steam library path fits the status field whole.
+TEST(PanelLayout_TheAutoFixNoteFitsAnUnsavedIniWithItsPath) {
+    const std::string path = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\assettocorsa\\ac-dlssg\\ac-dlssg.ini";
+    const std::string why = "creating " + path + ".new failed: error 5";
+    const std::string note = VramHeadroomSwitchNote(65536, false, why);
+    CHECK(note.size() < sizeof(StatusLayout::autoFixNote));
+    StatusLayout s{};
+    CopyText(s.autoFixNote, note);
+    CHECK(TextOf(s.autoFixNote) == note);
+}
+
 // While the guard keeps DLSS-G off with auto, the status line already says
 // "Off: not enough video memory: ..."; the note under the video memory line
-// does not repeat it. A different note (tight, or the fixed headroom's) stays.
+// does not repeat it. A different note (tight, or a number's "not enough
+// video memory ..." under its "video memory: need ..." reason) stays.
 TEST(LuaApp_VramNoteDoesNotRepeatTheStatusLine) {
     const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
     REQUIRE(!lua.empty());

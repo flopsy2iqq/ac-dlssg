@@ -153,24 +153,6 @@ bool WithinTolerance(const VramCheck& c) {
     return !c.ok && c.needMib > c.freeMib && c.needMib - c.freeMib <= VramTightToleranceMib(c.estimateMib, c.needMib);
 }
 
-// A refusal with a number: would auto, with the same estimate and free
-// memory, run DLSS-G (fit, or be tight)?
-bool AutoWouldRun(const VramCheck& c) {
-    const uint64_t need = c.estimateMib + AutoVramHeadroomMib(c.budgetMib * kMiB);
-    if (c.freeMib >= need) return true;
-    return need - c.freeMib <= VramTightToleranceMib(c.estimateMib, need);
-}
-
-std::string HeadroomText(const VramCheck& c) {
-    char buf[192];
-    std::snprintf(buf, sizeof(buf),
-                  "fg_vram_headroom_mib=%u keeps frame generation off (%llu MiB needed, %llu MiB free): set it to "
-                  "auto in ac-dlssg.ini and restart the game",
-                  c.headroomMib, static_cast<unsigned long long>(c.needMib),
-                  static_cast<unsigned long long>(c.freeMib));
-    return buf;
-}
-
 }  // namespace
 
 VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x,
@@ -199,13 +181,32 @@ VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& at
         if (wanted > 2) d.fallback = FallbackText(wanted, atWanted);
         return d;
     }
-    if (autoHeadroom) {
-        d.note = NotEnoughText(d.check);
-        d.check.reason = d.note;
-        return d;
-    }
-    d.note = two && AutoWouldRun(*two) ? HeadroomText(*two) : NotEnoughText(d.check);
+    // With auto the actionable text is the reason too; a number keeps the
+    // refusal of before as its reason.
+    d.note = NotEnoughText(d.check);
+    if (autoHeadroom) d.check.reason = d.note;
     return d;
+}
+
+VramHeadroomAction DecideVramHeadroom(bool autoHeadroom, const VramMultiplierDecision& withNumber,
+                                      const VramMultiplierDecision& withAuto) {
+    if (autoHeadroom || withNumber.check.ok || !withAuto.check.ok) return VramHeadroomAction::Keep;
+    return VramHeadroomAction::SwitchToAuto;
+}
+
+std::string VramHeadroomSwitchLog(unsigned headroomMib, bool saved, const std::string& saveError) {
+    const std::string head =
+        "fg_vram_headroom_mib=" + std::to_string(headroomMib) + " kept frame generation off; switched to auto";
+    if (saved) return head + " and saved it to ac-dlssg.ini";
+    return head + " until the game is closed; could not save ac-dlssg.ini: " + saveError;
+}
+
+std::string VramHeadroomSwitchNote(unsigned headroomMib, bool saved, const std::string& saveError) {
+    const std::string head = "Video memory setting fixed: fg_vram_headroom_mib was " + std::to_string(headroomMib);
+    if (saved) return head + ", now auto (saved). Frame generation is on.";
+    return head +
+           ", now auto. Frame generation is on; this applies until the game is closed; could not save ac-dlssg.ini: " +
+           saveError;
 }
 
 bool VramGuard::Record(uint64_t frame, const VramCheck& result, unsigned wanted, unsigned granted, bool tight) {

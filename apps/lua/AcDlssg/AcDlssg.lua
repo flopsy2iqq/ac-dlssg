@@ -238,6 +238,7 @@ local STATUS_LAYOUT = [[
   char bridgeVersion[32];
   uint32_t fgMultRequested; uint32_t fgMultUsed; uint32_t fgMultMax;
   char fgMultNote[160]; char vramNote[160]; char restartNote[160];
+  char autoFixNote[384];
 ]]
 
 local CONTROL_SECTION = 'AcDlssg.Control.v1'
@@ -315,6 +316,7 @@ local function newStatus()
     bridgeGpuMs = -1, vramUsageMib = 0, vramBudgetMib = 0, capturesPerSec = 0, cameraFreshPerSec = 0,
     taggedPerSec = 0, reason = '', stateReason = '', warning = '', gpuName = '', hotkey = '', bridgeVersion = '',
     fgMultRequested = 0, fgMultUsed = 0, fgMultMax = 0, fgMultNote = '', vramNote = '', restartNote = '',
+    autoFixNote = '',
     -- Not a field: the version of a record with our magic that this window
     -- cannot read, else 0.
     otherVersion = 0
@@ -328,7 +330,7 @@ local status, spare = newStatus(), newStatus()
 local texts = {
   status = '', unavailable = '', state = '', fps = '', gpuMs = '', vram = '', gpu = '', mode = '', hotkey = '',
   warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '', vramNote = '', restartNote = '',
-  versions = ''
+  autoFixNote = '', versions = ''
 }
 local vramLevel = 0 -- 0 fine, 1 near the budget, 2 over it
 
@@ -417,6 +419,7 @@ local function readStatus()
     c.fgMultNote = ffi.string(st.fgMultNote)
     c.vramNote = ffi.string(st.vramNote)
     c.restartNote = ffi.string(st.restartNote)
+    c.autoFixNote = ffi.string(st.autoFixNote)
   end
   memoryBarrier()
   if st.seq ~= s1 then return false end
@@ -534,6 +537,7 @@ local function rebuildTexts()
   -- While the guard keeps DLSS-G off, the status line already says why.
   texts.vramNote = s.vramNote ~= s.reason and s.vramNote or ''
   texts.restartNote = s.restartNote
+  texts.autoFixNote = s.autoFixNote
   if lastSaveRequest ~= 0 and s.saveCounter == lastSaveRequest then
     texts.save = s.saveOk ~= 0 and 'Saved as the default in ac-dlssg.ini' or 'Saving failed; see bridge.log'
   else
@@ -640,6 +644,15 @@ function script.windowMain(dt)
     ui.text(texts.gpu)
     ui.text(texts.mode)
     return
+  end
+
+  -- A setting the bridge fixed by itself so that frame generation can run
+  -- (a number as fg_vram_headroom_mib switched to auto), first of all.
+  if texts.autoFixNote ~= '' then
+    ui.pushStyleColor(ui.StyleColor.Text, COLOR_GOOD)
+    ui.textWrapped(texts.autoFixNote)
+    ui.popStyleColor(1)
+    ui.offsetCursorY(4)
   end
 
   -- A change that applies only at the next start ("Save as default").
