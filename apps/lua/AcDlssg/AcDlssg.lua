@@ -1041,7 +1041,11 @@ local function saveButton(now)
   if clicked and usable then
     sendRequest(currentFg(), currentFlip(), currentNegate(), true, currentMult())
     lastSaveRequest = requestCounter
+    -- Only this save's result counts from now on: the one before is
+    -- cleared, and "Saved" shows once the bridge has confirmed this one.
+    texts.save = ''
     a.lastSaveText = ''
+    a.savedAt = -100
   end
   if texts.save ~= a.lastSaveText then
     a.lastSaveText = texts.save
@@ -1049,6 +1053,8 @@ local function saveButton(now)
   end
   local since = now - a.savedAt
   local flash = since < L.savedHold and 1 or math.max(0, 1 - (since - L.savedHold) / L.savedFade)
+  -- "Saved" stands in for the label only while the text is a success.
+  if texts.save == '' or status.saveOk == 0 then flash = 0 end
   a.saveHover = ease(a.saveHover, hovered and 1 or 0, 14)
   a.savePress = ease(a.savePress, pressed and 1 or 0, 24)
   local alpha = usable and 1 or 0.45

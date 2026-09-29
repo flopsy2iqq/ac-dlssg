@@ -393,6 +393,34 @@ TEST(LuaApp_VramNoteDoesNotRepeatTheStatusLine) {
           std::string::npos);
 }
 
+// "Save as default" shows "Saved" in place of its label only for a save the
+// bridge confirmed. A click clears the result of the save before it: kept,
+// a second save would show the first one's "Saved" at once, and a failure
+// arriving during that flash would read "Saving failed" in the success
+// colour on the button (or the button would go blank when the status in
+// between cleared the text).
+TEST(LuaApp_SaveButtonShowsOnlyTheResultOfTheLatestSave) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string body = acdb_test::LuaFunctionBody(lua, "saveButton");
+    REQUIRE(!body.empty());
+    const size_t click = body.find("lastSaveRequest = requestCounter");
+    REQUIRE(click != std::string::npos);
+    const size_t clickEnd = body.find("\n  end", click);
+    REQUIRE(clickEnd != std::string::npos);
+    const std::string onClick = body.substr(click, clickEnd - click);
+    for (const char* reset : {"texts.save = ''", "a.lastSaveText = ''", "a.savedAt = -100"}) {
+        if (onClick.find(reset) == std::string::npos) std::printf("  saveButton(): the click does not do '%s'\n", reset);
+        CHECK(onClick.find(reset) != std::string::npos);
+    }
+    // The flash is drawn only while the text is a success.
+    const size_t flash = body.find("local flash = ");
+    REQUIRE(flash != std::string::npos);
+    const size_t guard = body.find("if texts.save == '' or status.saveOk == 0 then flash = 0 end", flash);
+    CHECK(guard != std::string::npos);
+    CHECK(guard < body.find("if flash > 0 then"));
+}
+
 // No Lua interpreter runs in these tests; a block that is never closed (or
 // closed twice) is the easiest mistake to make in the app, so the block
 // keywords are counted: every function, if and do has its end, every
