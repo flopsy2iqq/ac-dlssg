@@ -1,8 +1,14 @@
-[![English](https://img.shields.io/badge/lang-English-blue)](README.md) [![Русский](https://img.shields.io/badge/lang-Русский-red)](README.ru.md) [![Установка](https://img.shields.io/badge/-Установка-brightgreen)](docs/INSTALL.ru.md) [![Поддержать](https://img.shields.io/badge/Поддержать-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
+<div align="center">
 
-# ac-dlssg
+<img src="docs/logo/ac-dlssg-banner.png" alt="ac-dlssg: генерация кадров DLSS для Assetto Corsa" width="100%">
+
+[![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Установка](https://img.shields.io/badge/Установка-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.ru.md) [![Поддержать на Ko-fi](https://img.shields.io/badge/Поддержать-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
+
+[![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 Генерация кадров NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X и 4X) для **Assetto Corsa** с **Custom Shaders Patch**.
+
+</div>
 
 **Версия 1.0.0, генерация кадров в игре работает.** На тестовом ПК FPS вырос вдвое, без гостинга и мыла. Картинки в разделе [Скриншоты](#скриншоты).
 

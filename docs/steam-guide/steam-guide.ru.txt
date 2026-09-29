@@ -19,14 +19,16 @@
 Описание (краткое):
 Бесплатный мод ac-dlssg включает NVIDIA DLSS Frame Generation (2X, 3X, 4X) в Assetto Corsa с CSP. На RTX 3080: 40 настоящих FPS превращаются в 160 на экране. Работает и на ноутбуках с RTX 30. Установка в один клик.
 
-Обложка:
-[КАРТИНКА: docs/logo/ac-dlssg-banner.png или social-preview.png]
+Картинка-превью (Steam показывает её квадратом):
+[КАРТИНКА: docs/logo/steam-cover.png]
 
 Категория: Моды / Графика. Язык: русский.
 
 
 ===== РАЗДЕЛ 1 =====
 Заголовок раздела: Что это такое
+
+[КАРТИНКА: docs/logo/ac-dlssg-banner.png]
 
 [h1]Генерация кадров NVIDIA в Assetto Corsa[/h1]
 
