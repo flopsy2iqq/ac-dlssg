@@ -1,0 +1,134 @@
+# Builds ac-dlssg on every push to main and every pull request: the pinned
+# dependencies (cached), the Release build, the import allow-list, the unit
+# tests that need no GPU, the release helper tests and the release zip, which
+# is uploaded as a workflow artifact. release.yml calls this workflow for a
+# tag and publishes what it built.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: The project VERSION from CMakeLists.txt
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version names the zip and the artifact. The cache key is a hash
+      # of the pins in fetch-deps.ps1 (the Streamline zip's version, size,
+      # SHA-256, DLL and license lists, and the NVAPI commit and file
+      # hashes), so it changes exactly when the staged files would.
+      - name: Read the version and the dependency pins
+        id: meta
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $m = [regex]::Match([IO.File]::ReadAllText('CMakeLists.txt'), 'project\s*\(\s*\S+\s+VERSION\s+([0-9][0-9.]*)')
+          if (-not $m.Success) { throw 'no project VERSION in CMakeLists.txt' }
+          $version = $m.Groups[1].Value
+          $pins = @(Get-Content -LiteralPath 'tools\fetch-deps.ps1' |
+              Where-Object { $_ -match '^\$(Sl|Nvapi)\w*\s*=' -or $_ -match "^\s*'[^']+'\s*=\s*'[0-9a-f]{40}'" } |
+              ForEach-Object { $_.Trim() })
+          if ($pins.Count -lt 5) { throw "only $($pins.Count) pin lines found in tools\fetch-deps.ps1" }
+          $sha = [Security.Cryptography.SHA256]::Create()
+          $key = (($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($pins -join "`n")) | ForEach-Object { $_.ToString('x2') }) -join '')
+          Write-Host "version $version, $($pins.Count) pin lines, key $key"
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`n" + "deps-key=$key`n")
+
+      - name: Restore the pinned dependencies
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ steps.meta.outputs.deps-key }}
+
+      # Idempotent: after a cache hit it only verifies the staged files
+      # (hashes and NVIDIA's signatures); otherwise it downloads the
+      # Streamline SDK zip and the NVAPI headers and checks them.
+      - name: Fetch the pinned dependencies
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\fetch-deps.ps1
+
+      # The Visual Studio 2022 generator, as in the README; should the image
+      # no longer have Visual Studio 2022, CMake's default Visual Studio
+      # generator, with a warning.
+      - name: Configure
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs2022 = & $vswhere -version '[17.0,18.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $generator = @()
+          if ($vs2022) {
+              $generator = @('-G', 'Visual Studio 17 2022')
+          } else {
+              Write-Host "::warning::Visual Studio 2022 is not on this runner; configuring with CMake's default Visual Studio generator"
+          }
+          cmake -S . -B build @generator -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Release
+        shell: cmd
+        run: cmake --build build --config Release -- /m /v:m
+
+      - name: Check the DLL's imports
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-imports.ps1 -Dll build\Release\ac-dlssg.dll
+
+      # The runners have no GPU, so only the tests of these files run: none of
+      # them creates a D3D11 or D3D12 device, loads Streamline, NGX or NVAPI,
+      # or loads the built DLL. The other test files need an NVIDIA GPU and
+      # run on the developer's PC (build\Release\acdb_tests.exe).
+      - name: Unit tests (GPU-free subset)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $sources = @(
+              'test_bridge_mode.cpp'        # the bridge mode from the module path, the banner, the version
+              'test_camera_channel.cpp'     # the camera layout, the camera section and the Lua app's layout string
+              'test_compat.cpp'             # the CSP and graphics settings rules
+              'test_fg_policy.cpp'          # the DLSS-G gate, the multiplier, the video memory guard, the reasons
+              'test_frame_constants.cpp'    # Streamline's camera constants
+              'test_ini_config.cpp'         # the INI reader and writer, ac-dlssg.ini, the log
+              'test_inline_hook.cpp'        # the x64 decoder and inline hooks on local functions
+              'test_latency_semaphore.cpp'  # the frame-latency semaphore
+              'test_panel.cpp'              # the panel's status and control sections and the Lua window
+              'test_pcl_sequencer.cpp'      # the PCL marker order
+              'test_present_flags.cpp'      # the Present flag rules
+              'test_testapp_logs.cpp'       # the test app's log checks
+          )
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\run-ci-tests.ps1 -Source ($sources -join ',')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # release-notes.ps1 and run-ci-tests.ps1 against fixtures, a
+      # CHANGELOG.md section for the project version, and the default package
+      # name ac-dlssg-<VERSION>.zip for this build's DLL.
+      - name: Release tool tests
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-release-tools.ps1
+
+      - name: Build the release zip
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
+
+      - name: Upload the release zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ac-dlssg-${{ steps.meta.outputs.version }}
+          path: |
+            build/package/ac-dlssg-${{ steps.meta.outputs.version }}.zip
+            build/Release/ac-dlssg.dll
+          if-no-files-found: error
