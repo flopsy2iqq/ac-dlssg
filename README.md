@@ -46,6 +46,10 @@ A friend's Acer Nitro 5 AN515-57: GeForce RTX 3050 Ti Laptop GPU (4 GB, driver 6
 ![DLSS-G 2X on an RTX 3050 Ti laptop: 31 real fps, 60 fps on screen](docs/screenshots/fg2x-laptop-1.jpg)
 ![DLSS-G 2X on an RTX 3050 Ti laptop in a tunnel: 30 real fps, 57 fps on screen](docs/screenshots/fg2x-laptop-2.jpg)
 
+The same laptop at **4X**: 23 real fps become 89 on screen, and the 4 GB card had enough video memory for it.
+
+![DLSS-G 4X on an RTX 3050 Ti laptop: 23 real fps, 89 fps on screen](docs/screenshots/fg4x-laptop-1.jpg)
+
 On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg_vram_headroom_mib=auto`, see [Use](#use)): it keeps no extra memory free on such a card and turns frame generation on when it falls only a little short, and the window then says "video memory is tight". If the game stutters, lower CSP's texture or shadow quality.
 
 ## Requirements
