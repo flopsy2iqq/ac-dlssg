@@ -1236,7 +1236,7 @@ TEST(Child_SlPresenter_TagWithoutFgTagsCaptures) {
     Print("stats lines", stats);
     REQUIRE(!stats.empty());
     const std::regex fields(" fg=off stalls=0 streamline=on reflex=on pcl_problems=0 captures=[0-9]+ camera_fresh=[0-9]+ "
-                            "tagged=[0-9]+ fg_frames=0 generated=n/a double_evaluates=0 vram_mib=");
+                            "tagged=[0-9]+ fg_frames=0 generated=n/a double_evaluates=0 fg_mult=2 vram_mib=");
     for (const auto& l : stats) CHECK(std::regex_search(l, fields));
     CheckNoPerFrameFailures(log);
     CHECK_EQ(rt.ErrorsLogged(), 0u);

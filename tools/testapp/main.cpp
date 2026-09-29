@@ -127,6 +127,7 @@ struct Options {
     bool fake_ngx = false;           // CSP's DLSS calls against fake_nvngx.dll
     bool fake_camera = false;        // the CSP Lua app's camera writer
     ExpectFg expect_fg = ExpectFg::None;
+    int expect_fg_mult = 0;  // --expect-fg-mult: fg_mult of every statistics line (0: unchecked)
     std::wstring fixture = L"default";
 };
 
@@ -1309,6 +1310,7 @@ bool CheckFgLog(const App& a, const BridgeLog& log) {
     e.clipFar = testapp::kClipFar;
     e.minShare = kFgMinShare;
     e.reasonPeriodMs = kFgReasonPeriodMs;
+    e.multiplier = static_cast<unsigned>(a.opt.expect_fg_mult);
     const testapp::FgCheckResult r = testapp::CheckFgLines(log.lines, e);
     for (const auto& l : r.evidence) Print("note: fg: %s", l.c_str());
     for (const auto& p : r.problems) Fail("%s", p.c_str());
@@ -1437,7 +1439,7 @@ void Usage() {
         "usage: testapp [--frames N] [--vsync] [--resize] [--test-present] [--recreate] [--stall]\n"
         "               [--expect-proxy | --expect-passthrough] [--fixture NAME] [--fps-cap N] [--hidden]\n"
         "               [--via-dxgi | --standalone] [--expect-passthrough-reason TEXT]\n"
-        "               [--fake-ngx] [--fake-camera] [--expect-fg pipeline|no-camera]\n"
+        "               [--fake-ngx] [--fake-camera] [--expect-fg pipeline|no-camera] [--expect-fg-mult N]\n"
         "  --frames N            frames to present (default 600)\n"
         "  --vsync               Present(1, 0) instead of Present(0, ALLOW_TEARING)\n"
         "  --resize              ResizeBuffers to 1600x900 at frame 200 and back to 1280x720 at frame 400\n"
@@ -1468,7 +1470,10 @@ void Usage() {
         "  --expect-fg MODE      pipeline: the bridge log shows the capture, camera, constants and first-tags\n"
         "                        lines, and the statistics captures, camera_fresh and tagged at 90% of base_fps;\n"
         "                        no-camera: captures, but no fresh camera and no tags, and a warning naming\n"
-        "                        the camera");
+        "                        the camera\n"
+        "  --expect-fg-mult N    with --expect-fg: every statistics line has fg_mult=N (2, 3 or 4), or a lower\n"
+        "                        multiplier that the bridge log explains (Streamline's maximum or the video\n"
+        "                        memory fallback); ac-dlssg.ini sets fg_multiplier");
 }
 
 bool ParseInt(const wchar_t* s, int minimum, int* out) {
@@ -1534,6 +1539,8 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
             } else {
                 return false;
             }
+        } else if (arg == L"--expect-fg-mult" && hasValue) {
+            if (!ParseInt(argv[++i], 2, &o->expect_fg_mult) || o->expect_fg_mult > 4) return false;
         } else {
             return false;
         }
@@ -1543,6 +1550,8 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
     if (o->expect_fg != ExpectFg::None && !o->fake_ngx) return false;
     if (o->expect_fg == ExpectFg::Pipeline && !o->fake_camera) return false;
     if (o->expect_fg == ExpectFg::NoCamera && o->fake_camera) return false;
+    // fg_mult is checked with the rest of the statistics of --expect-fg.
+    if (o->expect_fg_mult && o->expect_fg == ExpectFg::None) return false;
     return true;
 }
 

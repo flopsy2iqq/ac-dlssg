@@ -157,9 +157,11 @@ $scenarios = @(
     # and the Lua app's camera played by the test app; tag_without_fg=1 runs
     # it although DLSS-G itself is unsupported here. 3000 frames at 500 fps:
     # about six statistics lines.
+    # fg_multiplier=3: without DLSS-G nothing lowers the request, so every
+    # statistics line reports fg_mult=3 (multi frame generation's config path).
     @{ Name = 'fg-pipeline';        Args = @('--fake-ngx', '--fake-camera', '--frames', '3000', '--fps-cap', '500',
-                                             '--expect-proxy', '--expect-fg', 'pipeline'); Ini = @('tag_without_fg=1');
-       Camera = $true },
+                                             '--expect-proxy', '--expect-fg', 'pipeline', '--expect-fg-mult', '3');
+       Ini = @('tag_without_fg=1', 'fg_multiplier=3'); Camera = $true },
     @{ Name = 'fg-pipeline-resize'; Args = @('--fake-ngx', '--fake-camera', '--resize', '--frames', '3000',
                                              '--fps-cap', '500', '--expect-proxy', '--expect-fg', 'pipeline');
        Ini = @('tag_without_fg=1'); Camera = $true },

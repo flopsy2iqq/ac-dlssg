@@ -111,6 +111,33 @@ struct PresenterCreateInfo {
 //    the full marker sequence (not a CSP frame); the camera latch restarts.
 //  - stalls: entering stalled mode sets eOff.
 //  - log lines and stats fields: see the M3 log contract (tests).
+//
+// Multi frame generation (spec 6.8, 6.11), both paths for the request, the
+// Streamline path for the rest:
+//  - the request is config.fg_multiplier, then SetFgMultiplier (any thread),
+//    applied at the start of the next PresentFrame: "fg: multiplier <a>X ->
+//    <b>X requested"; the next DLSS-G frame has reset and a failure status is
+//    retried, as after a toggle; the swap chain stays.
+//  - before options carry a count for the first time, and again before the
+//    next options (or the next video memory check) after a new request,
+//    slDLSSGGetState without options gives numFramesToGenerateMax
+//    ("fg: Streamline allows up to <m>X (numFramesToGenerateMax <k>)" when
+//    first known or changed); a request above it uses the maximum
+//    (ChooseFgMultiplier), logged once per request as "fg: <n>X requested,
+//    Streamline allows up to <m>X; using <m>X".
+//  - the video memory guard checks the wanted multiplier's estimate before
+//    the first eOn and whenever the wanted multiplier changes; only the
+//    growth over the estimate of what DLSS-G already holds has to fit; when
+//    a higher multiplier does not fit but 2X does, "fg: video memory: <m>X
+//    needs <n> MiB, free <f> MiB; falling back to 2X" (INFO) and 2X.
+//  - the options carry numFramesToGenerate = the multiplier used - 1, and
+//    are sent only when the mode changes or, while on, the hints or the
+//    count change (DlssgOptionsDue); a new count while on sets reset for
+//    that frame. "fg: DLSS-G options: <m>X (numFramesToGenerate <k>)" at the
+//    first eOn of every new count, and the first DLSS-G Present after it logs
+//    "fg: first DLSS-G Present at <m>X (frame <n>): numFramesActuallyPresented
+//    <raw>, status <s>".
+//  - stats: fg_mult=<used> after double_evaluates, before vram_mib.
 
 class D3D12Presenter {
 public:
@@ -207,6 +234,20 @@ public:
         uint32_t double_evaluates = 0;  // frames with more than one counted evaluate
     };
     FgTotals Totals() const;
+
+    // Multi frame generation (spec 6.8): asks for 2X, 3X or 4X. Thread-safe;
+    // applied on the presenting thread at the start of the next PresentFrame
+    // (the last request before it wins). False, with a WARN and nothing
+    // changed, for anything but 2, 3 and 4.
+    bool SetFgMultiplier(int multiplier);
+    struct FgMultiplierStatus {
+        unsigned requested = 2;  // config.fg_multiplier, then SetFgMultiplier
+        unsigned used = 2;       // what the DLSS-G options carry (fg_mult in the stats line)
+        uint32_t framesMax = 0;  // Streamline's numFramesToGenerateMax; 0 until it was queried
+        std::string note;        // why used < requested (the clamp and the video memory fallback); empty otherwise
+    };
+    // The presenting thread's view (tests, and the status the panel shows).
+    FgMultiplierStatus FgMultiplier() const;
 
 private:
     D3D12Presenter() = default;

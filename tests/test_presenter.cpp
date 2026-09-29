@@ -12,6 +12,7 @@
 #include <memory>
 #include <regex>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "child_process.h"
@@ -496,7 +497,7 @@ TEST(Presenter_LogsStatisticsEverySecond) {
         " INFO stats: base_fps=[0-9]+\\.[0-9] presented_fps=[0-9]+\\.[0-9] skipped=0 failed=0 occluded=[0-9]+ "
         "uncopied=0 max_frame_ms=[0-9]+\\.[0-9] max_present_ms=[0-9]+\\.[0-9] bridge_gpu_ms d3d11=[0-9.na/]+ "
         "d3d12=[0-9.na/]+ fg=off stalls=0 streamline=off reflex=off pcl_problems=0 captures=0 camera_fresh=0 "
-        "tagged=0 fg_frames=0 generated=n/a double_evaluates=0 vram_mib=" + vram + "\n");
+        "tagged=0 fg_frames=0 generated=n/a double_evaluates=0 fg_mult=2 vram_mib=" + vram + "\n");
     CHECK(std::regex_search(log, full));
     // Budget and usage are logged once at creation.
     const std::regex created(d.warp ? " INFO presenter: VRAM " : " INFO presenter: VRAM \\(local\\) budget [1-9][0-9]* MiB, "
@@ -511,6 +512,83 @@ TEST(Presenter_LogsStatisticsEverySecond) {
     CHECK(log.find("presenter created") != std::string::npos);
     CHECK(log.find("presenter released") != std::string::npos);
     if (lines < 2 || !std::regex_search(log, full)) std::printf("  log:\n%s\n", log.c_str());
+}
+
+// Multi frame generation (spec 6.8): SetFgMultiplier from any thread is
+// applied on the presenting thread at the next frame, like a hotkey toggle,
+// and never recreates the swap chain. The plain path has no Streamline, so
+// nothing lowers the request; the stats line reports it as fg_mult.
+TEST(Presenter_FgMultiplierIsAppliedAtTheNextFrame) {
+    acdb_test::GpuTestDevices d;
+    if (!GetDevices(&d)) return;
+    acdb_test::TempDir dir(L"presenter_mfg");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    {
+        GameWindow window(640, 360);
+        REQUIRE(window.Get() != nullptr);
+        PresenterCreateInfo info;
+        info.device11 = d.device11.Get();
+        info.hwnd = window.Get();
+        info.game_desc = GameDesc(640, 360);
+        info.config.fg_multiplier = 3;
+        std::string err;
+        auto p = D3D12Presenter::Create(info, &err);
+        if (!p) std::printf("  D3D12Presenter::Create: %s\n", err.c_str());
+        REQUIRE(p != nullptr);
+        IDXGISwapChain4* const chain = p->Chain();
+        D3D12Presenter::FgMultiplierStatus s = p->FgMultiplier();
+        CHECK_EQ(s.requested, 3u);
+        CHECK_EQ(s.used, 3u);
+        CHECK_EQ(s.framesMax, 0u);
+        CHECK(s.note.empty());
+        Source src = CreateSource(d.device11.Get(), 640, 360);
+        REQUIRE(src.rtv);
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 0)));
+
+        CHECK(p->SetFgMultiplier(4));
+        CHECK_EQ(p->FgMultiplier().requested, 3u);  // not before the next frame
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 1)));
+        s = p->FgMultiplier();
+        CHECK_EQ(s.requested, 4u);
+        CHECK_EQ(s.used, 4u);
+
+        // Anything but 2, 3 and 4 is refused and changes nothing.
+        CHECK(!p->SetFgMultiplier(1));
+        CHECK(!p->SetFgMultiplier(5));
+        CHECK(!p->SetFgMultiplier(-2));
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 2)));
+        CHECK_EQ(p->FgMultiplier().requested, 4u);
+
+        // From another thread (the panel's); the last request wins.
+        std::thread other([&p] {
+            p->SetFgMultiplier(3);
+            p->SetFgMultiplier(2);
+        });
+        other.join();
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 3)));
+        CHECK_EQ(p->FgMultiplier().requested, 2u);
+        // The same request again is no change.
+        CHECK(p->SetFgMultiplier(2));
+        CHECK(PresentOk(Frame(p.get(), d.ctx11.Get(), src, 4)));
+
+        // One swap chain throughout.
+        CHECK(p->Chain() == chain);
+        CHECK(!p->Stopped());
+    }
+    LogClose();
+    d.ctx11->ClearState();
+    d.ctx11->Flush();
+
+    const std::string log = acdb_test::ReadAll(logPath);
+    CHECK(log.find("] INFO fg: multiplier 3X -> 4X requested\n") != std::string::npos);
+    CHECK(log.find("] INFO fg: multiplier 4X -> 2X requested\n") != std::string::npos);
+    size_t changes = 0;
+    for (size_t pos = log.find("fg: multiplier "); pos != std::string::npos; pos = log.find("fg: multiplier ", pos + 1))
+        ++changes;
+    CHECK_EQ(changes, 2u);
+    CHECK(log.find("] WARN fg: SetFgMultiplier(5) ignored (expected 2, 3 or 4)\n") != std::string::npos);
+    CHECK(log.find("presenter released") != std::string::npos);
 }
 
 TEST(Presenter_StopsAfterFourSecondsWithoutProgress) {

@@ -25,7 +25,8 @@ std::string M3Stats(const std::string& m3, const std::string& fg = "off", const 
            "vram_mib=" + vram;
 }
 
-const char kM3Fields[] = "captures=320 camera_fresh=319 tagged=319 fg_frames=0 generated=n/a double_evaluates=0";
+const char kM3Fields[] =
+    "captures=320 camera_fresh=319 tagged=319 fg_frames=0 generated=n/a double_evaluates=0 fg_mult=2";
 
 }  // namespace
 
@@ -48,8 +49,15 @@ TEST(TestappLogs_M3StatisticsLinePasses) {
     CHECK(s.Num("double_evaluates") == 0);
     CHECK(*s.Get("generated") == "n/a");
     CHECK(s.Num("generated") == -1);
+    CHECK(s.Num("fg_mult") == 2);
     CHECK_EQ(StatsProblem(ParseStats(M3Stats(
-                 "captures=320 camera_fresh=319 tagged=319 fg_frames=319 generated=318 double_evaluates=0", "on"))),
+                 "captures=320 camera_fresh=319 tagged=319 fg_frames=319 generated=318 double_evaluates=0 fg_mult=2",
+                 "on"))),
+             std::string());
+    // 4X: three generated frames per DLSS-G Present.
+    CHECK_EQ(StatsProblem(ParseStats(M3Stats(
+                 "captures=320 camera_fresh=319 tagged=319 fg_frames=319 generated=957 double_evaluates=0 fg_mult=4",
+                 "on"))),
              std::string());
 }
 
@@ -57,7 +65,8 @@ TEST(TestappLogs_StatisticsLineProblems) {
     // Some M3 fields but not all, a wrong order, or after vram_mib.
     CHECK(!StatsProblem(ParseStats(M3Stats("captures=320 camera_fresh=319 tagged=319"))).empty());
     CHECK(!StatsProblem(ParseStats(M3Stats(
-                            "camera_fresh=319 captures=320 tagged=319 fg_frames=0 generated=n/a double_evaluates=0")))
+                            "camera_fresh=319 captures=320 tagged=319 fg_frames=0 generated=n/a double_evaluates=0 "
+                            "fg_mult=2")))
                .empty());
     CHECK(!StatsProblem(ParseStats(std::string(kM2Stats) + " " + kM3Fields)).empty());
     // Values.
@@ -66,10 +75,23 @@ TEST(TestappLogs_StatisticsLineProblems) {
     CHECK(!StatsProblem(ParseStats(M3Stats(kM3Fields, "off", "0", "48/0"))).empty());
     CHECK(!StatsProblem(ParseStats(M3Stats(kM3Fields, "off", "0", "n/a"))).empty());
     CHECK(!StatsProblem(ParseStats(M3Stats(
-                            "captures=x camera_fresh=319 tagged=319 fg_frames=0 generated=n/a double_evaluates=0")))
+                            "captures=x camera_fresh=319 tagged=319 fg_frames=0 generated=n/a double_evaluates=0 "
+                            "fg_mult=2")))
                .empty());
     CHECK(!StatsProblem(ParseStats(M3Stats(
-                            "captures=320 camera_fresh=319 tagged=319 fg_frames=n/a generated=n/a double_evaluates=0")))
+                            "captures=320 camera_fresh=319 tagged=319 fg_frames=n/a generated=n/a double_evaluates=0 "
+                            "fg_mult=2")))
+               .empty());
+    // Multi frame generation: fg_mult after double_evaluates, 2, 3 or 4.
+    const std::string m3NoMult =
+        "captures=320 camera_fresh=319 tagged=319 fg_frames=0 generated=n/a double_evaluates=0";
+    CHECK(!StatsProblem(ParseStats(M3Stats(m3NoMult))).empty());
+    for (const char* bad : {"fg_mult=1", "fg_mult=5", "fg_mult=x", "fg_mult=n/a"})
+        CHECK(!StatsProblem(ParseStats(M3Stats(m3NoMult + " " + bad))).empty());
+    CHECK(!StatsProblem(ParseStats(M3Stats(m3NoMult, "off", "0", "48/9283 fg_mult=2"))).empty());
+    CHECK(!StatsProblem(ParseStats(M3Stats(
+                            "captures=320 camera_fresh=319 tagged=319 fg_frames=0 generated=n/a fg_mult=2 "
+                            "double_evaluates=0")))
                .empty());
     // An M2 field missing.
     std::string noStalls = kM2Stats;
@@ -165,15 +187,15 @@ std::vector<std::string> PipelineLog() {
         "20:00:01.000 [1] INFO stats: base_fps=300.0 presented_fps=300.0 skipped=0 failed=0 occluded=0 uncopied=0 "
         "max_frame_ms=4.0 max_present_ms=1.0 bridge_gpu_ms d3d11=0.100 d3d12=0.050 fg=off stalls=0 streamline=on "
         "reflex=on pcl_problems=0 captures=150 camera_fresh=100 tagged=99 fg_frames=0 generated=n/a "
-        "double_evaluates=0 vram_mib=48/9283",
+        "double_evaluates=0 fg_mult=2 vram_mib=48/9283",
         "20:00:02.000 [1] INFO stats: base_fps=320.0 presented_fps=320.0 skipped=0 failed=0 occluded=0 uncopied=0 "
         "max_frame_ms=4.0 max_present_ms=1.0 bridge_gpu_ms d3d11=0.100 d3d12=0.050 fg=off stalls=0 streamline=on "
         "reflex=on pcl_problems=0 captures=320 camera_fresh=320 tagged=320 fg_frames=0 generated=n/a "
-        "double_evaluates=0 vram_mib=48/9283",
+        "double_evaluates=0 fg_mult=2 vram_mib=48/9283",
         "20:00:03.000 [1] INFO stats: base_fps=318.0 presented_fps=318.0 skipped=0 failed=0 occluded=0 uncopied=0 "
         "max_frame_ms=4.0 max_present_ms=1.0 bridge_gpu_ms d3d11=0.100 d3d12=0.050 fg=off stalls=0 streamline=on "
         "reflex=on pcl_problems=0 captures=318 camera_fresh=317 tagged=317 fg_frames=0 generated=n/a "
-        "double_evaluates=0 vram_mib=48/9283",
+        "double_evaluates=0 fg_mult=2 vram_mib=48/9283",
     };
 }
 
@@ -292,6 +314,34 @@ TEST(TestappLogs_FgPipelineProblems) {
     std::vector<std::string> spam = PipelineLog();
     spam.push_back("20:00:05.000 [1] WARN fg: frame without DLSS-G: camera not fresh");
     CHECK(HasProblem(CheckFgLines(spam, e), "camera not fresh"));
+}
+
+// --expect-fg-mult N (multi frame generation): every statistics line has
+// fg_mult=N, or a lower multiplier that the log explains with Streamline's
+// maximum or the video memory fallback.
+TEST(TestappLogs_FgMultiplierExpectation) {
+    FgExpectation e = Pipeline();
+    e.multiplier = 2;
+    CHECK(CheckFgLines(PipelineLog(), e).problems.empty());
+    e.multiplier = 3;
+    CHECK(HasProblem(CheckFgLines(PipelineLog(), e), "fg_mult=2, expected 3"));
+    const std::vector<std::string> mult3 = Replaced(PipelineLog(), "fg_mult=2", "fg_mult=3");  // every line
+    CHECK(CheckFgLines(mult3, e).problems.empty());
+    // A lower multiplier that the log explains.
+    std::vector<std::string> clamped = PipelineLog();
+    clamped.insert(clamped.begin() + 1,
+                   "20:00:00.150 [1] INFO fg: 3X requested, Streamline allows up to 2X; using 2X");
+    PrintProblems(CheckFgLines(clamped, e));
+    CHECK(CheckFgLines(clamped, e).problems.empty());
+    std::vector<std::string> fellBack = PipelineLog();
+    fellBack.insert(fellBack.begin() + 1,
+                    "20:00:00.150 [1] INFO fg: video memory: 3X needs 700 MiB, free 500 MiB; falling back to 2X");
+    CHECK(CheckFgLines(fellBack, e).problems.empty());
+    // A higher one is never explained.
+    e.multiplier = 2;
+    CHECK(HasProblem(CheckFgLines(Replaced(clamped, "fg_mult=2", "fg_mult=4"), e), "fg_mult=4, expected 2"));
+    // Unchecked by default.
+    CHECK_EQ(FgExpectation().multiplier, 0u);
 }
 
 TEST(TestappLogs_FgNoCameraLogPasses) {
