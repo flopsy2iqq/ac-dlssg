@@ -27,6 +27,8 @@ extern const GUID IID_ReShadeUnwrappedObject;
 class StreamlineRuntime;
 class CameraChannel;
 class NgxEvaluateSink;
+class PanelStatusChannel;
+class PanelControlChannel;
 
 // What FactoryHook knows from the bootstrap (M3). The defaults are what the
 // unit tests need: no NGX hook, the process-wide camera channel.
@@ -37,6 +39,13 @@ struct PresenterEnvironment {
     bool spoof_loaded = false;      // dlssg_for_sm86's version.dll from the game folder
     bool allow_stretching = false;  // dxgi_tweaks.ini ALLOW_STRETCHING=1 (runtime aspect test)
     const CameraChannel* camera = nullptr;  // nullptr: CameraChannel::Get()
+    // Spec 6.9, the in-game panel: the status section the presenter publishes
+    // into and the control section it reads the Lua app's requests from, and
+    // ac-dlssg.ini for "Save as default". nullptr (the default, and the unit
+    // tests') publishes nothing and reads no request.
+    PanelStatusChannel* status = nullptr;
+    const PanelControlChannel* control = nullptr;
+    std::wstring config_path;
 };
 
 struct PresenterCreateInfo {
@@ -111,6 +120,26 @@ struct PresenterCreateInfo {
 //    the full marker sequence (not a CSP frame); the camera latch restarts.
 //  - stalls: entering stalled mode sets eOff.
 //  - log lines and stats fields: see the M3 log contract (tests).
+//
+// The in-game panel (spec 6.9), both paths, with env.status and env.control:
+//  - creation: the control record's current requestCounter is the baseline
+//    (a request from before this presenter is never applied), and the
+//    status is published: bridgeState kPanelFgAvailable when Streamline
+//    supports DLSS-G, else kPanelProxyNoFg with the reason as stateReason.
+//  - PresentFrame, first thing after the NGX rescan: one compare of the
+//    control record's seq with the last one seen; when it changed, a seqlock
+//    read (a torn one is retried at the next frame) and DecideControl. A new
+//    request sets the DLSS-G switch exactly as the hotkey does ("fg: panel ->
+//    on|off": the next DLSS-G frame has reset, a failure status is retried),
+//    sets the camera switches for this frame on ("panel: camera_flip_handedness
+//    0 -> 1"; the next DLSS-G frame has reset), and with saveAsDefault writes
+//    start_with_fg and both camera switches into env.config_path with
+//    WriteIniKeys ("panel: saved ..." or the WARN "panel: Save as default
+//    failed: ..."); the status is published at once.
+//  - the status is published again after every statistics line (fps, bridge
+//    GPU ms, video memory, per-second counts) and at the end of every frame
+//    whose DLSS-G mode or user switch changed; the final release publishes
+//    kPanelPassThrough, "the game's swap chain was released".
 
 class D3D12Presenter {
 public:

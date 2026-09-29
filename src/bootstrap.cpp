@@ -15,6 +15,8 @@
 #include "internal_call.h"
 #include "log.h"
 #include "module_version.h"
+#include "panel_control.h"
+#include "panel_status.h"
 #include "streamline_runtime.h"
 #include "system_dxgi.h"
 
@@ -187,12 +189,51 @@ void LogCompatInputs(const CompatInputs& c) {
          c.renodx_dlss5_loaded ? "loaded" : "not loaded");
 }
 
+// Spec 6.9: the panel's sections exist even when the bridge is disabled, so
+// that the window can say why it does nothing.
+void SetUpPanel(const BootstrapState& s) {
+    PanelStatusChannel& status = PanelStatusChannel::Get();
+    std::string err;
+    if (!status.Create(&err)) {
+        LOGW("panel: %s; the in-game panel gets no status", err.c_str());
+        return;
+    }
+    if (!status.Owned()) {
+        LOGI("panel: %s belongs to the bridge of process %u; this process publishes no status and reads no panel "
+             "request",
+             ToUtf8(status.SectionName()).c_str(), status.ForeignOwner());
+        return;
+    }
+    PanelControlChannel& control = PanelControlChannel::Get();
+    if (!control.Create(&err)) LOGW("panel: %s; panel requests are not read", err.c_str());
+    const Config& c = s.config;
+    const std::string hotkey = HotkeyText(c.hotkey);
+    const std::string reason = s.possible ? std::string("waiting for the game's swap chain") : s.reason;
+    status.Update([&](StatusLayout& st) {
+        st.bridgeState = s.possible ? kPanelNotLoaded : kPanelPassThrough;
+        st.mode = s.mode == BridgeMode::Standalone ? kPanelModeStandalone : kPanelModeReShade;
+        st.fgUserOn = c.start_with_fg ? 1u : 0u;
+        st.startWithFg = c.start_with_fg ? 1u : 0u;
+        st.cameraFlipHandedness = c.camera_flip_handedness ? 1u : 0u;
+        st.cameraNegateSide = c.camera_negate_side ? 1u : 0u;
+        st.spoofLoaded = s.spoof_loaded ? 1u : 0u;
+        st.driverWarning = s.driver_warnings.empty() ? 0u : 1u;
+        CopyText(st.warning, s.driver_warnings.empty() ? std::string() : s.driver_warnings.front());
+        CopyText(st.hotkey, hotkey);
+        CopyText(st.reason, reason);
+        CopyText(st.stateReason, reason);
+    });
+    LOGI("panel: status section %s and control section %s ready", ToUtf8(status.SectionName()).c_str(),
+         ToUtf8(control.SectionName()).c_str());
+}
+
 void Run(BootstrapState* s) {
     const std::wstring exe = ModuleFileName(nullptr);
     s->game_dir = ParentDir(exe);
     s->data_dir = s->game_dir.empty() ? std::wstring(L"ac-dlssg") : s->game_dir + L"\\ac-dlssg";
 
     const std::wstring iniPath = s->data_dir + L"\\ac-dlssg.ini";
+    s->config_path = iniPath;
     const bool iniFound = FileExists(iniPath);
     s->config = LoadConfig(iniPath);
 
@@ -299,6 +340,7 @@ void Run(BootstrapState* s) {
     } else {
         LOGI("bridge: not possible: %s", s->reason.c_str());
     }
+    SetUpPanel(*s);
 }
 
 }  // namespace

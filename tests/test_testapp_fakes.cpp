@@ -14,8 +14,10 @@
 
 #include "camera_channel.h"
 #include "fake_csp.h"
+#include "fake_panel.h"
 #include "gpu_test_devices.h"
 #include "ngx_hook.h"
+#include "panel_status.h"
 #include "test_framework.h"
 #include "fake_nvngx/fake_nvngx.h"
 
@@ -348,4 +350,64 @@ TEST(TestappFakes_NgxDriverPlaysCspsCallsThroughTheHook) {
 
     ngx.Release();
     CHECK_EQ(fx.state->destroyedParams, 1L);
+}
+// ---------------------------------------------------------------- the fake panel (--fake-panel)
+
+namespace {
+
+std::wstring TestPanelSection(const wchar_t* kind) {
+    static unsigned counter = 0;
+    return std::wstring(L"Local\\AcDlssg.") + kind + L".fake." + std::to_wstring(GetCurrentProcessId()) + L"." +
+           std::to_wstring(counter++);
+}
+
+}  // namespace
+
+// Like ac.readMemoryMappedFile, the fake opens only a status section the
+// bridge has created; its requests are what the bridge's reader gets, and
+// the status the bridge publishes is what it reads.
+TEST(TestappFakes_FakePanelTalksToTheBridgesChannels) {
+    const std::wstring statusName = TestPanelSection(L"Status");
+    const std::wstring controlName = TestPanelSection(L"Control");
+    std::string err;
+    testapp::FakePanel early;
+    CHECK(!early.Open(statusName.c_str(), controlName.c_str(), &err));
+    CHECK(!err.empty());
+
+    PanelStatusChannel status(statusName.c_str());
+    PanelControlChannel control(controlName.c_str());
+    REQUIRE(status.Create(&err));
+    REQUIRE(control.Create(&err));
+    testapp::FakePanel panel;
+    REQUIRE(panel.Open(statusName.c_str(), controlName.c_str(), &err));
+    CHECK(panel.IsOpen());
+
+    panel.Request(false, true, false, true);
+    ControlLayout c{};
+    REQUIRE(control.Read(&c) == PanelControlChannel::ReadResult::Ok);
+    CHECK_EQ(c.requestCounter, 1u);
+    CHECK_EQ(panel.Counter(), 1u);
+    CHECK_EQ(c.fgEnabled, 0u);
+    CHECK_EQ(c.cameraFlipHandedness, 1u);
+    CHECK_EQ(c.cameraNegateSide, 0u);
+    CHECK_EQ(c.saveAsDefault, 1u);
+    CHECK_EQ(panel.ControlSeq(), control.Seq());
+
+    status.Update([](StatusLayout& s) {
+        s.bridgeState = kPanelProxyNoFg;
+        s.controlApplied = 1;
+        CopyText(s.reason, "off by the user (panel)");
+    });
+    StatusLayout s{};
+    REQUIRE(panel.ReadStatus(&s));
+    CHECK_EQ(s.bridgeState, static_cast<uint32_t>(kPanelProxyNoFg));
+    CHECK_EQ(s.controlApplied, 1u);
+    CHECK(TextOf(s.reason) == "off by the user (panel)");
+
+    // A second fake (a reloaded Lua app) continues the counter.
+    testapp::FakePanel reloaded;
+    REQUIRE(reloaded.Open(statusName.c_str(), controlName.c_str(), &err));
+    reloaded.Request(true, true, false, false);
+    REQUIRE(control.Read(&c) == PanelControlChannel::ReadResult::Ok);
+    CHECK_EQ(c.requestCounter, 2u);
 }
