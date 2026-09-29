@@ -8,7 +8,7 @@ Bring NVIDIA DLSS Frame Generation (DLSS-G, 2X) to Assetto Corsa with Custom Sha
 
 The game keeps rendering in DirectX 11. Our DLL replaces CSP's swap chain with a proxy. At Present, the proxy copies the finished frame to a DirectX 12 swap chain created through NVIDIA Streamline, and DLSS-G inserts the generated frames there. Depth and motion vectors come from the DLSS upscaling pass that CSP already runs. Camera data comes from a small CSP Lua app.
 
-RTX 40 and RTX 50 cards run DLSS-G natively. RTX 30 cards (every Ampere GeForce GPU, SM86, desktop and laptop) are supported through the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) spoof, which gates only on the SM86 architecture. Our installer downloads it from its author's repository, with the user's consent.
+RTX 40 and RTX 50 cards run DLSS-G natively. RTX 30 cards (every Ampere GeForce GPU, SM86, desktop and laptop) are supported through the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) spoof, which gates only on the SM86 architecture. Our installer downloads it from its author's repository after printing the notice of section 10 (`-NoSpoof` skips it).
 
 Milestone M0 is already done: on the reference machine (RTX 3080, driver 616.64), the spoof enabled DLSS-G 2X, 3X and 4X in a native DLSS-G game (WheelMates) with no visible problems.
 
@@ -403,11 +403,12 @@ Bridge frame N. Test presents do not take part (6.3).
 
 ## 10. RTX 30 support through dlssg_for_sm86
 
-- **Installer.** It reads the adapter `DeviceId`. For Ampere GeForce GPUs (SM86, desktop and laptop), it shows the author, the source URL, the risk and this notice: *the repository has no LICENSE file; its README says the project source is GPLv3, but no source is published; the binary embeds NVIDIA's `nvngx_dlssg.dll`, which is not relicensed; running it on RTX 30 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you are that license's licensee.*
-- **On consent,** in the installer's staging phase (section 12), it:
-  - downloads exactly `version.dll` and `dlssg_sm86.ini` from commit `9621db573e07ed54f50c15bbb585ed9a7bdfac28` of `sdli1995/dlssg_for_sm86` (the files of tag `0.3.5`);
-  - verifies their git blob SHA-1: `efd92261f2b74e0a0fb927d74bce7a1c0c2413f7` for `version.dll`, `2c97d64f2239b7d511f7d0a36c16e149dd3329f6` for the ini;
-  - installs them next to `acs.exe` as journaled changes.
+- **Installer.** It reads the `PNPDeviceID` (`VEN_10DE&DEV_xxxx`) of every `Win32_VideoController` and classifies the NVIDIA ones with the device-ID table of `gpu_info.cpp`. RTX 40 and RTX 50 need nothing; when one is present, the spoof is not installed. For RTX 20 it prints that frame generation is not supported there and installs no spoof. For Ampere GeForce GPUs (SM86, desktop and laptop), it prints the author, the source URL, the risk and this notice before it downloads anything: *the repository has no LICENSE file; its README says the project source is GPLv3, but no source is published; the binary embeds NVIDIA's `nvngx_dlssg.dll`, which is not relicensed; running it on RTX 30 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you are that license's licensee.* It then continues without asking. At the owner's request (2026-09-29) the notice replaces the earlier consent prompt; `-NoSpoof` skips the spoof entirely.
+- **Then,** in the installer's staging phase (section 12), it:
+  - downloads exactly `version.dll` and `dlssg_sm86.ini` from commit `9621db573e07ed54f50c15bbb585ed9a7bdfac28` of `sdli1995/dlssg_for_sm86` (the files of tag `0.3.5`). The GitHub contents API lists both as plain git blobs at that commit (`version.dll` is 30021920 bytes, not a Git LFS pointer; the repository has no `.gitattributes`), so they come from `https://raw.githubusercontent.com/sdli1995/dlssg_for_sm86/<commit>/<name>`;
+  - verifies their git blob SHA-1: `efd92261f2b74e0a0fb927d74bce7a1c0c2413f7` for `version.dll`, `2c97d64f2239b7d511f7d0a36c16e149dd3329f6` for the ini, and for `version.dll` also its size and SHA-256 `c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838`. On a mismatch it deletes the download and stops with nothing changed;
+  - installs them next to `acs.exe` as journaled changes. The manifest records each file as installed, or as found when the pinned file was already there; the uninstaller removes only installed files whose hash is still the installed one.
+- **An existing `version.dll`.** One with the pinned SHA-256 stays, is not downloaded again and is recorded as found. Any other one (another mod, another spoof version) stays untouched; the installer warns and installs no spoof.
 - **Never downloaded:** the repository archive, because it contains `archive/0.1.0/version.dll`, which Defender flags as a trojan, and the files under `alternatives/`.
 - **Load order.** `acs.exe` imports `VERSION.dll` statically, so the spoof loads at process start, before ReShade and our DLL, and is armed before `slInit`.
 - **In the panel.** The bridge shows the real GPU and the spoof state. It logs the spoof's own log locations: `dlssg_sm86\logs\loader_<pid>.jsonl` and `backend_<pid>.jsonl`.
@@ -479,15 +480,17 @@ DLSS-G itself is exercised only in-game, by the user.
   - `install.ps1` and `install.bat`;
   - `uninstall.ps1` and `uninstall.bat`;
   - `README.md`, `LICENSE`, `EXCEPTIONS.md` and `THIRD_PARTY_NOTICES.txt`.
-- **Installer.** `install.ps1` is started by `install.bat` as `powershell -NoProfile -ExecutionPolicy Bypass -File`. It refuses to run while `acs.exe` is running.
+- **Installer.** `install.ps1` is started by `install.bat` as `powershell -NoProfile -ExecutionPolicy Bypass -File`. It refuses to run while `acs.exe` is running. It asks nothing; its only input is the final "Press Enter to exit", so that a double-clicked window stays open. When the account may not write into the game folder (a game under `C:\Program Files (x86)`), it starts itself again elevated, once (`Start-Process -Verb RunAs`), and that window continues; the UAC prompt is the only question. The test package holds only `install.bat` in its root, with `files\`, `scripts\` and `tools\` (`uninstall.bat`, `collect-logs.bat`, `README-test.txt`) beside it (the owner's request, 2026-09-29).
   - **Phase A: checks and staging.** Nothing in the game folder changes in this phase.
     1. Find Assetto Corsa through the Steam library folders.
     2. Check the CSP version and pick the mode: ReShade mode when ReShade with add-on support is `dxgi.dll`, standalone mode when the game folder has no `dxgi.dll`. When another `dxgi.dll` is present, stop and explain.
     3. Check HAGS per adapter (as in 6.10), the driver version (warn below 581.29 on hybrid laptops and below R580 with the spoof) and Smart App Control (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState`). At 1 (On) or 2 (Evaluation), refuse and explain: SAC blocks the unsigned bridge DLL, which makes ReShade crash at start, and the self-signed spoof (`Bad Image 0xc0e90002`). Report the compatibility settings from 6.10.
     4. List any `nvngx_*.dll` and `sl.*.dll` in the game root and warn that NGX may load that `nvngx_dlssg.dll` instead of ours. Never move or delete them, because CSP and other packages use them.
     5. Download into `%TEMP%\ac-dlssg-setup\`, with TLS 1.2 forced, `$ProgressPreference='SilentlyContinue'`, 3 retries and a 600 MB free-space check:
-       - `streamline-sdk-v2.14.1.zip` from the NVIDIA-RTX/Streamline GitHub release. Verify SHA-256 `92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b`. Show `license.txt`, `bin/x64/nvngx_dlss.license.txt` (the NVIDIA RTX SDKs License, which covers `nvngx_dlssg.dll`) and `bin/x64/reflex.license.txt`, and continue only on explicit acceptance. Extract only the production `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll` and `nvngx_dlssg.dll`, plus those three license files.
-       - With consent, the spoof files (section 10).
+       - `streamline-sdk-v2.14.1.zip` from the NVIDIA-RTX/Streamline GitHub release. Verify SHA-256 `92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b`. Print where `license.txt`, `bin/x64/nvngx_dlss.license.txt` (the NVIDIA RTX SDKs License, which covers `nvngx_dlssg.dll`) and `bin/x64/reflex.license.txt` are and that installing means accepting them, and continue; there is no prompt (the owner's request, 2026-09-29, replacing the earlier acceptance prompt). Extract only the production `sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, `sl.reflex.dll`, `sl.pcl.dll` and `nvngx_dlssg.dll`, plus those three license files.
+       - On an SM86 GPU and without `-NoSpoof`, the spoof files (section 10), after the printed notice.
+
+       The test package (`tools\make-test-package.ps1`) downloads into its own `files\deps\` folder instead of `%TEMP%`.
 
        Any failure in phase A ends the installer with nothing changed.
   - **Phase B: journaled changes.** Create `<game>\ac-dlssg\install\` and write `manifest.json` before the first change. For each change:
@@ -503,21 +506,24 @@ DLSS-G itself is exercised only in-game, by the user.
     - **The value.** `ProxyLibrary=ac-dlssg.dll` when the base path is the game folder; otherwise the absolute path of `<game>\ac-dlssg.dll`.
   - **Re-install and upgrade.** If `manifest.json` exists, the installer runs as an upgrade. It never rewrites the "before" data of existing entries or the files in `install\backup\`. For each target file:
     - if its SHA-256 equals the recorded "after" hash, it is ours: replace it without a new backup and update "after";
-    - if the manifest knows the path but the hash differs, someone changed it: report it, and replace it only with consent; the first backup stays the one the uninstaller restores;
-    - if the manifest does not know the path, back it up as a new original and add an entry.
+    - if the manifest knows the path but the hash differs, someone (or an older build) changed it: report it, keep a copy in `install\backup\`, and replace it without asking; the first backup stays the one the uninstaller restores;
+    - if the manifest does not know the path, back it up as a new original and add an entry;
+    - files the manifest records that the new build no longer ships are removed (a changed one keeps a copy in `install\backup\`).
+
+    An upgrade never asks (the owner's request, 2026-09-29): it handles every older manifest schema, and when the mode has to change (ReShade was installed over the standalone bridge, or removed since a ReShade-mode install) it undoes the old mode's files and installs the new mode in the same run. It still stops for files that are clearly not ours, such as a foreign `dxgi.dll` or a foreign `apps\lua\AcDlssg`; a foreign `version.dll` is left alone with a warning (section 10).
 
     The `[PROXY]` values recorded at first install stay the values the uninstaller restores. If bridge files exist without a manifest, the installer stops and asks the user to remove them, or to set `EnableProxyLibrary=0`, first.
 - **Uninstaller.** `<game>\ac-dlssg\install\uninstall.bat` also ships in the release zip. It runs from a copy in `%TEMP%` and refuses to run while `acs.exe` is running.
   1. In ReShade mode, it reverts the two `[PROXY]` keys first, and only if they still hold the values the installer wrote; otherwise it leaves them and reports. It never restores a whole-file copy of `ReShade.ini`, and it leaves an absent `ReShade.ini` absent.
   2. It re-reads the file, and continues only once ReShade no longer loads our DLL. In standalone mode, it first removes `<game>\dxgi.dll` when its SHA-256 is the recorded "after" hash, and otherwise stops and reports.
   3. It reverts the manifest entries in reverse. It skips entries whose file is already gone, and it leaves in place and reports any file whose SHA-256 differs from the recorded "after" hash.
-  4. It deletes `<game>\ac-dlssg\`, and, if the user agrees, `<game>\dlssg_sm86\` and `%LOCALAPPDATA%\DlssgSm86\`.
+  4. It removes the spoof files the manifest records as installed (each only while its hash is the installed one), and leaves found ones. It deletes `<game>\ac-dlssg\`, and, with `-RemoveData`, also `<game>\dlssg_sm86\` and `%LOCALAPPDATA%\DlssgSm86\`, but only when the installer put the spoof there and no `version.dll` is left in the game folder (the owner's request, 2026-09-29, replacing the earlier question).
 
 ## 13. Licensing
 
 - **This project.** GPL-3.0 with the Modding Exception and the GPL-3.0 section 7 linking permission copied from open-shaders' `EXCEPTIONS.md`, shipped as `EXCEPTIONS.md`. Together they allow the DLL to be combined with `acs.exe`, CSP, ReShade, and NVIDIA's Streamline and NGX binaries. Code adapted from open-shaders, from Community Shaders (GPL-3.0 with the same exceptions) and from dlss5-bridge (MIT) keeps its notices.
 - **Streamline and NGX runtime DLLs.** Never committed or re-hosted. The installer downloads them from NVIDIA's release on the user's machine, after the user accepts NVIDIA's terms.
-- **The RTX 30 spoof.** It circumvents NVIDIA's RTX 40 requirement for DLSS-G, which section 4.d of the NVIDIA RTX SDKs License forbids for licensees. It is therefore optional, installed only with explicit consent after the notice in section 10, never re-hosted by this project, and documented with this risk in the README.
+- **The RTX 30 spoof.** It circumvents NVIDIA's RTX 40 requirement for DLSS-G, which section 4.d of the NVIDIA RTX SDKs License forbids for licensees. It is therefore optional (`-NoSpoof`), installed only on SM86 GPUs after the notice in section 10 is printed (since 2026-09-29 without a consent prompt, at the owner's request), downloaded from the author's repository on the user's machine, never re-hosted by this project, and documented with this risk in the README.
 
 ## 14. Risks and how the milestones retire them
 
