@@ -101,6 +101,7 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
             return;
         }
         ++frame_.evaluates;
+        LOGT_ONCE_N(12, "trace: capture OnEvaluate: evaluate %u of this frame", frame_.evaluates);
         if (frame_.evaluates == 1) {
             // Spec 7 step 2: the camera is latched once per bridge frame.
             CameraLayout snap{};
@@ -118,7 +119,10 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
                          c.originShift[2]);
                 }
             }
+            LOGT_ONCE_N(12, "trace: capture OnEvaluate: camera %s, markers next",
+                        CameraReadResultText(frame_.cameraResult));
             if (deps_.onFirstEvaluate) deps_.onFirstEvaluate();
+            LOGT_ONCE_N(12, "trace: capture OnEvaluate: markers done");
         }
         Capture(in);
     } catch (...) {

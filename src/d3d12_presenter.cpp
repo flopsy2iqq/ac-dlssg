@@ -1130,7 +1130,14 @@ std::unique_ptr<D3D12Presenter> D3D12Presenter::Create(const PresenterCreateInfo
 HRESULT D3D12Presenter::PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* source, UINT cspSync, UINT cspFlags) {
     try {
         if (!impl_) return E_FAIL;
-        return impl_->PresentFrame(*this, ctx, source, cspSync, cspFlags);
+        const bool trace = g_trace_frames.load() > 0;
+        if (trace) LOGD("trace: present enter (%d traced frames left)", g_trace_frames.load());
+        const HRESULT hr = impl_->PresentFrame(*this, ctx, source, cspSync, cspFlags);
+        if (trace) {
+            LOGD("trace: present exit 0x%08lX", static_cast<unsigned long>(hr));
+            g_trace_frames.fetch_sub(1);
+        }
+        return hr;
     } catch (...) {
         LOGE("presenter: unexpected exception in PresentFrame");
         return E_FAIL;

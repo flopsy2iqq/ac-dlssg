@@ -661,11 +661,13 @@ void NgxHook::ProcessPendingRescan() {
     if (!s.installed.load(std::memory_order_acquire)) return;
     // The per-frame fast path: nothing was reported, so no lock and no loader call.
     if (!s.workPending.load(std::memory_order_acquire)) return;
+    LOGT_ONCE_N(16, "trace: ngx rescan enter");
     ExclusiveLock scan(&s.scanLock);
     const bool overflow = DrainEventsLocked();  // unloads first, before any rescan
     if (overflow) VerifyLayersLocked();
     if (s.pendingRescan.exchange(false, std::memory_order_acq_rel) || overflow) ScanLocked();
     RecountLocked();
+    LOGT_ONCE_N(16, "trace: ngx rescan exit");
 }
 
 void NgxHook::Uninstall() {
@@ -746,10 +748,14 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
     auto orig = reinterpret_cast<PfnNgxCreateFeature>(s.layers[slot].create.Original());
     if (!orig) return kNgxFail;
     const bool neverCount = s.layers[slot].neverCount;
+    LOGT_ONCE_N(24, "trace: ngx create enter slot %d feature %u nest %d", slot, featureId, t_nest + 1);
     ++t_nest;
     NgxResult r = orig(ctx, featureId, params, outHandle);
     const int nest = t_nest;
     --t_nest;
+    LOGT_ONCE_N(24, "trace: ngx create exit slot %d feature %u nest %d result 0x%X", slot, featureId, nest,
+                static_cast<unsigned>(r));
+    if (featureId == kNgxFeatureSuperSampling && nest == 1) g_trace_frames.store(12);
     if (nest != 1) return r;  // nested NGX-internal create: forward only
     if (r != kNgxSuccess || !outHandle || !*outHandle || !Plausible(params)) return r;
     try {
@@ -806,10 +812,14 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
     auto orig = reinterpret_cast<PfnNgxEvaluateFeature>(hook.Original());
     if (!orig) return kNgxFail;
     const bool neverCount = s.layers[slot].neverCount;
+    const bool tracing = g_trace_frames.load() > 0;
+    if (tracing) LOGT_ONCE_N(40, "trace: ngx evaluate enter slot %d nest %d", slot, t_nest + 1);
     ++t_nest;
     NgxResult r = orig(ctx, handle, params, callback);
     const int nest = t_nest;
     --t_nest;
+    if (tracing)
+        LOGT_ONCE_N(40, "trace: ngx evaluate exit slot %d nest %d result 0x%X", slot, nest, static_cast<unsigned>(r));
     if (nest != 1) return r;  // nested: touch nothing (spec 6.5)
     if (neverCount) return r;  // a denoiser snippet's own entry point (F4)
     try {
@@ -892,7 +902,9 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         int reset = 0;
         if (params->Get(ngxkey::kReset, &reset) == kNgxSuccess) in.reset = reset != 0;
 
+        LOGT_ONCE_N(12, "trace: ngx counted evaluate: sink call");
         CallSink([&](NgxEvaluateSink* sink) { sink->OnEvaluate(in); });
+        LOGT_ONCE_N(12, "trace: ngx counted evaluate: sink returned");
     } catch (...) {
     }
     return r;
