@@ -8,8 +8,10 @@
   release-notes.ps1 runs against fixture changelogs, CMakeLists.txt files and
   zips built here. run-ci-tests.ps1 runs against fixture test sources and a
   fake test runner (a .cmd that prints what acdb_tests.exe prints for a
-  filter), so no GPU and no build are needed. The last case runs
-  release-notes.ps1 on the repository's own CHANGELOG.md and CMakeLists.txt.
+  filter), so no GPU is needed. The last cases run release-notes.ps1 on the
+  repository's own CHANGELOG.md and CMakeLists.txt, and make-test-package.ps1
+  without -Version on the Release build (-Dll), whose zip must be named
+  after the project VERSION.
 
   Everything is written under -WorkRoot (default build\release-tools-test),
   which is deleted and re-created on every run, and deleted again after a
@@ -23,6 +25,8 @@
 #>
 param(
     [string]$WorkRoot,
+    # The bridge build that the package case packs. Default: build\Release\ac-dlssg.dll.
+    [string]$Dll,
     [switch]$Keep
 )
 
@@ -35,6 +39,8 @@ $notesScript = Join-Path $tools 'release-notes.ps1'
 $ciTestsScript = Join-Path $tools 'run-ci-tests.ps1'
 
 if (-not $WorkRoot) { $WorkRoot = Join-Path $repo 'build\release-tools-test' }
+if (-not $Dll) { $Dll = Join-Path $repo 'build\Release\ac-dlssg.dll' }
+$Dll = [IO.Path]::GetFullPath($Dll)
 $WorkRoot = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')
 $markerName = '.acdb-release-tools-test-root'
 
@@ -144,8 +150,8 @@ function New-ReleaseZip([string]$Zip, [string]$Folder, [byte[]]$DllBytes, [switc
     [System.IO.Compression.ZipFile]::CreateFromDirectory($root, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
 }
 $dllBytes = [byte[]](1..200 | ForEach-Object { $_ % 256 })
-$dll = Join-Path $fx 'ac-dlssg.dll'
-[IO.File]::WriteAllBytes($dll, $dllBytes)
+$fixtureDll = Join-Path $fx 'ac-dlssg.dll'
+[IO.File]::WriteAllBytes($fixtureDll, $dllBytes)
 $otherDll = Join-Path $fx 'other\ac-dlssg.dll'
 New-Item -ItemType Directory -Path (Split-Path -Parent $otherDll) -Force | Out-Null
 [IO.File]::WriteAllBytes($otherDll, [byte[]](1..201 | ForEach-Object { $_ % 256 }))
@@ -164,7 +170,7 @@ function Invoke-Notes([string[]]$Arguments) {
 
 Invoke-Case 'RN1: the notes are the version''s CHANGELOG section plus the checksums and the verify line' {
     $out = Join-Path $fx 'out\notes-1.md'
-    $r = Invoke-Notes @('-Zip', $zip, '-Dll', $dll, '-OutFile', $out)
+    $r = Invoke-Notes @('-Zip', $zip, '-Dll', $fixtureDll, '-OutFile', $out)
     Check ($r.Code -eq 0) 'release-notes exits 0'
     Check (Test-Path -LiteralPath $out -PathType Leaf) 'the notes file is written'
     if (-not (Test-Path -LiteralPath $out -PathType Leaf)) { return }
@@ -175,7 +181,7 @@ Invoke-Case 'RN1: the notes are the version''s CHANGELOG section plus the checks
     Check ($norm.StartsWith(($section123 -replace "`r`n", "`n") + "`n")) 'the notes start with the 1.2.3 section, without its heading'
     Check ($norm -notmatch 'Later\.|Earlier\.|Intro text|## \[1\.2\.3\]') 'nothing from the other sections, the intro or the heading'
     $zipSha = Get-Sha $zip
-    $dllSha = Get-Sha $dll
+    $dllSha = Get-Sha $fixtureDll
     Check ($norm.Contains("| ``ac-dlssg-1.2.3.zip`` | ``$zipSha`` |")) 'the zip''s SHA-256 is listed'
     Check ($norm.Contains("| ``ac-dlssg.dll`` (``files\ac-dlssg.dll`` in the zip) | ``$dllSha`` |")) 'the DLL''s SHA-256 is listed'
     Check ($norm.Contains("`nVerify with: ``gh attestation verify <file> --repo flopsy2iqq/ac-dlssg```n")) 'the verify line names the repository'
@@ -187,7 +193,7 @@ Invoke-Case 'RN2: the DLL hash is read from the zip, and -Dll must match it' {
     $r = Invoke-Notes @('-Zip', $zip, '-OutFile', $out)
     Check ($r.Code -eq 0) 'without -Dll: exits 0'
     if (Test-Path -LiteralPath $out) {
-        Check ((Get-Content -LiteralPath $out -Raw).Contains((Get-Sha $dll))) 'the DLL hash is the one of files\ac-dlssg.dll in the zip'
+        Check ((Get-Content -LiteralPath $out -Raw).Contains((Get-Sha $fixtureDll))) 'the DLL hash is the one of files\ac-dlssg.dll in the zip'
     } else { Check $false 'the notes file is written' }
     $out3 = Join-Path $fx 'out\notes-3.md'
     $r = Invoke-Notes @('-Zip', $zip, '-Dll', $otherDll, '-OutFile', $out3)
@@ -350,6 +356,27 @@ Invoke-Case 'CT6: a listed file that is missing or has no tests fails the run' {
 Invoke-Case 'RP1: CHANGELOG.md has a section for the project version' {
     $r = Invoke-Script $notesScript @()
     Check ($r.Code -eq 0) 'release-notes.ps1 with the repository defaults exits 0'
+}
+
+# build.yml uploads build\package\ac-dlssg-<VERSION>.zip and release.yml
+# attaches it, so the package's default name must follow CMakeLists.txt.
+Invoke-Case 'RP2: without -Version, make-test-package.ps1 names the zip after the project VERSION' {
+    Check (Test-Path -LiteralPath $Dll -PathType Leaf) "the bridge DLL exists ($Dll; build Release first)"
+    if (-not (Test-Path -LiteralPath $Dll -PathType Leaf)) { return }
+    $m = [regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'CMakeLists.txt')), 'project\s*\(\s*\S+\s+VERSION\s+([0-9][0-9.]*)')
+    Check $m.Success 'CMakeLists.txt has a project VERSION'
+    if (-not $m.Success) { return }
+    $version = $m.Groups[1].Value
+    $out = Join-Path $WorkRoot 'package'
+    $r = Invoke-Script (Join-Path $tools 'make-test-package.ps1') @('-Dll', $Dll, '-OutDir', $out)
+    Check ($r.Code -eq 0) 'make-test-package exits 0'
+    $zip = Join-Path $out "ac-dlssg-$version.zip"
+    Check (Test-Path -LiteralPath $zip -PathType Leaf) "the zip is ac-dlssg-$version.zip"
+    Check ((Test-Path -LiteralPath $out) -and @(Get-ChildItem -LiteralPath $out -Filter '*.zip' -File).Count -eq 1) 'and it is the only zip'
+    if (Test-Path -LiteralPath $zip -PathType Leaf) {
+        $n = Invoke-Script $notesScript @('-Zip', $zip, '-Dll', $Dll, '-OutFile', (Join-Path $WorkRoot 'package\notes.md'))
+        Check ($n.Code -eq 0) 'release-notes.ps1 accepts it, with the DLL inside matching the build'
+    }
 }
 
 Write-Host ''

@@ -113,8 +113,9 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File tools\run-ci-tests.ps1 -Source ($sources -join ',')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # release-notes.ps1 and run-ci-tests.ps1 against fixtures, and a
-      # CHANGELOG.md section for the project version.
+      # release-notes.ps1 and run-ci-tests.ps1 against fixtures, a
+      # CHANGELOG.md section for the project version, and the default package
+      # name ac-dlssg-<VERSION>.zip for this build's DLL.
       - name: Release tool tests
         shell: cmd
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-release-tools.ps1
