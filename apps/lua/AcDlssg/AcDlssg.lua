@@ -531,7 +531,8 @@ local function rebuildTexts()
     texts.mult = 'Multiplier'
   end
   texts.multNote = s.fgMultNote
-  texts.vramNote = s.vramNote
+  -- While the guard keeps DLSS-G off, the status line already says why.
+  texts.vramNote = s.vramNote ~= s.reason and s.vramNote or ''
   texts.restartNote = s.restartNote
   if lastSaveRequest ~= 0 and s.saveCounter == lastSaveRequest then
     texts.save = s.saveOk ~= 0 and 'Saved as the default in ac-dlssg.ini' or 'Saving failed; see bridge.log'

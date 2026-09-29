@@ -342,6 +342,16 @@ TEST(LuaApp_WindowSaysWhenBridgeAndWindowVersionsDiffer) {
           std::string::npos);
 }
 
+// While the guard keeps DLSS-G off with auto, the status line already says
+// "Off: not enough video memory: ..."; the note under the video memory line
+// does not repeat it. A different note (tight, or the fixed headroom's) stays.
+TEST(LuaApp_VramNoteDoesNotRepeatTheStatusLine) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaFunctionBody(lua, "rebuildTexts").find("texts.vramNote = s.vramNote ~= s.reason and s.vramNote or ''") !=
+          std::string::npos);
+}
+
 // No Lua interpreter runs in these tests; a block that is never closed (or
 // closed twice) is the easiest mistake to make in the app, so the block
 // keywords are counted: every function, if and do has its end, every

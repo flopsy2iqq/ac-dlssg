@@ -349,7 +349,7 @@ One UI in both modes: a normal CSP app window titled "AC DLSS-G", drawn by the L
   - When `restartNote` is set, "Restart the game to apply" at the top in a highlight colour, with the note below it.
   - A big switch for frame generation, disabled with `stateReason` when DLSS-G is not available.
   - Three buttons 2X, 3X and 4X (hidden while the bridge publishes no multiplier): the one asked for is green; one above `fgMultMax` is disabled when the maximum is known, with the hover text "not supported by this GPU/driver"; `fgMultNote` follows them in orange, and "Multiplier (using <m>X)" names the multiplier used when it is lower.
-  - The status line (on, on but paused, or off and the reason; wrapped), real and output fps, the bridge's GPU time, video memory used and budget (orange from 90% of the budget, red above it) with `vramNote` under it in orange, the GPU with the spoof state, the mode, the hotkey, and the VSync note and driver warning when set.
+  - The status line (on, on but paused, or off and the reason; wrapped), real and output fps, the bridge's GPU time, video memory used and budget (orange from 90% of the budget, red above it) with `vramNote` under it in orange (not when it is the status line's reason already, as with `auto`'s "not enough video memory ..."), the GPU with the spoof state, the mode, the hotkey, and the VSync note and driver warning when set.
   - "Save as default".
   - A collapsible "Debug" part with the two camera switches and the per-second counts.
   - While a request is not yet applied, the window shows what was asked for.
