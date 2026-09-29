@@ -87,9 +87,18 @@ struct StatusLayout {
     char gpuName[64];                     // the render adapter
     char hotkey[32];                      // e.g. "Ctrl+F10"
     char bridgeVersion[32];               // ACDB_VERSION
+    // Appended (the fields above keep their offsets, so a window and a bridge
+    // of different builds still agree on them; an older bridge leaves these
+    // zero in its 4096-byte section).
+    uint32_t fgMultRequested;  // the multiplier asked for: fg_multiplier, then the panel (FgMultiplier().requested)
+    uint32_t fgMultUsed;       // what the DLSS-G options carry (FgMultiplier().used)
+    uint32_t fgMultMax;        // the highest multiplier Streamline allows; 0 until it was asked (PanelMultiplierMax)
+    char fgMultNote[kPanelReasonChars];   // why fgMultUsed < fgMultRequested (FgMultiplier().note); empty otherwise
+    char vramNote[kPanelReasonChars];     // the video memory guard's note: tight, or not enough (DecideVramMultiplier)
+    char restartNote[kPanelReasonChars];  // what applies only after a restart (PanelRestartNote); empty otherwise
 };
 
-static_assert(sizeof(StatusLayout) == 816);
+static_assert(sizeof(StatusLayout) == 1308);
 static_assert(alignof(StatusLayout) == 4);
 static_assert(offsetof(StatusLayout, magic) == 0);
 static_assert(offsetof(StatusLayout, version) == 4);
@@ -125,6 +134,12 @@ static_assert(offsetof(StatusLayout, warning) == 528);
 static_assert(offsetof(StatusLayout, gpuName) == 688);
 static_assert(offsetof(StatusLayout, hotkey) == 752);
 static_assert(offsetof(StatusLayout, bridgeVersion) == 784);
+static_assert(offsetof(StatusLayout, fgMultRequested) == 816);
+static_assert(offsetof(StatusLayout, fgMultUsed) == 820);
+static_assert(offsetof(StatusLayout, fgMultMax) == 824);
+static_assert(offsetof(StatusLayout, fgMultNote) == 828);
+static_assert(offsetof(StatusLayout, vramNote) == 988);
+static_assert(offsetof(StatusLayout, restartNote) == 1148);
 
 struct ControlLayout {
     uint32_t magic;           // kControlMagic once the app has written a request
@@ -134,10 +149,13 @@ struct ControlLayout {
     uint32_t fgEnabled;       // the desired state of every switch, not only the one clicked
     uint32_t cameraFlipHandedness;
     uint32_t cameraNegateSide;
-    uint32_t saveAsDefault;   // also write start_with_fg and the camera switches into ac-dlssg.ini
+    uint32_t saveAsDefault;   // also write start_with_fg, the camera switches and fg_multiplier into ac-dlssg.ini
+    // Appended: 2..4 asks for that multiplier (D3D12Presenter::SetFgMultiplier);
+    // 0, what an older window leaves, keeps the current one.
+    uint32_t desiredMultiplier;
 };
 
-static_assert(sizeof(ControlLayout) == 32);
+static_assert(sizeof(ControlLayout) == 36);
 static_assert(alignof(ControlLayout) == 4);
 static_assert(offsetof(ControlLayout, magic) == 0);
 static_assert(offsetof(ControlLayout, version) == 4);
@@ -147,6 +165,7 @@ static_assert(offsetof(ControlLayout, fgEnabled) == 16);
 static_assert(offsetof(ControlLayout, cameraFlipHandedness) == 20);
 static_assert(offsetof(ControlLayout, cameraNegateSide) == 24);
 static_assert(offsetof(ControlLayout, saveAsDefault) == 28);
+static_assert(offsetof(ControlLayout, desiredMultiplier) == 32);
 
 constexpr wchar_t kStatusSectionName[] = L"Local\\AcDlssg.Status.v1";
 constexpr wchar_t kControlSectionName[] = L"Local\\AcDlssg.Control.v1";

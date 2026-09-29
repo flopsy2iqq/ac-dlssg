@@ -165,13 +165,18 @@ struct PresenterCreateInfo {
 //    request sets the DLSS-G switch exactly as the hotkey does ("fg: panel ->
 //    on|off": the next DLSS-G frame has reset, a failure status is retried),
 //    sets the camera switches for this frame on ("panel: camera_flip_handedness
-//    0 -> 1"; the next DLSS-G frame has reset), and with saveAsDefault writes
-//    start_with_fg and both camera switches into env.config_path with
-//    WriteIniKeys ("panel: saved ..." or the WARN "panel: Save as default
-//    failed: ..."); the status is published at once.
+//    0 -> 1"; the next DLSS-G frame has reset), asks for a desiredMultiplier
+//    of 2..4 through SetFgMultiplier and applies it in the same frame ("fg:
+//    multiplier <a>X -> <b>X requested"), and with saveAsDefault writes
+//    start_with_fg, both camera switches and fg_multiplier into
+//    env.config_path with WriteIniKeys ("panel: saved ..." and restartNote,
+//    or the WARN "panel: Save as default failed: ..."); the status is
+//    published at once.
 //  - the status is published again after every statistics line (fps, bridge
-//    GPU ms, video memory, per-second counts) and at the end of every frame
-//    whose DLSS-G mode or user switch changed; the final release publishes
+//    GPU ms, video memory, per-second counts), at the end of every frame
+//    whose DLSS-G mode or user switch changed, and at the end of a frame
+//    that changed the multiplier's request, Streamline's maximum or the
+//    video memory guard's outcome or note; the final release publishes
 //    kPanelPassThrough, "the game's swap chain was released".
 
 class D3D12Presenter {
@@ -279,6 +284,7 @@ public:
         unsigned requested = 2;  // config.fg_multiplier, then SetFgMultiplier
         unsigned used = 2;       // what the DLSS-G options carry (fg_mult in the stats line)
         uint32_t framesMax = 0;  // Streamline's numFramesToGenerateMax; 0 until it was queried
+        bool maxKnown = false;   // framesMax is Streamline's answer (0 then means a failed query: 2X only)
         std::string note;        // why used < requested (the clamp and the video memory fallback); empty otherwise
     };
     // The presenting thread's view (tests, and the status the panel shows).

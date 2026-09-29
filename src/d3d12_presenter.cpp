@@ -374,6 +374,7 @@ struct D3D12Presenter::Impl {
     uint32_t control_applied = 0;  // requestCounter of the last request applied, or the baseline
     uint32_t save_counter = 0;     // requestCounter of the last "Save as default"
     bool save_ok = false;
+    std::string restart_note;      // StatusLayout::restartNote (PanelRestartNote)
     bool panel_published = false;  // the status holds this presenter's record
     bool published_mode_on = false;
     bool published_user_on = false;
@@ -412,7 +413,7 @@ struct D3D12Presenter::Impl {
     void ProcessNgx();
     void PollHotkey();
     void SetUserOn(bool on, const char* source);
-    void PollPanel();
+    void PollPanel(D3D12Presenter& self);
     void SaveDefaults(uint32_t counter, const PanelSettings& settings);
     void PublishStatus();
     void PublishReleased();
@@ -817,7 +818,7 @@ void D3D12Presenter::Impl::SetUserOn(bool on, const char* source) {
 
 // Spec 6.9: the Lua app's request, if there is a new one. Nothing but one
 // load and compare while the app writes nothing.
-void D3D12Presenter::Impl::PollPanel() {
+void D3D12Presenter::Impl::PollPanel(D3D12Presenter& self) {
     const uint32_t seq = panel_control->Seq();
     if (seq == control_seq) return;
     ControlLayout c{};
@@ -829,10 +830,14 @@ void D3D12Presenter::Impl::PollPanel() {
     current.fgUserOn = fg_user_on;
     current.flipHandedness = config.camera_flip_handedness;
     current.negateSide = config.camera_negate_side;
+    current.multiplier = mult.Requested();
     const ControlDecision d = DecideControl(control_applied, ControlRequestFrom(c), current);
     if (!d.apply) return;
     control_applied = c.requestCounter;
     if (d.fgChanged) SetUserOn(d.next.fgUserOn, "panel");
+    // The 2X/3X/4X buttons: SetFgMultiplier, applied now rather than later
+    // in this frame, so that the status below shows it.
+    if (d.multiplierChanged && self.SetFgMultiplier(static_cast<int>(d.next.multiplier))) ApplyPendingMultiplier();
     if (d.flipChanged)
         LOGI("panel: camera_flip_handedness %d -> %d", current.flipHandedness ? 1 : 0, d.next.flipHandedness ? 1 : 0);
     if (d.negateChanged)
@@ -846,20 +851,22 @@ void D3D12Presenter::Impl::PollPanel() {
     PublishStatus();
 }
 
-// "Save as default": start_with_fg and the camera switches into
-// ac-dlssg.ini, key by key.
+// "Save as default": start_with_fg, the camera switches and fg_multiplier
+// into ac-dlssg.ini, key by key. They apply at the next start: restartNote.
 void D3D12Presenter::Impl::SaveDefaults(uint32_t counter, const PanelSettings& settings) {
     save_counter = counter;
     std::string err = "no ac-dlssg.ini path";
     save_ok = !config_path.empty() && WriteIniKeys(config_path, "bridge", SavedDefaultKeys(settings), &err);
+    restart_note = PanelRestartNote(restart_note, true, save_ok);
     if (!save_ok) {
         LOGW("panel: Save as default failed: %s", err.c_str());
         return;
     }
     config.start_with_fg = settings.fgUserOn;
-    LOGI("panel: saved start_with_fg=%d camera_flip_handedness=%d camera_negate_side=%d to %s",
+    config.fg_multiplier = settings.multiplier;
+    LOGI("panel: saved start_with_fg=%d camera_flip_handedness=%d camera_negate_side=%d fg_multiplier=%u to %s",
          settings.fgUserOn ? 1 : 0, settings.flipHandedness ? 1 : 0, settings.negateSide ? 1 : 0,
-         Utf8(config_path).c_str());
+         settings.multiplier, Utf8(config_path).c_str());
 }
 
 // The presenter's part of the status record; the bootstrap's part (mode,
@@ -873,6 +880,7 @@ void D3D12Presenter::Impl::PublishStatus() {
     const std::string gate = PanelGateReason(fg_supported, stalled, gate_reason);
     const std::string reason = PanelReason(mode_on, fg_user_on, UserOffReason(user_source), gate);
     const std::string hotkey = HotkeyText(config.hotkey);
+    const std::string multNote = MultiplierNote();
     const PanelNumbers& n = panel_numbers;
     panel_status->Update([&](StatusLayout& s) {
         s.bridgeState = sl && fg_supported ? kPanelFgAvailable : kPanelProxyNoFg;
@@ -900,6 +908,12 @@ void D3D12Presenter::Impl::PublishStatus() {
         CopyText(s.stateReason, fg_supported ? std::string() : state_reason);
         CopyText(s.gpuName, gpu_name);
         CopyText(s.hotkey, hotkey);
+        s.fgMultRequested = mult.Requested();
+        s.fgMultUsed = UsedMultiplier();
+        s.fgMultMax = PanelMultiplierMax(mult.MaxKnown(), mult.FramesMax());
+        CopyText(s.fgMultNote, multNote);
+        CopyText(s.vramNote, vram_note);
+        CopyText(s.restartNote, restart_note);
     });
 }
 
@@ -1139,6 +1153,7 @@ void D3D12Presenter::Impl::ApplyPendingMultiplier() {
     LOGI("fg: multiplier %uX -> %uX requested", before, mult.Requested());
     prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
     state_failure.clear();    // spec 9: a failure status is retried
+    status_due = true;        // the panel shows the request at the end of this frame
 }
 
 // Spec 6.8: numFramesToGenerateMax before options carry a count, and again
@@ -1158,6 +1173,7 @@ void D3D12Presenter::Impl::QueryFramesMax() {
         LOGI("fg: Streamline allows up to %uX (numFramesToGenerateMax %u)", max > 1 ? max + 1 : 2u, max);
     const std::string note = mult.OnFramesMax(max);
     if (!note.empty()) LOGI("fg: %s", note.c_str());
+    status_due = true;  // the panel's fgMultMax, fgMultUsed and note
 }
 
 unsigned D3D12Presenter::Impl::UsedMultiplier() const {
@@ -1458,7 +1474,7 @@ HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceCon
     if (ngx_attached) ProcessNgx();
     if (self.stopped_) return stop_error;
     if (!ctx) return E_INVALIDARG;
-    if (panel_control) PollPanel();
+    if (panel_control) PollPanel(self);
     ++stats_presents;
     const int64_t start = QpcNow();
     if (last_frame_qpc) max_frame_ms = std::max(max_frame_ms, QpcMs(start - last_frame_qpc));
@@ -1808,6 +1824,7 @@ D3D12Presenter::FgMultiplierStatus D3D12Presenter::FgMultiplier() const {
     s.requested = impl_->mult.Requested();
     s.used = impl_->UsedMultiplier();
     s.framesMax = impl_->mult.FramesMax();
+    s.maxKnown = impl_->mult.MaxKnown();
     s.note = impl_->MultiplierNote();
     return s;
 }

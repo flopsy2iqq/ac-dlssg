@@ -14,9 +14,11 @@
 
   2. The settings window "AC DLSS-G", in ReShade mode and in standalone mode
   alike. It reads the bridge's status from Local\AcDlssg.Status.v1 and writes
-  the user's requests (frame generation on or off, the camera switches, save
-  as default) into Local\AcDlssg.Control.v1; both are seqlocks too, and the
-  bridge applies a request at its next frame.
+  the user's requests (frame generation on or off, 2X/3X/4X, the camera
+  switches, save as default) into Local\AcDlssg.Control.v1; both are
+  seqlocks too, and the bridge applies a request at its next frame. The
+  fields the multiplier and the notes added sit at the end of both layouts,
+  so the ones before keep their offsets.
 
   The layout strings, the constants and the order of the stores in publish()
   and sendRequest() are checked against src/camera_layout.h and
@@ -234,6 +236,8 @@ local STATUS_LAYOUT = [[
   float capturesPerSec; float cameraFreshPerSec; float taggedPerSec;
   char reason[160]; char stateReason[256]; char warning[160]; char gpuName[64]; char hotkey[32];
   char bridgeVersion[32];
+  uint32_t fgMultRequested; uint32_t fgMultUsed; uint32_t fgMultMax;
+  char fgMultNote[160]; char vramNote[160]; char restartNote[160];
 ]]
 
 local CONTROL_SECTION = 'AcDlssg.Control.v1'
@@ -243,6 +247,7 @@ local CONTROL_VERSION = 1
 local CONTROL_LAYOUT = [[
   uint32_t magic; uint32_t version; uint32_t seq; uint32_t requestCounter;
   uint32_t fgEnabled; uint32_t cameraFlipHandedness; uint32_t cameraNegateSide; uint32_t saveAsDefault;
+  uint32_t desiredMultiplier;
 ]]
 
 -- bridgeState and mode of the status record.
@@ -281,6 +286,12 @@ local TEXT_PAUSED = 'On, but paused: no frames were generated in the last second
   .. ' generation while the game window is not focused)'
 local TEXT_VSYNC = 'VSync is not available with frame generation here: presenting without VSync (the borderless'
   .. ' window stays tear-free).'
+local TEXT_RESTART = 'Restart the game to apply'
+local TEXT_MULT_UNSUPPORTED = 'not supported by this GPU/driver'
+-- The 2X/3X/4X buttons: labels with fixed IDs, so the selection colour can
+-- change without ImGui seeing new widgets.
+local MULT_LABELS = { [2] = '2X###fgMult2', [3] = '3X###fgMult3', [4] = '4X###fgMult4' }
+local COLOR_RESTART = rgbm(0.4, 0.75, 1, 1)
 
 local st, ctl -- the two sections: status read-only, control for writing
 local statusSeq = -1 -- seq of the last stable status copy
@@ -288,7 +299,8 @@ local lastBeat, lastBeatTime = -1, 0
 local requestCounter = 0
 local reopenAt = 0
 local lastSaveRequest = 0
-local desired = { fg = false, flip = false, negate = false }
+-- mult: the multiplier asked for (2..4), or 0 to keep the bridge's.
+local desired = { fg = false, flip = false, negate = false, mult = 0 }
 
 local function newStatus()
   return {
@@ -296,7 +308,8 @@ local function newStatus()
     spoofLoaded = 0, rtx30 = 0, vsyncNote = 0, driverWarning = 0, cameraFlipHandedness = 0, cameraNegateSide = 0,
     startWithFg = 0, controlApplied = 0, saveCounter = 0, saveOk = 0, baseFps = 0, presentedFps = 0,
     bridgeGpuMs = -1, vramUsageMib = 0, vramBudgetMib = 0, capturesPerSec = 0, cameraFreshPerSec = 0,
-    taggedPerSec = 0, reason = '', stateReason = '', warning = '', gpuName = '', hotkey = '', bridgeVersion = ''
+    taggedPerSec = 0, reason = '', stateReason = '', warning = '', gpuName = '', hotkey = '', bridgeVersion = '',
+    fgMultRequested = 0, fgMultUsed = 0, fgMultMax = 0, fgMultNote = '', vramNote = '', restartNote = ''
   }
 end
 
@@ -306,7 +319,7 @@ local status, spare = newStatus(), newStatus()
 -- The window's texts, rebuilt when the status changes.
 local texts = {
   status = '', unavailable = '', state = '', fps = '', gpuMs = '', vram = '', gpu = '', mode = '', hotkey = '',
-  warning = '', perSecond = '', save = '', stopped = ''
+  warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '', vramNote = '', restartNote = ''
 }
 local vramLevel = 0 -- 0 fine, 1 near the budget, 2 over it
 
@@ -387,6 +400,12 @@ local function readStatus()
     c.gpuName = ffi.string(st.gpuName)
     c.hotkey = ffi.string(st.hotkey)
     c.bridgeVersion = ffi.string(st.bridgeVersion)
+    c.fgMultRequested = st.fgMultRequested
+    c.fgMultUsed = st.fgMultUsed
+    c.fgMultMax = st.fgMultMax
+    c.fgMultNote = ffi.string(st.fgMultNote)
+    c.vramNote = ffi.string(st.vramNote)
+    c.restartNote = ffi.string(st.restartNote)
   end
   memoryBarrier()
   if st.seq ~= s1 then return false end
@@ -416,9 +435,16 @@ local function currentNegate()
   return status.cameraNegateSide ~= 0
 end
 
+-- The multiplier asked for; 0 while the bridge publishes none (an older one).
+local function currentMult()
+  if pending() and desired.mult ~= 0 then return desired.mult end
+  return status.fgMultRequested
+end
+
 -- Seqlock writer (as publish() above): seq odd, the whole desired state and
--- the new counter, seq even. The bridge applies it at its next frame.
-local function sendRequest(fg, flip, negate, save)
+-- the new counter, seq even. The bridge applies it at its next frame. mult
+-- is 2..4, or 0 to keep the bridge's multiplier.
+local function sendRequest(fg, flip, negate, save, mult)
   local s = bit.band(bit.bor(ctl.seq, 1), 0x7FFFFFFF)
   ctl.seq = s
   memoryBarrier()
@@ -429,10 +455,11 @@ local function sendRequest(fg, flip, negate, save)
   ctl.cameraFlipHandedness = flip and 1 or 0
   ctl.cameraNegateSide = negate and 1 or 0
   ctl.saveAsDefault = save and 1 or 0
+  ctl.desiredMultiplier = mult
   ctl.requestCounter = requestCounter
   memoryBarrier()
   ctl.seq = s + 1
-  desired.fg, desired.flip, desired.negate = fg, flip, negate
+  desired.fg, desired.flip, desired.negate, desired.mult = fg, flip, negate, mult
 end
 
 local function rebuildTexts()
@@ -487,6 +514,14 @@ local function rebuildTexts()
   texts.warning = s.warning
   texts.perSecond = string.format('Per second: %.0f captures, %.0f fresh camera, %.0f tagged', s.capturesPerSec,
     s.cameraFreshPerSec, s.taggedPerSec)
+  if s.fgMultUsed ~= 0 and s.fgMultUsed ~= s.fgMultRequested then
+    texts.mult = string.format('Multiplier (using %dX)', s.fgMultUsed)
+  else
+    texts.mult = 'Multiplier'
+  end
+  texts.multNote = s.fgMultNote
+  texts.vramNote = s.vramNote
+  texts.restartNote = s.restartNote
   if lastSaveRequest ~= 0 and s.saveCounter == lastSaveRequest then
     texts.save = s.saveOk ~= 0 and 'Saved as the default in ac-dlssg.ini' or 'Saving failed; see bridge.log'
   else
@@ -521,18 +556,50 @@ end
 
 local toggleSize = vec2(0, 44)
 local saveSize = vec2(0, 0)
+local multSize = vec2(56, 0)
 
 local function debugContent()
   local controls = ctl ~= nil and status.bridgeState >= STATE_PROXY_NO_FG
   if not controls then ui.pushDisabled() end
   if ui.checkbox(LABEL_FLIP, currentFlip()) and controls then
-    sendRequest(currentFg(), not currentFlip(), currentNegate(), false)
+    sendRequest(currentFg(), not currentFlip(), currentNegate(), false, currentMult())
   end
   if ui.checkbox(LABEL_NEGATE, currentNegate()) and controls then
-    sendRequest(currentFg(), currentFlip(), not currentNegate(), false)
+    sendRequest(currentFg(), currentFlip(), not currentNegate(), false, currentMult())
   end
   if not controls then ui.popDisabled() end
   ui.text(texts.perSecond)
+end
+
+-- The 2X/3X/4X buttons (spec 6.9): the one asked for is green; one above
+-- the maximum Streamline reported (fgMultMax, 0 while unknown) is disabled
+-- and says why on hover. The bridge applies a click at its next frame.
+local function multiplierButtons(available)
+  local selected = currentMult()
+  local max = status.fgMultMax
+  ui.text(texts.mult)
+  for m = 2, 4 do
+    ui.sameLine()
+    local supported = max < 2 or m <= max
+    local usable = available and supported
+    local chosen = m == selected
+    ui.pushStyleColor(ui.StyleColor.Button, chosen and COLOR_ON or COLOR_OFF)
+    ui.pushStyleColor(ui.StyleColor.ButtonHovered, chosen and COLOR_ON_HOVER or COLOR_OFF_HOVER)
+    ui.pushStyleColor(ui.StyleColor.ButtonActive, chosen and COLOR_ON_HOVER or COLOR_OFF_HOVER)
+    local clicked = ui.button(MULT_LABELS[m], multSize, usable and ui.ButtonFlags.None or ui.ButtonFlags.Disabled)
+    ui.popStyleColor(3)
+    if not supported and ui.itemHovered(ui.HoveredFlags.AllowWhenDisabled) then
+      ui.setTooltip(TEXT_MULT_UNSUPPORTED)
+    end
+    if clicked and usable and not chosen then
+      sendRequest(currentFg(), currentFlip(), currentNegate(), false, m)
+    end
+  end
+  if texts.multNote ~= '' then
+    ui.pushStyleColor(ui.StyleColor.Text, COLOR_WARN)
+    ui.textWrapped(texts.multNote)
+    ui.popStyleColor(1)
+  end
 end
 
 function script.windowMain(dt)
@@ -552,6 +619,13 @@ function script.windowMain(dt)
     return
   end
 
+  -- A change that applies only at the next start ("Save as default").
+  if texts.restartNote ~= '' then
+    ui.textColored(TEXT_RESTART, COLOR_RESTART)
+    ui.textWrapped(texts.restartNote)
+    ui.offsetCursorY(4)
+  end
+
   -- The big switch; the hotkey toggles the same state.
   local available = ctl ~= nil and s.bridgeState == STATE_FG_AVAILABLE
   local on = currentFg()
@@ -562,8 +636,10 @@ function script.windowMain(dt)
   local clicked = ui.button(on and LABEL_ON or LABEL_OFF, toggleSize,
     available and ui.ButtonFlags.None or ui.ButtonFlags.Disabled)
   ui.popStyleColor(3)
-  if clicked and available then sendRequest(not on, currentFlip(), currentNegate(), false) end
+  if clicked and available then sendRequest(not on, currentFlip(), currentNegate(), false, currentMult()) end
   if not available then ui.textWrapped(texts.unavailable) end
+  -- An older bridge publishes no multiplier (0): no buttons.
+  if s.fgMultRequested ~= 0 then multiplierButtons(available) end
 
   -- Wrapped: an off reason or the pause note is longer than the window is wide.
   ui.pushStyleColor(ui.StyleColor.Text, (s.fgOn ~= 0 and s.fgPaused == 0) and COLOR_GOOD or COLOR_WARN)
@@ -575,6 +651,12 @@ function script.windowMain(dt)
     ui.text(texts.vram)
   else
     ui.textColored(texts.vram, vramLevel == 2 and COLOR_BAD or COLOR_WARN)
+  end
+  -- The video memory guard's note: tight (on anyway), or not enough (off).
+  if texts.vramNote ~= '' then
+    ui.pushStyleColor(ui.StyleColor.Text, COLOR_WARN)
+    ui.textWrapped(texts.vramNote)
+    ui.popStyleColor(1)
   end
   ui.text(texts.gpu)
   ui.text(texts.mode)
@@ -588,7 +670,7 @@ function script.windowMain(dt)
 
   ui.offsetCursorY(4)
   if ui.button(LABEL_SAVE, saveSize, ctl ~= nil and ui.ButtonFlags.None or ui.ButtonFlags.Disabled) and ctl ~= nil then
-    sendRequest(currentFg(), currentFlip(), currentNegate(), true)
+    sendRequest(currentFg(), currentFlip(), currentNegate(), true, currentMult())
     lastSaveRequest = requestCounter
   end
   if texts.save ~= '' then

@@ -32,10 +32,10 @@
 // settings window (tools/testapp/fake_panel.h). It reads the bridge's status
 // from Local\AcDlssg.Status.v1 and writes requests into
 // Local\AcDlssg.Control.v1 as the window's switches do: DLSS-G off, a camera
-// switch, "Save as default", DLSS-G on. Each must show up in the status a few
-// frames later and in the bridge log, the save must edit
-// <exe dir>\ac-dlssg\ac-dlssg.ini key by key, and the heartbeat must keep
-// advancing without requests.
+// switch, the 3X button, "Save as default", DLSS-G on. Each must show up in
+// the status a few frames later and in the bridge log, the save must edit
+// <exe dir>\ac-dlssg\ac-dlssg.ini key by key and set the restart note, and
+// the heartbeat must keep advancing without requests.
 //
 // Exit codes: 0 every check passed, 1 a check failed (the reason is printed),
 // 2 usage or set-up error.
@@ -119,6 +119,7 @@ constexpr double kFgReasonPeriodMs = 10000.0 - 50.0;
 // frames later. The heartbeat is sampled at kPanelBeatFrame and at the end.
 constexpr int kPanelOffFrame = 200;
 constexpr int kPanelFlipFrame = 300;
+constexpr int kPanelMultFrame = 350;
 constexpr int kPanelSaveFrame = 400;
 constexpr int kPanelOnFrame = 500;
 constexpr int kPanelBeatFrame = 600;
@@ -1007,34 +1008,55 @@ bool SetUpFakePanel(App& a) {
 }
 
 // The save of kPanelSaveFrame: start_with_fg=1 of the scenario's ini becomes
-// 0 in place, the two camera keys it lacks come after the last line of its
-// [bridge] section (the last section), and nothing else changes.
+// 0 in place, the two camera keys and fg_multiplier it lacks come after the
+// last line of its [bridge] section (the last section), and nothing else
+// changes.
 bool CheckPanelIni(const App& a) {
     const std::string& before = a.ini_before;
     const size_t at = before.find("\r\nstart_with_fg=1\r\n");
     const size_t section = before.rfind("[bridge]\r\n");
     if (at == std::string::npos || section == std::string::npos || section > at ||
-        before.find("camera_") != std::string::npos || before.size() < 2 || before.compare(before.size() - 2, 2, "\r\n") != 0 ||
+        before.find("camera_") != std::string::npos || before.find("fg_multiplier") != std::string::npos ||
+        before.size() < 2 || before.compare(before.size() - 2, 2, "\r\n") != 0 ||
         before.find('[', section + 1) != std::string::npos)
         return Fail("fake panel: the scenario's ac-dlssg.ini must end with a [bridge] section that has start_with_fg=1 "
-                    "and no camera keys, in CRLF lines");
+                    "and no camera or fg_multiplier keys, in CRLF lines");
     std::string expected = before;
     expected.replace(at, 19, "\r\nstart_with_fg=0\r\n");
-    expected += "camera_flip_handedness=1\r\ncamera_negate_side=0\r\n";
+    expected += "camera_flip_handedness=1\r\ncamera_negate_side=0\r\nfg_multiplier=3\r\n";
     const std::string after = ReadFileBytes(a.ini_path);
     if (after != expected)
         return Fail("fake panel: after Save as default ac-dlssg.ini is:\n%s\nexpected:\n%s", after.c_str(),
                     expected.c_str());
     if (FileExists(a.ini_path + L".new")) return Fail("fake panel: ac-dlssg.ini.new was left behind");
-    Print("fake panel: ac-dlssg.ini after Save as default: start_with_fg=0 in place, camera_flip_handedness=1 and "
-          "camera_negate_side=0 added under [bridge], every other byte kept");
+    Print("fake panel: ac-dlssg.ini after Save as default: start_with_fg=0 in place, camera_flip_handedness=1, "
+          "camera_negate_side=0 and fg_multiplier=3 added under [bridge], every other byte kept");
     return true;
 }
 
-void PanelRequest(App& a, const char* what, bool fg, bool flip, bool negate, bool save) {
-    a.panel.Request(fg, flip, negate, save);
+// multiplier: the 2X/3X/4X button; 0 keeps the bridge's (the window sends
+// the one it shows, which the bridge then ignores as no change).
+void PanelRequest(App& a, const char* what, bool fg, bool flip, bool negate, bool save, uint32_t multiplier = 0) {
+    a.panel.Request(fg, flip, negate, save, multiplier);
     ++a.panel_requests;
     Print("fake panel: request %u: %s", a.panel.Counter(), what);
+}
+
+// The 3X request of kPanelMultFrame: the status asks for 3X, and uses it
+// unless the note says why not (Streamline's maximum, or the video memory
+// guard); a maximum, once known, is 2..4 and covers what is used.
+bool CheckPanelMultiplier(const acdb::StatusLayout& s, int f) {
+    const std::string note = PANEL_TEXT(s.fgMultNote);
+    if (s.fgMultRequested != 3)
+        return Fail("frame %d: fake panel: after the 3X button the status asks for %uX", f, s.fgMultRequested);
+    if (s.fgMultUsed < 2 || s.fgMultUsed > 3 || (s.fgMultUsed < 3 && note.empty()))
+        return Fail("frame %d: fake panel: after the 3X button the status uses %uX, note \"%s\"", f, s.fgMultUsed,
+                    note.c_str());
+    if (s.fgMultMax != 0 && (s.fgMultMax < 2 || s.fgMultMax > 4 || s.fgMultUsed > s.fgMultMax))
+        return Fail("frame %d: fake panel: the status has maximum %uX with %uX used", f, s.fgMultMax, s.fgMultUsed);
+    Print("fake panel: status after the 3X button: asks for %uX, uses %uX, maximum %u (0: not asked yet), note \"%s\"",
+          s.fgMultRequested, s.fgMultUsed, s.fgMultMax, note.c_str());
+    return true;
 }
 
 // One frame of the fake window, after the frame's Present: the bridge applies
@@ -1042,11 +1064,12 @@ void PanelRequest(App& a, const char* what, bool fg, bool flip, bool negate, boo
 bool PanelFrame(App& a, int f) {
     if (f == kPanelOffFrame) PanelRequest(a, "frame generation off", false, false, false, false);
     if (f == kPanelFlipFrame) PanelRequest(a, "camera_flip_handedness on", false, true, false, false);
-    if (f == kPanelSaveFrame) PanelRequest(a, "Save as default", false, true, false, true);
-    if (f == kPanelOnFrame) PanelRequest(a, "frame generation on", true, true, false, false);
+    if (f == kPanelMultFrame) PanelRequest(a, "3X", false, true, false, false, 3);
+    if (f == kPanelSaveFrame) PanelRequest(a, "Save as default", false, true, false, true, 3);
+    if (f == kPanelOnFrame) PanelRequest(a, "frame generation on", true, true, false, false, 3);
     const bool check = f == kPanelOffFrame + kPanelCheckDelay || f == kPanelFlipFrame + kPanelCheckDelay ||
-                       f == kPanelSaveFrame + kPanelCheckDelay || f == kPanelOnFrame + kPanelCheckDelay ||
-                       f == kPanelBeatFrame;
+                       f == kPanelMultFrame + kPanelCheckDelay || f == kPanelSaveFrame + kPanelCheckDelay ||
+                       f == kPanelOnFrame + kPanelCheckDelay || f == kPanelBeatFrame;
     if (!check) return true;
     acdb::StatusLayout s{};
     if (!a.panel.ReadStatus(&s)) return Fail("frame %d: fake panel: no stable status record", f);
@@ -1067,10 +1090,16 @@ bool PanelFrame(App& a, int f) {
             return Fail("frame %d: fake panel: after the camera switch the status has flip %u, negate %u, switch %u", f,
                         s.cameraFlipHandedness, s.cameraNegateSide, s.fgUserOn);
         Print("fake panel: status after the camera switch: camera_flip_handedness 1");
+    } else if (f == kPanelMultFrame + kPanelCheckDelay) {
+        if (!CheckPanelMultiplier(s, f)) return false;
     } else if (f == kPanelSaveFrame + kPanelCheckDelay) {
         if (s.saveCounter != a.panel.Counter() || s.saveOk != 1 || s.startWithFg != 0)
             return Fail("frame %d: fake panel: after Save as default the status has save %u (ok %u), start_with_fg %u",
                         f, s.saveCounter, s.saveOk, s.startWithFg);
+        const std::string restart = PANEL_TEXT(s.restartNote);
+        if (restart != "Saved. start_with_fg and the other saved switches apply the next time the game starts.")
+            return Fail("frame %d: fake panel: after Save as default the restart note is \"%s\"", f, restart.c_str());
+        Print("fake panel: restart note after Save as default: \"%s\"", restart.c_str());
         if (!CheckPanelIni(a)) return false;
     } else if (f == kPanelOnFrame + kPanelCheckDelay) {
         if (s.fgUserOn != 1)
@@ -1115,15 +1144,20 @@ bool CheckPanelLog(const BridgeLog& log) {
         "] INFO panel: status section Local\\AcDlssg.Status.v1 and control section Local\\AcDlssg.Control.v1 ready",
         "] INFO fg: panel -> off",
         "] INFO panel: camera_flip_handedness 0 -> 1",
-        "] INFO panel: saved start_with_fg=0 camera_flip_handedness=1 camera_negate_side=0 to ",
+        "] INFO fg: multiplier 2X -> 3X requested",
+        "] INFO panel: saved start_with_fg=0 camera_flip_handedness=1 camera_negate_side=0 fg_multiplier=3 to ",
         "] INFO fg: panel -> on",
     };
     for (const char* line : once) {
         const int n = log.Count(line);
         if (n != 1) ok = Fail("the bridge log has \"%s\" %d times, expected once", line + 2, n);
     }
+    // The save and the requests after the 3X button repeat it: no new request.
+    const int changes = log.Count("] INFO fg: multiplier ");
+    if (changes != 1) ok = Fail("the bridge log has %d multiplier changes, expected one (2X -> 3X)", changes);
     for (const auto& l : log.lines) {
-        if (l.find(" panel: ") != std::string::npos || l.find("fg: panel") != std::string::npos)
+        if (l.find(" panel: ") != std::string::npos || l.find("fg: panel") != std::string::npos ||
+            l.find("fg: multiplier") != std::string::npos)
             Print("note: panel: %s", l.c_str());
     }
     return ok;
