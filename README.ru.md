@@ -55,7 +55,7 @@ DLSS-G 2X в Assetto Corsa с CSP:
 ## Установка
 
 1. Закройте Assetto Corsa и игровую сессию Content Manager.
-2. Скачайте `ac-dlssg-<версия>-test.zip` из [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) и распакуйте в любую папку. В ней лежит `install.bat` и папки `files`, `scripts` и `tools`.
+2. Скачайте `ac-dlssg-<версия>.zip` из [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) и распакуйте в любую папку. В ней лежит `install.bat` и папки `docs`, `files`, `scripts` и `tools`.
 3. Дважды щёлкните `install.bat`. Это всё: установщик ничего не спрашивает. Он сам найдёт игру через Steam, скачает Streamline (на RTX 30 и dlssg_for_sm86), напишет, где лежат файлы лицензий NVIDIA (установка означает согласие с ними), и всё поставит. Если игра стоит в `C:\Program Files (x86)`, Windows спросит разрешение от имени администратора: подтвердите, и установка продолжится в новом окне. В конце окно ждёт Enter.
 4. Запустите игру как обычно. В графических настройках CSP апскейлером должен быть DLSS.
 5. Выезжайте. Генерация включается сама, как только заработает DLSS в CSP. В паузе и в меню она выключена.

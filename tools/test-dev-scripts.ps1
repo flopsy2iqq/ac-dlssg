@@ -1573,7 +1573,7 @@ function Get-TestPackage {
     } finally {
         $ErrorActionPreference = $eap
     }
-    $script:testPackage = [pscustomobject]@{ Code = $code; Text = $text; Dir = (Join-Path $out 'ac-dlssg-9.8.7-test') }
+    $script:testPackage = [pscustomobject]@{ Code = $code; Text = $text; Dir = (Join-Path $out 'ac-dlssg-9.8.7') }
     return $script:testPackage
 }
 
@@ -1700,7 +1700,8 @@ Invoke-Case 'PK: the friend test package' {
     Check ((Test-Path -LiteralPath $pkg -PathType Container) -and (Test-Path -LiteralPath $zip -PathType Leaf)) 'the package folder and the zip next to it exist'
     $expected = @('install.bat', 'files/ac-dlssg.dll', 'scripts/install.ps1', 'scripts/uninstall.ps1', 'scripts/collect-logs.ps1',
         'scripts/collect-sysinfo.ps1', 'scripts/dev-common.ps1', 'scripts/dev-install.ps1', 'scripts/dev-uninstall.ps1',
-        'scripts/fetch-deps.ps1', 'tools/uninstall.bat', 'tools/collect-logs.bat', 'tools/README-test.txt') +
+        'scripts/fetch-deps.ps1', 'tools/uninstall.bat', 'tools/collect-logs.bat', 'docs/README-test.txt', 'docs/README.md',
+        'docs/README.ru.md', 'docs/LICENSE', 'docs/EXCEPTIONS.md', 'docs/THIRD_PARTY_NOTICES.txt') +
         @($luaRealFiles | ForEach-Object { 'files/apps/lua/AcDlssg/' + $_.Replace('\', '/') })
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File | ForEach-Object { $_.FullName.Substring($pkg.Length + 1).Replace('\', '/') } | Sort-Object)
     Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
@@ -1708,16 +1709,20 @@ Invoke-Case 'PK: the friend test package' {
     Check ($dlls.Count -eq 1 -and $dlls[0] -eq 'files/ac-dlssg.dll') 'the package holds no DLL other than files\ac-dlssg.dll'
     $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })
     $rootDirs = @(Get-ChildItem -LiteralPath $pkg -Directory -Force | ForEach-Object { $_.Name } | Sort-Object)
-    Check (($rootFiles -join '|') -eq 'install.bat' -and ($rootDirs -join '|') -eq 'files|scripts|tools') "the package root holds only install.bat and the folders files, scripts, tools ($(@($rootFiles + $rootDirs) -join ', '))"
+    Check (($rootFiles -join '|') -eq 'install.bat' -and ($rootDirs -join '|') -eq 'docs|files|scripts|tools') "the package root holds only install.bat and the folders docs, files, scripts, tools ($(@($rootFiles + $rootDirs) -join ', '))"
+    foreach ($f in @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt')) {
+        Check ((Get-Sha (Join-Path $pkg "docs\$f")) -eq (Get-Sha (Join-Path $tools "..\$f"))) "docs\$f is the repository's $f"
+    }
+    Check ((Test-Path -LiteralPath $zip -PathType Leaf) -and (Split-Path -Leaf $zip) -eq 'ac-dlssg-9.8.7.zip') 'the zip is ac-dlssg-<version>.zip, without -test'
     $bats = @(Get-ChildItem -LiteralPath $pkg -Recurse -File -Filter '*.bat')
     Check (@($bats | Where-Object { $b = Read-Bytes $_.FullName; @($b | Where-Object { $_ -gt 0x7E }).Count -gt 0 -or $utf8.GetString($b) -match '[^\r]\n' }).Count -eq 0) 'the .bat files are ASCII with CRLF line ends'
     $entries = @(Get-ZipEntryNames $zip | Where-Object { -not $_.EndsWith('/') })
     $zipDlls = @($entries | Where-Object { $_ -like '*.dll' })
-    Check ($zipDlls.Count -eq 1 -and $zipDlls[0] -eq 'ac-dlssg-9.8.7-test/files/ac-dlssg.dll') 'the zip holds no DLL other than files\ac-dlssg.dll'
+    Check ($zipDlls.Count -eq 1 -and $zipDlls[0] -eq 'ac-dlssg-9.8.7/files/ac-dlssg.dll') 'the zip holds no DLL other than files\ac-dlssg.dll'
     Check (@($entries | Where-Object { $_ -match '(?i)nvngx|dlssg_sm86|sl\.[a-z_]+\.dll|version\.dll' }).Count -eq 0) 'no NVIDIA or dlssg_for_sm86 file in the zip'
     Check ($entries.Count -eq $expected.Count) 'the zip holds the same files as the folder'
     Check ((Get-Sha (Join-Path $pkg 'files\ac-dlssg.dll')) -eq (Get-Sha $dllV1)) 'the package DLL is the given build'
-    $readme = Read-Bytes (Join-Path $pkg 'tools\README-test.txt')
+    $readme = Read-Bytes (Join-Path $pkg 'docs\README-test.txt')
     $readmeText = $utf8.GetString($readme)
     Check ((Test-HasBom $readme) -and $readmeText -match '[Ѐ-ӿ]') 'README-test.txt is UTF-8 with a BOM, in Russian'
     Check ($readmeText -match 'install\.bat' -and $readmeText -match 'tools\\collect-logs\.bat' -and $readmeText -match 'tools\\uninstall\.bat' -and
@@ -1869,6 +1874,8 @@ Invoke-Case 'SP0: GPU table, dlssg_for_sm86 pins, and install.ps1 asks nothing (
         $pins['version.dll'].sha256 -eq 'c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838' -and
         $pins['version.dll'].size -eq 30021920) 'version.dll: git blob SHA-1, SHA-256 and size of 0.3.5'
     Check ($pins['dlssg_sm86.ini'].gitSha1 -eq '2c97d64f2239b7d511f7d0a36c16e149dd3329f6') 'dlssg_sm86.ini: git blob SHA-1 of 0.3.5'
+    $loader = [regex]::Match([IO.File]::ReadAllText((Join-Path $tools '..\src\spoof_loader.h')), 'kPinnedSpoofSha256\[\]\s*=\s*"([0-9a-f]{64})"')
+    Check ($loader.Success -and $loader.Groups[1].Value -eq $pins['version.dll'].sha256) 'the installer pins the version.dll the bridge loads (kPinnedSpoofSha256 in src/spoof_loader.h)'
     $urls = @($pins.Keys | ForEach-Object { Get-SpoofUrl $_ })
     Check ($urls[0] -eq 'https://raw.githubusercontent.com/sdli1995/dlssg_for_sm86/9621db573e07ed54f50c15bbb585ed9a7bdfac28/version.dll' -and
         $urls[1] -eq 'https://raw.githubusercontent.com/sdli1995/dlssg_for_sm86/9621db573e07ed54f50c15bbb585ed9a7bdfac28/dlssg_sm86.ini') "the download URLs are raw files of commit 9621db5 ($($urls -join ', '))"

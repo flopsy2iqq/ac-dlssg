@@ -55,7 +55,7 @@ On a 4 GB card the video memory is tight: if the game stutters, lower CSP's text
 ## Install
 
 1. Close Assetto Corsa and Content Manager's game session.
-2. Download `ac-dlssg-<version>-test.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `files`, `scripts` and `tools`.
+2. Download `ac-dlssg-<version>.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `docs`, `files`, `scripts` and `tools`.
 3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30 dlssg_for_sm86), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. At the end the window waits for Enter.
 4. Start the game as usual and make sure DLSS is the upscaler in CSP's graphics settings.
 5. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.

@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  Builds the test package for trying the bridge on another PC (standalone
-  mode, no ReShade needed).
+  Builds the package for installing the bridge on another PC: the release
+  zip ac-dlssg-<Version>.zip (standalone mode, no ReShade needed).
 
 .DESCRIPTION
-  Writes <OutDir>\ac-dlssg-<Version>-test\ and a zip of that folder next to it.
+  Writes <OutDir>\ac-dlssg-<Version>\ and a zip of that folder next to it.
   The package root holds only install.bat; everything else is in subfolders:
     install.bat          double-click to install: runs scripts\install.ps1
     files\ac-dlssg.dll   the bridge build (-Dll)
@@ -30,11 +30,14 @@
     tools\uninstall.bat, tools\collect-logs.bat
                          double-click to uninstall, or to collect the logs
                          into a zip next to collect-logs.bat
-    tools\README-test.txt
-                         steps for the tester, in Russian (UTF-8 with BOM), with
-                         the version, the git commit and the DLL's SHA-256
+    docs\               README.md, README.ru.md, LICENSE, EXCEPTIONS.md and
+                         THIRD_PARTY_NOTICES.txt from the repository root, and
+                         README-test.txt: steps for the tester, in Russian
+                         (UTF-8 with BOM), with the version, the git commit
+                         and the DLL's SHA-256
   The package works without the repository or any build tool. The script
-  fails when the root would hold anything but install.bat.
+  fails when the root would hold anything but install.bat and the folders
+  docs, files, scripts and tools, or when docs\ lacks one of its files.
 
   It never contains an NVIDIA DLL or a dlssg_for_sm86 file (spec 13): the
   tester's install.ps1 downloads Streamline from NVIDIA's GitHub release and
@@ -52,7 +55,7 @@
   Default: build\package.
 
 .PARAMETER Version
-  Default: the project VERSION in CMakeLists.txt.
+  Default: the bridge's version, the project VERSION in CMakeLists.txt.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
@@ -68,6 +71,8 @@ Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'dev-common.ps1')
 
 $repo = Split-Path -Parent $PSScriptRoot
+# Copied from the repository root into docs\ of the package.
+$script:PackageDocs = @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt')
 if (-not $Dll) { $Dll = Join-Path $repo 'build\Release\ac-dlssg.dll' }
 if (-not $OutDir) { $OutDir = Join-Path $repo 'build\package' }
 
@@ -106,7 +111,7 @@ try {
 
     $OutDir = [System.IO.Path]::GetFullPath($OutDir)
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-    $name = "ac-dlssg-$Version-test"
+    $name = "ac-dlssg-$Version"
     $pkg = Join-Path $OutDir $name
     $zip = "$pkg.zip"
     if (Test-Path -LiteralPath $pkg) { Remove-Item -LiteralPath $pkg -Recurse -Force }
@@ -114,7 +119,8 @@ try {
     $filesDir = Join-Path $pkg 'files'
     $scripts = Join-Path $pkg 'scripts'
     $toolsDir = Join-Path $pkg 'tools'
-    foreach ($d in @($filesDir, $scripts, $toolsDir)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+    $docsDir = Join-Path $pkg 'docs'
+    foreach ($d in @($filesDir, $scripts, $toolsDir, $docsDir)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'package\install.bat') -Destination (Join-Path $pkg 'install.bat')
     Copy-Item -LiteralPath $Dll -Destination (Join-Path $filesDir 'ac-dlssg.dll')
@@ -139,11 +145,21 @@ try {
     $readme = $readme.Replace('{VERSION}', $Version).Replace('{COMMIT}', $commit).Replace('{DLL_SHA256}', $dllHash).
         Replace('{DATE}', [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm') + ' UTC')
     $readme = ($readme -replace "`r?`n", "`r`n")
-    [System.IO.File]::WriteAllText((Join-Path $toolsDir 'README-test.txt'), $readme, (New-Object System.Text.UTF8Encoding($true)))
+    [System.IO.File]::WriteAllText((Join-Path $docsDir 'README-test.txt'), $readme, (New-Object System.Text.UTF8Encoding($true)))
+    # The license, its exceptions, the third-party notices and both READMEs.
+    foreach ($f in $script:PackageDocs) {
+        $from = Join-Path $repo $f
+        if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { throw "$from is missing; the package must carry it" }
+        Copy-Item -LiteralPath $from -Destination (Join-Path $docsDir $f)
+    }
 
-    # The root holds only install.bat.
+    # The root holds only install.bat and the four folders; docs\ holds its files.
     $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })
     if (($rootFiles -join '|') -ne 'install.bat') { throw "the package root would hold more than install.bat: $($rootFiles -join ', ')" }
+    $rootDirs = @(Get-ChildItem -LiteralPath $pkg -Directory -Force | ForEach-Object { $_.Name } | Sort-Object)
+    if (($rootDirs -join '|') -ne 'docs|files|scripts|tools') { throw "the package root would hold other folders than docs, files, scripts, tools: $($rootDirs -join ', ')" }
+    $missingDocs = @(@($script:PackageDocs) + 'README-test.txt' | Where-Object { -not (Test-Path -LiteralPath (Join-Path $docsDir $_) -PathType Leaf) })
+    if ($missingDocs.Count -gt 0) { throw "docs\ lacks $($missingDocs -join ', ')" }
 
     # Project rule: no NVIDIA DLL and no dlssg_for_sm86 file is ever re-hosted.
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File)

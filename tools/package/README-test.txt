@@ -40,7 +40,8 @@ ac-dlssg — тестовая сборка {VERSION} для Assetto Corsa
   1. Закройте Assetto Corsa.
 
   2. Распакуйте архив в любую папку (например, на рабочий стол) и откройте
-     эту папку. В ней лежит install.bat и папки files, scripts и tools.
+     эту папку. В ней лежит install.bat и папки docs, files, scripts и tools.
+     Эта инструкция лежит в docs, там же README и лицензии.
 
   3. Установка: дважды щёлкните install.bat. Это всё: установщик ничего не
      спрашивает. Он сам найдёт игру через Steam, скачает Streamline (на

@@ -11,7 +11,9 @@
     files\               ac-dlssg.dll, apps\lua\AcDlssg, and deps\ for the
                          downloads
     scripts\             this script and the ones it runs
-    tools\               uninstall.bat, collect-logs.bat, README-test.txt
+    tools\               uninstall.bat, collect-logs.bat
+    docs\                READMEs, LICENSE, EXCEPTIONS.md, THIRD_PARTY_NOTICES.txt,
+                         README-test.txt
 
   1. Refuses while acs.exe is running and finds the game through Steam's
      libraryfolders.vdf (or -GameDir). When this account may not write into
@@ -165,7 +167,7 @@ function Get-SpoofInstallArgs([string]$Game) {
         $adapters = @(Get-GpuAdapters $GpuDeviceIds)
     } catch {
         if (Test-IsRefusal $_) { throw }
-        Say "WARNING: the GPUs could not be read ($($_.Exception.Message)), so dlssg_for_sm86 is not installed. On an RTX 30, run install.ps1 again."
+        Say "WARNING: the GPUs could not be read ($($_.Exception.Message)), so dlssg_for_sm86 is not installed. On an RTX 30, run install.bat again."
         return $none
     }
     $nvidia = @($adapters | Where-Object { $_.VendorId -eq $script:AcdbNvidiaVendorId })
@@ -202,7 +204,7 @@ function Get-SpoofInstallArgs([string]$Game) {
         Say ("WARNING: $versionDll is not $what (SHA-256 $(Get-Sha256OfFile $versionDll)); it is another mod's " +
             'version.dll or another dlssg_for_sm86 version. It was left untouched, and dlssg_for_sm86 was not installed. ' +
             'Frame generation runs on this RTX 30 only if that file is a dlssg_for_sm86 that supports it. To get ' +
-            "$what instead, remove version.dll and dlssg_sm86.ini from the game folder yourself and run install.ps1 again.")
+            "$what instead, remove version.dll and dlssg_sm86.ini from the game folder yourself and run install.bat again.")
         return $none
     }
     if ($state['dlssg_sm86.ini'] -eq 'other') {
@@ -238,7 +240,7 @@ function Get-SpoofInstallArgs([string]$Game) {
 
 $code = 1
 try {
-    Say "ac-dlssg test build from $packageRoot"
+    Say "ac-dlssg from $packageRoot"
     $running = @(Get-RunningGame)
     if ($running.Count -gt 0) {
         Stop-Refused "$($script:AcdbGameExe) is running (pid $(($running | ForEach-Object { $_.Id }) -join ', ')). Close Assetto Corsa first."
@@ -273,7 +275,7 @@ try {
     if ($sac -eq 1) {
         Stop-Refused 'Windows Smart App Control is on. It blocks the unsigned ac-dlssg.dll, and the game would not start. Nothing was installed.'
     } elseif ($sac -eq 2) {
-        Say 'WARNING: Windows Smart App Control is in evaluation mode. If Windows switches it on later, it blocks the bridge and the game no longer starts; then run uninstall.ps1.'
+        Say 'WARNING: Windows Smart App Control is in evaluation mode. If Windows switches it on later, it blocks the bridge and the game no longer starts; then run tools\uninstall.bat.'
     }
 
     $licenses = @()
