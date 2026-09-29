@@ -41,7 +41,7 @@ adds.
 ### Known limitations
 
 - No HUD-less colour buffer: CSP app windows and on-screen UI can show small artifacts during fast motion.
-- Not supported: VR, triple screens, HDR output, MSAA, `OLD_SWAPCHAIN=1`, `EXCLUSIVE_FULLSCREEN=1` and letterboxed output (a `video.ini` aspect ratio that differs from the window).
+- Not supported: VR, triple screens, HDR output, MSAA, `OLD_SWAPCHAIN=1`, `EXCLUSIVE_FULLSCREEN=1` and letterboxed output (a `video.ini` aspect ratio that differs from the window while `ALLOW_STRETCHING=0`).
 - Other CSP upscalers (FSR, XeSS) do not provide the inputs frame generation needs.
 - No multi frame generation above 4X and no dynamic multi frame generation.
 - CSP's FPS counter shows the real frames only; the NVIDIA overlay (Alt+R), RTSS or another external counter shows the frames on screen.
