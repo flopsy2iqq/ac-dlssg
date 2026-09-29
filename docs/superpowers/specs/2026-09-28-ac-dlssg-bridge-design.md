@@ -1,6 +1,6 @@
 # ac-dlssg: design
 
-Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done; M2 is built and waits for its in-game checks (see section 11). A hybrid laptop was added as a second target system on 2026-09-28, with a standalone mode for systems without ReShade (sections 2, 3, 5, 6.10, 6.11, 11 and 12).
+Date: 2026-09-28. Status: approved by the user after an adversarial source review (39 confirmed findings applied). Milestones M0 and M1 are done; M2 is built and waits for its in-game checks (see section 11). A hybrid laptop was added as a second target system on 2026-09-28, with a standalone mode for systems without ReShade (sections 2, 3, 5, 6.10, 6.11, 11 and 12). On 2026-09-29 the settings panel moved into the CSP Lua app for both modes, and the ReShade overlay panel was dropped for v1 (sections 3, 5, 6.9 and 11).
 
 ## 1. Goal
 
@@ -34,7 +34,7 @@ In scope for v1:
 - Two load modes. In ReShade mode, ReShade 6.8.0 or newer (the build with add-on support) is `dxgi.dll` and loads the bridge as its `ProxyLibrary`. In standalone mode, ReShade is absent and the bridge itself is the game folder's `dxgi.dll`.
 - RTX 40 and RTX 50 natively; RTX 30 (every Ampere GeForce GPU, SM86, desktop and laptop) through dlssg_for_sm86.
 - Hybrid (Optimus) laptops, where the NVIDIA GPU renders and the integrated GPU drives the display (6.11).
-- A settings panel, a hotkey, a config file and a log. The panel is in the ReShade overlay in ReShade mode and in the CSP Lua app in standalone mode. The M3 plan decides whether ReShade mode also uses the Lua app panel, so that there is one UI.
+- A settings panel, a hotkey, a config file and a log. The panel is a window of the CSP Lua app in ReShade mode and in standalone mode alike, so there is one UI (6.9). The ReShade overlay panel is dropped for v1.
 - An installer, an uninstaller, and CI-built releases on GitHub with build provenance.
 
 Out of scope for v1. Each case is refused or ignored with a logged reason; the planned follow-ups are in section 15.
@@ -93,10 +93,12 @@ acs.exe (D3D11)
                                                                └─ Present ──> copy to a shared texture ──> D3D12Presenter
  CSP DLSS call ──> _nvngx.dll EvaluateFeature (hooked) ──> NgxCapture: depth + MV copied to shared capture slots
  CSP Lua app ──> Local\AcDlssg.Camera.v1 ──> CameraChannel
+ CSP Lua app window <── Local\AcDlssg.Status.v1 <── bootstrap, FactoryHook, D3D12Presenter
+ CSP Lua app window ──> Local\AcDlssg.Control.v1 ──> D3D12Presenter (start of every Present)
  D3D12Presenter: shared-fence wait ─> copy to SL chain ─> tags + constants ─> SL proxy Present ─> DLSS-G
 ```
 
-One DLL sits in the game folder. In ReShade mode it is `ac-dlssg.dll`, ReShade's `ProxyLibrary`, and it also registers itself as a ReShade add-on. In standalone mode the same DLL is installed as `dxgi.dll`, and the process binds `dxgi.dll` to the bridge directly, including the imports of `d3d11.dll`, `d3d12.dll` and the Streamline DLLs. The diagram above shows ReShade mode; in standalone mode the ReShade layer is absent. The bridge tells the modes apart by its own module file name and logs the mode. Runtime data lives in `<game>\ac-dlssg\`:
+One DLL sits in the game folder. In ReShade mode it is `ac-dlssg.dll`, ReShade's `ProxyLibrary`; it registers no ReShade add-on in v1, because the panel is the CSP Lua app's window in both modes (6.9). In standalone mode the same DLL is installed as `dxgi.dll`, and the process binds `dxgi.dll` to the bridge directly, including the imports of `d3d11.dll`, `d3d12.dll` and the Streamline DLLs. The diagram above shows ReShade mode; in standalone mode the ReShade layer is absent. The bridge tells the modes apart by its own module file name and logs the mode. Runtime data lives in `<game>\ac-dlssg\`:
 - `sl\` holds the pinned Streamline files;
 - `logs\` holds the logs;
 - `install\` holds the install manifest, backups and the uninstaller;
@@ -195,7 +197,7 @@ A complete `IDXGISwapChain4` COM object. It has all 41 vtable slots and its own 
   - It uses the game's width, height, format, `BufferUsage` and `SampleDesc`.
   - Its window is created and pumped by a thread the bridge owns, and it gets `MakeWindowAssociation(DXGI_MWA_NO_WINDOW_CHANGES)`.
 
-  Fallback if the hidden chain cannot be created: the D3D11-facing texture is created as `R8G8B8A8_TYPELESS`, and `AddonUi`'s `create_resource_view` handler replaces an unknown format with `R8G8B8A8_UNORM` for that texture. If add-on registration also failed, the bridge refuses (no proxy).
+  If the hidden chain cannot be created, the bridge refuses (no proxy). The earlier fallback, a `R8G8B8A8_TYPELESS` texture whose views a ReShade add-on's `create_resource_view` handler would fix up, left with the ReShade panel (6.9).
 - **Shared back buffer.** One `R8G8B8A8_UNORM` texture sized like the swap chain. It is created on D3D11 with `D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE`, shared with `IDXGIResource1::CreateSharedHandle`, and opened with `ID3D12Device::OpenSharedHandle`. On this machine, textures created on the D3D12 side and opened on D3D11 failed with `E_INVALIDARG`. At Present, the immediate context copies the hidden buffer into it (section 7 step 4). `ResizeBuffers` recreates only this texture. After each D3D12 copy, D3D11 waits on the shared fence before CSP renders the next frame. A ring of back buffers is a later optimization (section 15).
 - **Capture slots.** A ring of 3. Each slot holds one depth texture (`R32_FLOAT`, UAV) and one motion-vector texture (the source's typed format), shared in the same way as the back buffer.
   - **Size.** Each texture is sized from its own source texture's `D3D11_TEXTURE2D_DESC` Width and Height. The back buffer and the NGX Width and Height scalars never set the size.
@@ -245,7 +247,7 @@ A complete `IDXGISwapChain4` COM object. It has all 41 vtable slots and its own 
   - It must be `PAGE_READWRITE`, because CSP opens the existing object and maps it for read and write.
   - The DLL itself maps only a `FILE_MAP_READ` view.
   - 4096 bytes is larger than the Lua layout. An existing section keeps its size when CSP opens it.
-- **The Lua app.** `manifest.ini` sets `[CORE] LAZY = NONE` and declares one hidden stub window, so CSP always loads the app. The main file:
+- **The Lua app.** `manifest.ini` sets `[CORE] LAZY = NONE`, so CSP loads the app with AC and runs it until AC closes, whether or not its settings window (6.9) is open. The camera writer of the main file:
   - opens the section with `ac.writeMemoryMappedFile('AcDlssg.Camera.v1', LAYOUT, true)` and keeps a global reference;
   - writes from `render.onSceneReady` (before the main render), with `script.update` as a fallback;
   - writes `pos` from `ac.getSim().cameraPosition`, which is in world space.
@@ -306,19 +308,43 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
 
   Both are logged, and the panel says how to clear them. The bridge never changes driver settings itself. DRS reads do not depend on the spoof's architecture redirect.
 
-### 6.9 AddonUi (`addon_ui.cpp`)
-- **Registration.** It registers as a ReShade add-on with `reshade::register_addon(hModule)` on the first factory creation. It is built against ReShade 6.8.0's `include/` (API 20) and the Dear ImGui 19250 headers, and does not link ImGui. If registration fails, for example because the add-on is listed in `DisabledAddons`, the bridge runs without UI.
-- **Panel.** `register_overlay(nullptr, draw)` shows it in ReShade's Add-ons tab. It displays:
-  - the DLSS-G state and the reason for it;
-  - the GPU and spoof status, for example "RTX 30 via dlssg_for_sm86";
-  - base fps and presented fps;
-  - the bridge's GPU time;
-  - how fresh the capture and the camera are;
-  - the VSync-with-frame-generation status;
-  - override warnings;
-  - a toggle.
-- **`create_resource_view` handler.** Used only for the typeless back-buffer fallback in 6.4.
-- **Hotkey.** Default Ctrl+F10, configurable, polled on the present thread.
+### 6.9 Panel: the CSP Lua app's settings window (`panel_status.cpp`, `panel_control.cpp`, `apps/lua/AcDlssg/`)
+One UI in both modes: a normal CSP app window titled "AC DLSS-G", drawn by the Lua app of 6.6. The ReShade overlay panel is dropped for v1, and the bridge registers no ReShade add-on. The window is drawn into the game frame, so with DLSS-G on it can show interpolation artifacts like CSP's other app windows (section 3).
+
+- **Two sections.** The bootstrap creates both with `CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, 4096, name)`, whether or not the bridge is enabled, so that the window can say why it does nothing:
+  - `Local\AcDlssg.Status.v1`: the bridge writes it through a `FILE_MAP_WRITE` view; the Lua app reads it with `ac.readMemoryMappedFile`.
+  - `Local\AcDlssg.Control.v1`: the Lua app writes it with `ac.writeMemoryMappedFile`; the bridge reads it through a `FILE_MAP_READ` view.
+
+  Both layouts are C struct bodies in the Lua file, mirrored by C++ structs with `static_assert` on `sizeof` and every `offsetof` (`src/panel_status.h`), and a test compares the Lua strings with the structs field by field. Both records are seqlocks as in 6.6: seq odd while the writer writes, parity forced, and every counter kept below 2^31.
+- **Ownership.** The section names are per logon session. A status section that already holds a stable record of another process's bridge (a test app next to the game) is never written, and that process reads no control requests; `ownerPid` names the owner.
+- **Status record.**
+  - `magic`, `version`, `seq`, `heartbeat` (+1 per publish) and `ownerPid`;
+  - `bridgeState`: 0 not loaded (waiting for the game's swap chain), 1 pass-through, 2 proxied without DLSS-G, 3 DLSS-G available; `stateReason` (256 chars) says why it is below 3;
+  - `fgOn` (the mode Streamline has), `fgUserOn` (the user's switch) and `reason` (160 chars): "on", or why DLSS-G is off. The user's switch comes first ("off by the user (panel)", naming what switched it off), then the gate's reason of the last frame (7 step 5.4);
+  - the mode (ReShade or standalone), the render GPU's name, whether the spoof is loaded and whether the GPU is an RTX 30 (SM86);
+  - base fps, presented fps (generated frames included), the bridge's GPU time, the render adapter's video memory usage and budget in MiB, and captures, fresh camera snapshots and tagged frames per second;
+  - the VSync-with-DLSS-G note (7 step 6), and the first driver-profile warning (6.8) as a flag and a text;
+  - the current `camera_flip_handedness` and `camera_negate_side`, `start_with_fg`, the counter of the last request applied, the counter and the result of the last save, the hotkey text and the bridge version.
+- **Who publishes.**
+  - The bootstrap: the mode, the version, the config's switches and hotkey, the spoof and the driver warning, with state 0, or state 1 and the reason when the bridge is not possible.
+  - `FactoryHook`: state 1 with the pass-through reason (or the failed creation's error) and the render GPU, for the main window.
+  - `D3D12Presenter`: state 2 or 3 at creation, then after every statistics line (once per second), at once at the end of every frame whose DLSS-G mode or user switch changed, and after every applied request. The final release publishes state 1, "the game's swap chain was released". While a presenter runs the heartbeat advances at least once per second.
+- **Control record.** `magic`, `version`, `seq`, `requestCounter` (+1 per user action, 1 to 0x7FFFFFFF; a reloaded app continues the counter it finds), the desired DLSS-G switch, the desired `camera_flip_handedness` and `camera_negate_side` (the whole desired state, not only the switch clicked) and `saveAsDefault`.
+- **Applying a request.** At the start of every `PresentFrame` the presenter compares the record's seq with the last one it saw, one load. When it changed, it reads the record (a torn read is retried at the next frame). A request is new when its counter differs from the last one applied; the counter found at presenter creation is the baseline and is never applied. A new request:
+  - sets the DLSS-G switch exactly as the hotkey does (section 8): `fg: panel -> on|off`, the next DLSS-G frame has `reset = eTrue`, and a failure status is retried;
+  - sets the camera switches, which apply from that frame on (`panel: camera_flip_handedness 0 -> 1`), with reset on the next DLSS-G frame;
+  - with `saveAsDefault`, writes `start_with_fg` and both camera switches into `ac-dlssg.ini`. The edit is key-level: every other byte, the line endings and trailing comments stay, every line of such a key in `[bridge]` gets the new value, and a missing key is added after the section's last key line. The file is written as `ac-dlssg.ini.new` and renamed over the old one. Success and failure are logged and published.
+
+  The hotkey and the panel share one state, and the status shows the result.
+- **The window.**
+  - A big switch for frame generation, disabled with `stateReason` when DLSS-G is not available.
+  - The status line (on, or off and the reason), real and output fps, the bridge's GPU time, video memory used and budget (orange from 90% of the budget, red above it), the GPU with the spoof state, the mode, the hotkey, and the VSync note and driver warning when set.
+  - "Save as default".
+  - A collapsible "Debug" part with the two camera switches and the per-second counts.
+  - While a request is not yet applied, the window shows what was asked for.
+  - With no status record, or when a presenter's heartbeat has not changed for 3 s: "Bridge not running", with a hint where the log is.
+  - Per frame the window allocates nothing: it compares the status seq and draws texts that are rebuilt only when the status changes.
+- **Hotkey.** Default Ctrl+F10, configurable, polled on the present thread while the game window has the focus.
 
 ### 6.10 Bootstrap, Compatibility, Config and Log (`bootstrap.cpp`, `compat.cpp`, `config.cpp`, `log.cpp`)
 - **Bootstrap** runs once, outside the loader lock, on the first `CreateDXGIFactory*` call:
@@ -326,7 +352,8 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
   - it detects the GPU from the DXGI adapter `DeviceId`. It does not use NVAPI for this, because the spoof rewrites NVAPI's architecture query;
   - it logs, per adapter, the D3DKMT hybrid type (hybrid discrete, hybrid integrated or neither), the HAGS state, the number of outputs and the driver version. It warns when an NVIDIA driver is older than 581.29 (NVIDIA's Optimus fix) or than R580 (the spoof's native kernels);
   - it detects the spoof: `version.dll` from the game folder, and later `sm86_backend.dll`;
-  - it reads the driver profile (6.8), runs `slInit` and creates the camera section.
+  - it reads the driver profile (6.8), runs `slInit` and creates the camera section;
+  - last, whether or not the bridge is enabled, it creates the panel's status and control sections and publishes its part of the status (6.9).
 - **Compatibility refusals.** When any of these holds, the bridge does not proxy, and the game runs as without the mod:
   - **Key sources.** Each CSP key is read from `<game>\extension\config\<file>`, overridden by `Documents\Assetto Corsa\cfg\extension\<file>` when the key is present there. AC keys are read from `Documents\Assetto Corsa\cfg\video.ini`.
   - **CSP settings:** `dxgi_tweaks.ini [COMPATIBILITY] OLD_SWAPCHAIN=1` or `EXCLUSIVE_FULLSCREEN=1`; `dxgi_tweaks.ini [HDR] ENABLED=1`; `graphics_adjustments.ini [FSR] ACTIVE≠1` or `OLD_IMPLEMENTATION≠3`.
@@ -337,7 +364,7 @@ Builds `sl::Constants` from the snapshots of bridge frames N and N−1 and the c
     - HAGS is read with `D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS)` for that adapter's LUID. The registry value `HwSchMode` can be absent while HAGS is on (the laptop is such a case), so it is only the fallback when the query fails. Streamline's `slIsFeatureSupported` stays the final word for DLSS-G.
     - The non-NVIDIA refusal names the adapter and tells the user to set `acs.exe` to High performance in Windows graphics settings, or to check CSP's `SELECT_ADAPTER`.
 - **Runtime-only switches.** The same aspect test is repeated with NGX `OutWidth/OutHeight` after every `ResizeBuffers` and every counted `CreateFeature`. The Lua flags (VR, triple screen) arrive after the swap chain exists. Both can only switch DLSS-G off; the proxy stays.
-- **Config.** `ac-dlssg\ac-dlssg.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`.
+- **Config.** `ac-dlssg\ac-dlssg.ini`, with the keys `enabled`, `start_with_fg`, `hotkey`, `max_frame_latency` (unset by default) and `log_level`, plus the M3 keys. The panel's "Save as default" rewrites `start_with_fg`, `camera_flip_handedness` and `camera_negate_side` key by key (6.9).
 - **Log.** `ac-dlssg\logs\bridge.log`. It has a start banner with versions, compatibility inputs and the decision; one statistics line per second (base fps, presented fps, bridge GPU ms, DLSS-G state, double evaluates, and the render adapter's video memory usage and budget from `IDXGIAdapter3::QueryVideoMemoryInfo`); and every state change.
 
 ### 6.11 Hybrid (Optimus) presentation
@@ -384,7 +411,7 @@ Bridge frame N. Test presents do not take part (6.3).
 
 - **Start.** The game starts. ReShade loads our DLL as its `ProxyLibrary`, and `Bootstrap` runs on the first factory call. When CSP creates its swap chain, the hook either returns a `ProxySwapChain` or passes through, and logs the decision. `start_with_fg` sets the initial DLSS-G mode.
 - **Resize, fullscreen change or target resize.** Handled by 6.3. DLSS-G is switched off, and one present is issued with it off before the change.
-- **Hotkey or panel toggle.** `slDLSSGSetOptions` switches between `eOn` and `eOff` on the next Present. The next DLSS-G frame has `reset = eTrue`.
+- **Hotkey or panel toggle.** `slDLSSGSetOptions` switches between `eOn` and `eOff` on the next Present; a panel request is read at the start of that Present (6.9). The next DLSS-G frame has `reset = eTrue`.
 - **Focus loss.** Streamline pauses interpolation when the window loses independent flip, and the panel shows it.
 - **Shutdown.** The final `Release` of `ProxySwapChain` follows the order in 6.3. After `slShutdown`, the cached Bootstrap decision becomes "not possible (Streamline already shut down)". Every later `CreateSwapChainForHwnd` passes through, and no Streamline function is called for the rest of the process. `DLL_PROCESS_DETACH` tears nothing down, because ReShade frees the ProxyLibrary under the loader lock.
 
@@ -425,6 +452,7 @@ Bridge frame N. Test presents do not take part (6.3).
   - radians are used;
   - the reset rules hold.
 - MV-scale conversion, config parsing and layering, the aspect test, the GPU ID to architecture table, the latency-semaphore accounting, the seqlock reader, and the camera-layout `static_assert`s.
+- The panel (6.9): the status and control layouts against the Lua layout strings, both seqlocks (including a reader racing the writer and a record of another process), the request rules (counter, switches, save), the key-level INI writer (other bytes, CRLF, missing keys under `[bridge]`), and a presenter that applies requests from the control section and publishes its status.
 
 **Test application (`tools/testapp`).** A small D3D11 program that creates a swap chain exactly as CSP does (section 4) and renders a moving scene with depth and motion vectors. It creates its back-buffer render target view with a NULL description and also creates an sRGB view. It loads our DLL the way ReShade does. It covers:
 - test presents;
@@ -432,7 +460,8 @@ Bridge frame N. Test presents do not take part (6.3).
 - `ResizeBuffers`;
 - create, release and re-create of the main swap chain (from M2 on the second chain must be a pass-through, because the first one's release shuts Streamline down; in M1 both chains are proxied);
 - a forced D3D12 stall (the watchdog must release D3D11);
-- standalone mode: the bridge copied next to the test app as `dxgi.dll` and bound by name, so that `d3d11.dll`, `d3d12.dll` and Streamline bind to it too.
+- standalone mode: the bridge copied next to the test app as `dxgi.dll` and bound by name, so that `d3d11.dll`, `d3d12.dll` and Streamline bind to it too;
+- the panel (`--fake-panel`, scenario `panel`): the test app plays the Lua app's window. The status section appears and its heartbeat advances; "off" logs `fg: panel -> off` and the status shows the switch off with the user's reason; a camera switch and "Save as default" show up in the status, and the save edits the test's `ac-dlssg.ini` key by key; "on" logs `fg: panel -> on`; the release publishes pass-through.
 
 DLSS-G itself is exercised only in-game, by the user.
 
@@ -457,16 +486,16 @@ DLSS-G itself is exercised only in-game, by the user.
   - VSync was not checked, because the user does not use it. The VSync queue depth is covered by the unit test `Presenter_TakesTheGamesFirstLatencyWait`.
 - **M2.** Streamline init, the proxy chain, Reflex, and the full PCL marker sequence, with DLSS-G off. The Streamline log is clean and Reflex is detected. For the laptop, M2 also brings per-adapter HAGS detection, the NVIDIA-adapter check, the hybrid and video memory logging, standalone mode, and a test package with install, uninstall and log-collection scripts. The package contains no NVIDIA file; its installer downloads the Streamline DLLs from NVIDIA on the target machine, as in section 12.
 - **M3.** NGX capture, the Lua camera app, and DLSS-G 2X on the RTX 3080 and on the laptop through the spoof, with the video memory guard (6.11). A debug overlay shows the motion vectors and the camera handedness. Success criteria 1 and 2 are met on both machines, and DLSS-G is off in menus and pause. Pacing is measured as displayed fps with PresentMon or FrameView, not as presents, because upstream issue #541 reports broken pacing for another DX11-to-D3D12 bridge with this spoof.
-- **M4.** Panel, hotkey, installer, uninstaller, README, CI with attestations, and release v0.1.0.
+- **M4.** Panel, hotkey, installer, uninstaller, README, CI with attestations, and release v0.1.0. The panel (6.9) was built first, on 2026-09-29, as the CSP Lua app's window for both modes.
 
 ## 12. Build, packaging and release
 
 - **Build.** C++20, MSVC (VS 2022 Build Tools) and CMake, Windows SDK 10.0.22621 or newer, static CRT (6.1). CI fails the build if `dumpbin /dependents` on `ac-dlssg.dll` lists a DLL outside the allow-list, which forbids for example `vcruntime*`, `msvcp*`, `d3dcompiler_*`, `dxgi.dll` and `VERSION.dll`.
 - **Third-party code.**
-  - Vendored: ReShade `include/` (BSD-3-Clause OR MIT) and Dear ImGui headers (MIT).
+  - Vendored: nothing in v1. ReShade's `include/` and the Dear ImGui headers were only needed for the ReShade overlay panel, which v1 does not have (6.9).
   - Fetched at configure time: Streamline headers from the pinned release (MIT).
   - Never in the repository: NVIDIA binaries and NGX headers. The NGX parameter interface is our own declaration.
-  - `THIRD_PARTY_NOTICES.txt` in the repository and in the release zip reproduces the ReShade, Dear ImGui, Streamline and dlss5-bridge notices.
+  - `THIRD_PARTY_NOTICES.txt` in the repository and in the release zip reproduces the Streamline and dlss5-bridge notices.
 - **CI.** GitHub Actions on `windows-latest` builds and tests on every push. On a tag, it:
   - builds the zip;
   - creates GitHub artifact attestations for the zip and for `ac-dlssg.dll` with `actions/attest-build-provenance` (permissions `id-token: write, contents: write, attestations: write`);
