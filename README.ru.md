@@ -4,7 +4,7 @@
 
 [![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Установка](https://img.shields.io/badge/Установка-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.ru.md) [![Поддержать на Ko-fi](https://img.shields.io/badge/Поддержать-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
 
-[![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 Генерация кадров NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X и 4X) для **Assetto Corsa** с **Custom Shaders Patch**.
 
