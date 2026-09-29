@@ -278,6 +278,18 @@ TEST(Config_M3KeysParsed) {
     CHECK(c.warnings.empty());
 }
 
+// Windows 11 25H2 binds VERSION.dll to System32 before acs.exe's own import;
+// spoof_load_any=1 lets the bridge load a version.dll that is not the pinned
+// dlssg_for_sm86 release.
+TEST(Config_SpoofLoadAny) {
+    CHECK(!ParseConfig(IniFile::Parse("")).spoof_load_any);
+    CHECK(ParseConfig(IniFile::Parse("[bridge]\nspoof_load_any=1\n")).spoof_load_any);
+    Config c = ParseConfig(IniFile::Parse("[bridge]\nspoof_load_any=yes\n"));
+    CHECK(!c.spoof_load_any);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("spoof_load_any") != std::string::npos);
+}
+
 TEST(Config_M3InvalidValuesKeepDefaultsAndWarn) {
     Config c = ParseConfig(IniFile::Parse("[bridge]\ncamera_flip_handedness=2\ncamera_negate_side=on\n"
                                           "proxy_without_fg=-1\ntag_without_fg=x\nfg_vram_headroom_mib=-5\n"));

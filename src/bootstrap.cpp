@@ -15,6 +15,7 @@
 #include "internal_call.h"
 #include "log.h"
 #include "module_version.h"
+#include "spoof_loader.h"
 #include "streamline_runtime.h"
 #include "system_dxgi.h"
 
@@ -242,9 +243,9 @@ void Run(BootstrapState* s) {
          c.enabled ? 1 : 0, c.start_with_fg ? 1 : 0, c.hotkey.ctrl ? "ctrl+" : "", c.hotkey.shift ? "shift+" : "",
          c.hotkey.alt ? "alt+" : "", c.hotkey.vk, c.max_frame_latency, LevelName(c.log_level));
     LOGI("config: camera_flip_handedness=%d camera_negate_side=%d proxy_without_fg=%d tag_without_fg=%d "
-         "fg_vram_headroom_mib=%u",
+         "fg_vram_headroom_mib=%u spoof_load_any=%d",
          c.camera_flip_handedness ? 1 : 0, c.camera_negate_side ? 1 : 0, c.proxy_without_fg ? 1 : 0,
-         c.tag_without_fg ? 1 : 0, c.fg_vram_headroom_mib);
+         c.tag_without_fg ? 1 : 0, c.fg_vram_headroom_mib, c.spoof_load_any ? 1 : 0);
     for (const auto& w : c.warnings) LOGW("config: %s", w.c_str());
 
     LogAdapters();
@@ -255,11 +256,52 @@ void Run(BootstrapState* s) {
     s->compat = ReadCompatInputs(s->game_dir, s->docs_ac_dir);
     LogCompatInputs(s->compat);
 
-    // Spoof: dlssg_for_sm86's version.dll next to acs.exe (spec 10).
-    if (const HMODULE version = GetModuleHandleW(L"version.dll"))
-        s->spoof_loaded = SamePathNoCase(ParentDir(ModuleFileName(version)), s->game_dir);
-    LOGI("spoof: %s", s->spoof_loaded ? "version.dll is loaded from the game folder (dlssg_for_sm86)"
-                                      : "no version.dll from the game folder");
+    // Spoof: dlssg_for_sm86's version.dll next to acs.exe (spec 10). On
+    // Windows 11 25H2 the process can bind VERSION.dll to System32 before
+    // acs.exe's own import; then the pinned spoof is loaded here, before slInit.
+    {
+        SpoofInputs si;
+        si.allow_any = s->config.spoof_load_any;
+        if (const HMODULE version = GetModuleHandleW(L"version.dll")) {
+            si.version_loaded = true;
+            si.loaded_path = ModuleFileName(version);
+            si.loaded_from_game_dir = SamePathNoCase(ParentDir(si.loaded_path), s->game_dir);
+        }
+        const std::wstring gameFile = s->game_dir + L"\\version.dll";
+        si.game_file_exists = GetFileAttributesW(gameFile.c_str()) != INVALID_FILE_ATTRIBUTES;
+        if (si.game_file_exists && !si.loaded_from_game_dir) {
+            std::string hashErr;
+            if (!Sha256File(gameFile, &si.game_file_sha256, &hashErr))
+                LOGW("spoof: could not hash %s: %s", ToUtf8(gameFile).c_str(), hashErr.c_str());
+        }
+        const SpoofDecision d = DecideSpoof(si);
+        switch (d.action) {
+            case SpoofAction::AlreadyLoaded:
+                s->spoof_loaded = true;
+                LOGI("spoof: %s", d.reason.c_str());
+                break;
+            case SpoofAction::NotPresent:
+                LOGI("spoof: %s", d.reason.c_str());
+                break;
+            case SpoofAction::Refused:
+                LOGW("spoof: %s", d.reason.c_str());
+                break;
+            case SpoofAction::LoadExplicitly:
+                if (!s->config.enabled) {
+                    LOGI("spoof: %s; not done because the bridge is disabled", d.reason.c_str());
+                    break;
+                }
+                LOGI("spoof: %s", d.reason.c_str());
+                std::string loadErr;
+                if (LoadSpoofModule(gameFile, &loadErr)) {
+                    s->spoof_loaded = true;
+                    LOGI("spoof: loaded %s explicitly", ToUtf8(gameFile).c_str());
+                } else {
+                    LOGW("spoof: loading %s failed: %s", ToUtf8(gameFile).c_str(), loadErr.c_str());
+                }
+                break;
+        }
+    }
 
     // Driver profile before any D3D device exists (spec 6.8).
     s->driver_profile = ReadDriverProfile(exe);

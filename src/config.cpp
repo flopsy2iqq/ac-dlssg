@@ -102,6 +102,7 @@ Config ParseConfig(const IniFile& ini) {
     ParseBool(ini.Get(kSection, "camera_negate_side"), "camera_negate_side", &c.camera_negate_side, &c.warnings);
     ParseBool(ini.Get(kSection, "proxy_without_fg"), "proxy_without_fg", &c.proxy_without_fg, &c.warnings);
     ParseBool(ini.Get(kSection, "tag_without_fg"), "tag_without_fg", &c.tag_without_fg, &c.warnings);
+    ParseBool(ini.Get(kSection, "spoof_load_any"), "spoof_load_any", &c.spoof_load_any, &c.warnings);
     if (const auto raw = ini.Get(kSection, "fg_vram_headroom_mib"); raw && !raw->empty()) {
         const auto v = ToInt(raw);
         if (v && *v >= 0 && *v <= 65536) {
