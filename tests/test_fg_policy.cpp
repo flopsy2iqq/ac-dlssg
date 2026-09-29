@@ -682,7 +682,7 @@ TEST(VramAuto_ToleranceIs128MiBOrATenthOfTheEstimate) {
 
 // The laptop: 346 MiB free for a 380 MiB estimate at 2X. With auto, DLSS-G
 // runs anyway and the video memory is marked tight; a number keeps today's
-// refusal, and the panel's note says what to lower.
+// refusal, and the panel's note says that auto would run it.
 TEST(VramAuto_ASmallShortfallAt2XIsTight) {
     constexpr uint64_t MiB = 1024ull * 1024ull;
     const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0);
@@ -701,8 +701,8 @@ TEST(VramAuto_ASmallShortfallAt2XIsTight) {
     CHECK(!d.check.ok);
     CHECK(!d.tight);
     CHECK_EQ(d.check.reason, std::string("video memory: need 380 MiB, free 346 MiB"));
-    CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 380 MiB, 346 MiB free; lower CSP "
-                                 "texture quality, shadows or the render resolution"));
+    CHECK_EQ(d.note, std::string("fg_vram_headroom_mib=0 keeps frame generation off (380 MiB needed, 346 MiB free): "
+                                 "set it to auto in ac-dlssg.ini and restart the game"));
 }
 
 TEST(VramAuto_ALargerShortfallKeepsDlssgOffWithAnActionableReason) {
@@ -738,6 +738,43 @@ TEST(VramAuto_TheToleranceBoundaries) {
     CHECK(fits.check.ok);
     CHECK(!fits.tight);
     CHECK(fits.note.empty());
+}
+
+// A number that keeps DLSS-G off where auto would run it (the first
+// installs' 512 on the 4 GB laptop: 346 MiB free for a 283 MiB estimate):
+// the panel's note names the number and says to set auto and restart the
+// game, rather than to lower the textures. The guard's reason stays.
+TEST(VramNumber_AHeadroomThatKeepsDlssgOffWhereAutoWouldRunItSaysSo) {
+    constexpr uint64_t MiB = 1024ull * 1024ull;
+    VramMultiplierDecision d =
+        DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3154 * MiB, 283 * MiB, 512), nullptr, false);
+    CHECK(!d.check.ok);
+    CHECK(!d.tight);
+    CHECK_EQ(d.check.reason, std::string("video memory: need 795 MiB, free 346 MiB"));
+    const std::string hint = "fg_vram_headroom_mib=512 keeps frame generation off (795 MiB needed, 346 MiB free): set "
+                             "it to auto in ac-dlssg.ini and restart the game";
+    CHECK_EQ(d.note, hint);
+    CHECK(hint.size() < 160u);  // fits the status record's vramNote
+    // The longest one fits too.
+    d = DecideVramMultiplier(2, CheckVideoMemory(99999 * MiB, 0, 65535 * MiB, 65536), nullptr, false);
+    CHECK(!d.check.ok);
+    CHECK(d.note.size() < 160u);
+    // An 8 GB card with 1024: auto's 256 MiB would fit (692 MiB free for 539).
+    d = DecideVramMultiplier(2, CheckVideoMemory(8192 * MiB, 7500 * MiB, 283 * MiB, 1024), nullptr, false);
+    CHECK(d.note.find("fg_vram_headroom_mib=1024 keeps frame generation off (1307 MiB needed, 692 MiB free)") == 0);
+    // 3X falling back: the 2X check decides.
+    const VramCheck at3 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 500 * MiB, 512);
+    const VramCheck at2 = CheckVideoMemory(3500 * MiB, 3154 * MiB, 283 * MiB, 512);
+    d = DecideVramMultiplier(3, at3, &at2, false);
+    CHECK(!d.check.ok);
+    CHECK_EQ(d.note, hint);
+    // 0, where auto would run it as tight.
+    d = DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3154 * MiB, 380 * MiB, 0), nullptr, false);
+    CHECK(d.note.find("fg_vram_headroom_mib=0 keeps frame generation off (380 MiB needed, 346 MiB free)") == 0);
+    // Where auto would not run it either, the note says what to lower.
+    d = DecideVramMultiplier(2, CheckVideoMemory(3500 * MiB, 3400 * MiB, 283 * MiB, 512), nullptr, false);
+    CHECK_EQ(d.note, std::string("not enough video memory: frame generation needs 795 MiB, 100 MiB free; lower CSP "
+                                 "texture quality, shadows or the render resolution"));
 }
 
 // A small output (a 1280x720 window) needs little, less than the 128 MiB

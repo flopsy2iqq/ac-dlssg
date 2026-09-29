@@ -82,6 +82,8 @@ VramCheck CheckVideoMemory(uint64_t budgetBytes, uint64_t usageBytes, uint64_t e
     r.needMib = (need + kMiB - 1) / kMiB;
     r.freeMib = free / kMiB;
     r.estimateMib = (estimateBytes + kMiB - 1) / kMiB;
+    r.headroomMib = headroomMib;
+    r.budgetMib = budgetBytes / kMiB;
     if (free >= need) return r;
     char buf[96];
     std::snprintf(buf, sizeof(buf), "video memory: need %llu MiB, free %llu MiB",
@@ -151,6 +153,24 @@ bool WithinTolerance(const VramCheck& c) {
     return !c.ok && c.needMib > c.freeMib && c.needMib - c.freeMib <= VramTightToleranceMib(c.estimateMib, c.needMib);
 }
 
+// A refusal with a number: would auto, with the same estimate and free
+// memory, run DLSS-G (fit, or be tight)?
+bool AutoWouldRun(const VramCheck& c) {
+    const uint64_t need = c.estimateMib + AutoVramHeadroomMib(c.budgetMib * kMiB);
+    if (c.freeMib >= need) return true;
+    return need - c.freeMib <= VramTightToleranceMib(c.estimateMib, need);
+}
+
+std::string HeadroomText(const VramCheck& c) {
+    char buf[192];
+    std::snprintf(buf, sizeof(buf),
+                  "fg_vram_headroom_mib=%u keeps frame generation off (%llu MiB needed, %llu MiB free): set it to "
+                  "auto in ac-dlssg.ini and restart the game",
+                  c.headroomMib, static_cast<unsigned long long>(c.needMib),
+                  static_cast<unsigned long long>(c.freeMib));
+    return buf;
+}
+
 }  // namespace
 
 VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& atWanted, const VramCheck* at2x,
@@ -179,8 +199,12 @@ VramMultiplierDecision DecideVramMultiplier(unsigned wanted, const VramCheck& at
         if (wanted > 2) d.fallback = FallbackText(wanted, atWanted);
         return d;
     }
-    d.note = NotEnoughText(d.check);
-    if (autoHeadroom) d.check.reason = d.note;
+    if (autoHeadroom) {
+        d.note = NotEnoughText(d.check);
+        d.check.reason = d.note;
+        return d;
+    }
+    d.note = two && AutoWouldRun(*two) ? HeadroomText(*two) : NotEnoughText(d.check);
     return d;
 }
 
