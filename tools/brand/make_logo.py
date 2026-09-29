@@ -10,6 +10,7 @@ only, in a 512 x 512 unit box, and every output is drawn from it:
   docs/logo/ac-dlssg-banner.png     1280 x 320, dark, for the README header
   docs/logo/social-preview.png      1280 x 640, dark, GitHub's social preview
   docs/logo/steam-cover.png         1024 x 1024, dark, the Steam guide's preview
+  docs/logo/nexus-header.png        1300 x 372, dark, the Nexus Mods page header
   apps/lua/AcDlssg/icon.png         64 x 64, transparent, the CSP app icon
   apps/lua/AcDlssg/logo.png         96 x 96, transparent, the window header
 
@@ -165,6 +166,13 @@ def stacked(size, mark_side, word_size, line, line_size, gap, line_gap):
     return downscale(img, size, size).convert('RGB')
 
 
+def nexus_header():
+    """The README banner's lockup at the size Nexus Mods stores page headers
+    in (1300 x 372). The group stays small and centred, so that the narrower
+    crops Nexus shows on small screens keep the whole wordmark."""
+    return lockup(1300, 372, 0, 108, BANNER_LINE, 33, 18, 42)
+
+
 def svg():
     parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">',
              '  <title>ac-dlssg</title>']
@@ -185,6 +193,8 @@ def main():
     save(lockup(1280, 320, 0, 112, BANNER_LINE, 34, 18, 44), 'docs', 'logo', 'ac-dlssg-banner.png')
     save(lockup(1280, 640, 0, 150, SOCIAL_LINE, 40, 24, 60), 'docs', 'logo', 'social-preview.png')
     save(stacked(1024, 600, 150, SQUARE_LINE, 50, 36, 26), 'docs', 'logo', 'steam-cover.png')
+    # Nexus Mods stores page headers at 1300 x 372 and crops other sizes.
+    save(nexus_header(), 'docs', 'logo', 'nexus-header.png')
     # The app icon and the header logo keep a small margin, since CSP draws
     # the icon edge to edge in its taskbar.
     save(transparent_mark(64, 0.02), 'apps', 'lua', 'AcDlssg', 'icon.png')

@@ -1,0 +1,757 @@
+=====================================================================
+КАК ОПУБЛИКОВАТЬ МОД НА NEXUS MODS
+(этот блок для тебя, на сайт его не копировать)
+=====================================================================
+
+Как пользоваться этим файлом. Ниже, после русской части, идут английские
+тексты для каждого поля формы Nexus, в том же порядке, что и в форме.
+Копируй только то, что стоит между строками
+    === BEGIN: ... ===
+    === END: ... ===
+Сами эти строки не копируй. Один блок — одно поле формы: имя блока
+говорит, в какое поле он идёт (например, блок «Requirement 1 Notes»
+идёт в поле Notes первого требования). Открывай файл в Блокноте,
+кодировка UTF-8.
+
+Файлы для загрузки лежат в папке проекта H:\code projects\ac-dlssg-bridge:
+картинки в docs\screenshots, шапка в docs\logo\nexus-header.png.
+
+
+ШАГ 0. ПЕРЕД НАЧАЛОМ
+Тексты ниже написаны для версии 1.1.0. Подожди, пока я скажу тебе,
+что 1.1.0 вышла. До этого ничего не загружай и письмо не отправляй.
+0.1. Скачай ac-dlssg-1.1.0.zip со страницы релиза
+     https://github.com/flopsy2iqq/ac-dlssg/releases/tag/v1.1.0
+     Он весит около 450 КБ, точный размер сверь на странице релиза.
+     Этот самый файл и загружается на Nexus. Не распаковывай и не
+     перепаковывай его.
+0.2. Проверь этот zip на https://www.virustotal.com (вкладка File,
+     перетащи файл). Одно-два срабатывания из-за install.bat и DLL
+     без подписи — обычная ложная тревога. Если срабатываний много,
+     не загружай, сначала напиши мне.
+0.3. Перед загрузкой открой правила Nexus
+     https://help.nexusmods.com/article/28-file-submission-guidelines
+     Их обновили 29 сентября 2026: проверь, что ничего важного
+     не поменялось.
+
+
+ШАГ 1. СОЗДАТЬ ЧЕРНОВИК
+1.1. Зайди на Nexus под своим аккаунтом и открой
+     https://next.nexusmods.com/games/assettocorsa?uploadMod=true
+     (или вверху сайта: Upload, затем UPLOAD A MOD).
+1.2. Откроется окно «Create your draft mod page»:
+     - Mod Name: вставь блок «Mod Name».
+     - Short description: вставь блок «Summary».
+     - Game: Assetto Corsa (обычно уже выбрано; потом не меняется).
+     - Category: Visuals and Graphics.
+     - Нажми «Create draft». Это черновик, его видишь только ты.
+
+
+ШАГ 2. ВКЛАДКА «1 General»
+2.1. Full description: в панели редактора нажми кнопку [ ] (режим
+     BBCode), удали шаблонный текст и вставь блок «Full description».
+     Нажми [ ] ещё раз и посмотри результат: жирные заголовки, списки
+     и свёрнутый блок «Spoiler» с русским текстом. Если где-то видны
+     сырые теги вроде [size=5] или [spoiler], напиши мне.
+     Если форма скажет, что текст слишком длинный, удали русскую часть:
+     от строки «[size=5][b]На русском» до «[/spoiler]» включительно
+     (русские инструкции и так есть в архиве).
+2.2. Language: English. Галку «This is a translation of another mod»
+     не ставь.
+2.3. Tags: начни печатать и выбери из подсказок четыре тега:
+     Performance Optimization, Utilities for Players,
+     AI-Generated Content, AI Media.
+     Adult tags не трогай.
+2.4. Extra options:
+     - Author or team name: flopsy2iqq (или твой ник на Nexus).
+     - Mod version: 1.1.0
+     - Team access: пропусти.
+     - Comments: «Allow comments» включено. «Allow discussions» по
+       желанию (по умолчанию выключено).
+     - Bug tracker: Public (open), как по умолчанию.
+     - Donations: «Display donation button» (PayPal) включай, только
+       если в настройках аккаунта есть PayPal и ты хочешь эту кнопку.
+       «Display donation message» выключи: Ko-fi уже есть в конце
+       описания, повторять просьбы правила не велят.
+     - Community tagging: оставь включённым.
+     - Download mirrors: «+ Add mirror». В поле Name вставь блок
+       «Mirror Name», в поле URL — блок «Mirror URL». Только сам
+       текст, без слов «Name:» или «URL:».
+2.5. Нажми Save вверху.
+
+
+ШАГ 3. ВКЛАДКА «2 Media»
+3.1. Images: добавь 10 картинок из docs\screenshots в порядке из
+     раздела «3. STEP "2 Media"» ниже. Первая (fg4x-1.jpg) станет
+     обложкой (Thumbnail). Каждой впиши title из того же списка.
+     Порядок можно менять перетаскиванием. В папке есть и другие
+     картинки: бери только эти 10.
+3.2. Header: добавь docs\logo\nexus-header.png. Я сделал его точно
+     под размер Nexus (1300 на 372). В окне «Adding header» ничего
+     не увеличивай, просто подтверди.
+3.3. Videos пропусти. Нажми Save.
+
+
+ШАГ 4. ВКЛАДКА «3 Files»
+4.1. Upload a file: перетащи ac-dlssg-1.1.0.zip из шага 0.1.
+4.2. File category: Main. Display name: ac-dlssg 1.1.0.
+     File version: 1.1.0.
+4.3. Description: вставь блок «File description».
+4.4. Mod managers: «Allow mod manager download» выключи, «Set as
+     default file for mod manager download» тоже. Vortex не
+     поддерживает Assetto Corsa, мод ставится своим install.bat.
+4.5. Miscellaneous: «Display requirements popup on download» включи,
+     если галка активна. Скорее всего, она серая: требований ещё нет,
+     их добавишь в шаге 5. Тогда оставь её, включишь в шаге 5.4.
+     «Update mod version to match this file's version» включи.
+4.6. Add changelog: версия 1.1.0, вставь блок «Changelog 1.1.0».
+     Каждая строка блока — отдельный пункт; если форма просит пункты
+     по одному, вставляй по строке.
+4.7. Сохрани. Подожди, пока Nexus проверит файл на вирусы: рядом
+     появится значок проверки. Если файл попал в карантин
+     («quarantined»), НЕ удаляй и не перезаливай его. Напиши на
+     support@nexusmods.com, дай ссылку на страницу мода и на GitHub.
+
+
+ШАГ 5. ВКЛАДКА «4 Requirements»
+5.1. Nexus Mods: ничего не добавляй, наших зависимостей на Nexus нет.
+5.2. External resources (off-site): нажми «+ Add requirement» три
+     раза. Для каждого требования из раздела «5. STEP "4 Requirements"»
+     ниже вставь блок «Requirement N Name» в поле Name, блок
+     «Requirement N URL» в поле URL и блок «Requirement N Notes»
+     в поле Notes. Только сам текст, без слов «Name:», «URL:», «Notes:».
+5.3. DLC: ничего. Нажми Save.
+5.4. Вернись во вкладку «3 Files», открой настройки загруженного zip
+     (редактирование файла), включи «Display requirements popup on
+     download» и нажми Save. Теперь при скачивании люди увидят, что
+     нужен CSP preview и RTX.
+
+
+ШАГ 6. ВКЛАДКА «5 Permissions»
+6.1. «Does your mod include content created by others?»: выбери
+     вариант, который означает «да, есть чужой контент» (не «No (all
+     content is mine)»). В моде есть заголовки NVIDIA и код из
+     dlss5-bridge (оба по MIT).
+6.2. Credits: вставь блок «Credits».
+6.3. Permission settings: выбери «Write your own (custom)» и вставь
+     блок «Permissions». НЕ выбирай «Use recommended settings»: там
+     запрет перезаливки и конвертации, а изменения только с разрешения
+     автора — GPL-3.0 разрешает всё это без спроса. Если своего текста
+     форма не даёт, выбери «Pick your own» и в каждой строке выбери
+     вариант «можно, с указанием автора» (with credit), а не «без
+     разрешения и без указания автора» (without permission or credit):
+     GPL требует сохранять указание авторов и лицензию. Использование
+     в платных модах и в модах с Donation Points разреши. Если там есть
+     текстовое поле для заметок автора (как оно точно называется, не
+     проверено), вставь в него блок «Permissions».
+6.4. Нажми Save.
+
+
+ШАГ 7. ПРОВЕРКА ЧЕРНОВИКА
+7.1. Нажми «View mod». Откроется страница с плашкой «Your mod is
+     currently not published». Проверь: описание читается, картинки
+     и шапка на месте, во вкладке Files есть zip со значком проверки,
+     требования показаны.
+7.2. Проверь, что на самой странице нет ни одной ссылки на Patreon
+     (в zip её тоже нет). На GitHub ссылка на Patreon автора CSP есть:
+     в README.md и docs\INSTALL.md (и в их русских версиях, и в записи
+     1.0.0 в CHANGELOG.md). Это ожидаемо, про неё прямо спрашивает
+     письмо (пункт 3).
+7.3. Скопируй адрес этой страницы-черновика, он нужен для письма.
+
+
+ШАГ 8. ПИСЬМО В ПОДДЕРЖКУ (до публикации)
+8.1. Отправь со своей почты письмо из раздела «0. EMAIL TO NEXUS
+     SUPPORT» на support@nexusmods.com. Впиши в конец свой ник и адрес
+     черновика из шага 7.3. Правила Nexus прямо просят так сделать
+     для модов, которые что-то скачивают из интернета. Отправляй
+     только когда я скажу, что 1.1.0 вышла (шаг 0): письмо ссылается
+     на её релиз.
+8.2. Подожди ответа. Если поддержка попросит что-то поменять, пришли
+     мне их ответ, я поправлю тексты.
+
+
+ШАГ 9. ПУБЛИКАЦИЯ
+9.1. Нажимай Publish справа вверху только после письменного ответа
+     поддержки, что так можно. Без ответа не публикуй: мод работает
+     только с CSP preview, а по правилам Nexus мод, который не работает
+     без платной сборки, могут не пропустить. Если поддержка ответит
+     «нельзя», оставь страницу черновиком и напиши мне: опубликуем,
+     когда DLSS появится в бесплатной публичной версии CSP.
+9.2. Donation Points (по желанию, нужно быть 18+): в настройках
+     аккаунта Settings, затем Donations, включи Donation Points, потом
+     на странице Mod Rewards включи (Opt-in) этот мод. Это можно
+     вместе с Ko-fi.
+9.3. В комментариях не давай ссылку на Patreon и ничего не обещай за
+     донаты. На вопрос «где взять CSP preview» отвечай нейтрально:
+     preview-сборки выпускает автор CSP (x4fab), публичная 0.2.11
+     не подходит, в ней нет DLSS.
+
+
+ПОЧЕМУ ТЕКСТЫ СДЕЛАНЫ ИМЕННО ТАК (правила Nexus)
+
+1. Patreon и CSP preview. Правила Nexus о донатах строго запрещают
+   ссылки на платные моды и на ранние сборки для платных подписчиков,
+   Patreon назван прямо; косвенные ссылки тоже считаются. CSP preview —
+   как раз такая сборка. Там же сказано, что мод, который без платного
+   мода не работает, не пропускают. Поэтому: на странице и в zip нет
+   ни одной ссылки на Patreon (из документации в zip её убирает сборка
+   релиза), нет слов «купите» или «подпишитесь», и публикуем только
+   после ответа поддержки. На GitHub, куда ведёт страница, ссылка
+   остаётся: README.md и docs\INSTALL.md (и их русские версии, и запись
+   1.0.0 в CHANGELOG.md) называют Patreon автора CSP со ссылкой. Письмо
+   говорит об этом прямо и спрашивает, можно ли её там оставить. Если
+   нельзя, я уберу её с GitHub до публикации. Скрывать требование
+   тоже нельзя: правила требуют честно указать все требования. Поэтому
+   в описании спокойно сказано, что нужен CSP 0.3.0-preview, что
+   публичная 0.2.11 не подходит и что preview-сборки автор CSP сейчас
+   выпускает для подписчиков Patreon, без ссылки. Эту фразу письмо
+   цитирует дословно и прямо спрашивает, можно ли её оставить.
+   В Requirements ссылка на CSP ведёт на его официальную страницу
+   acstuff.club/patch, а не на Patreon. У мода BMW M4 GT3
+   (assettocorsa/mods/118) ссылка на Patreon стоит, но Nexus пишет,
+   что чужие страницы не считаются разрешением.
+
+2. Скачивание из интернета. Правила запрещают файлы, которые что-то
+   скачивают, если это не необходимо для работы, и просят автора написать
+   в поддержку с объяснением и исходниками. Streamline необходим: без него
+   мод не работает, а раздавать файлы NVIDIA нельзя. Поэтому: письмо
+   в поддержку и отдельный раздел в описании — что скачивается, откуда,
+   какие версии и хеши, что ничего не отправляется и автообновления нет.
+   Плюс описан способ установки без интернета.
+
+3. dlssg_for_sm86. Он встраивает DLL NVIDIA без лицензии и обходит
+   ограничение NVIDIA (раздел 4.d лицензии NVIDIA), а Nexus запрещает
+   ссылки на файлы, которые сам не смог бы хранить, и модерирует то, что
+   помогает нарушать авторские права. Установщик 1.1.0 работает так же,
+   как 1.0.0: на RTX 30 он печатает предупреждение, что это такое, и сам
+   скачивает его, без вопроса; install.bat -NoSpoof ставит мод без
+   него. На RTX 40 и 50 он не скачивается никогда. В zip его нет,
+   в заметках релиза v1.1.0 (куда ведёт зеркало) ссылки на него нет,
+   на странице только имя репозитория и коммит для проверки. Всё
+   описано честно: не NVIDIA, встраивает nvngx_dlssg.dll, раздел 4.d,
+   зафиксированный коммит 9621db5 и хеши, автор указан в благодарностях
+   и с нами не связан. Автоматическое скачивание — прямой вопрос
+   к поддержке в письме (пункт 2). Если Nexus будет против, есть два
+   запасных варианта, письмо предлагает оба: явный вопрос в установщике
+   (ставить только после согласия) или версия для Nexus только для
+   RTX 40 и 50, а владельцам RTX 30 пишем, что нужен сторонний
+   компонент, без ссылки. Сделаю по запросу.
+
+4. Метки ИИ. Правила требуют честно помечать использование ИИ, скрытое
+   использование модерируют. 191 из 192 коммитов сделаны вместе с Claude,
+   тексты страницы тоже. Поэтому теги AI-Generated Content (код) и
+   AI Media (описание страницы) и одна честная строка в описании.
+   Тег AI Assisted не подходит: он для работ, где ИИ помогал немного.
+
+5. Цифры FPS. Правила требуют, чтобы заявления о производительности
+   были правдой и с доказательствами. Поэтому цифры подписаны как
+   «настоящие кадры → кадры на экране», указаны железо и драйверы,
+   сказано, что генерация не ускоряет отклик и что результаты на RTX 30
+   получены с dlssg_for_sm86. «Без гостинга и статтеров» подано как отзыв
+   тестеров, а не как гарантия. Главная цифра 4X — 41 → 160, как на
+   обложке (счётчик CSP показывает 40,6). Не используем картинки, где
+   кадров на экране больше, чем множитель на настоящие кадры: fg4x-3
+   (40 → 169), fg2x-2 (54,8 → 112), fg2x-4 (57,5 → 116) и fg2x-7
+   (59,4 → 119). Это путает (счётчики снимают в разные моменты).
+   Процессор настольного ПК в тексте — Core i9-9900, как на GitHub.
+
+6. Лицензия. Стандартный набор разрешений Nexus запрещает перезаливку
+   и конвертацию, а изменения разрешает только с согласия автора.
+   GPL-3.0 разрешает всё это без спроса и запрещает добавлять такие
+   ограничения. Поэтому свой текст разрешений со ссылкой на исходники,
+   как требует GPL.
+
+7. Донаты. Ko-fi разрешён: одна строка в самом конце, без давления и без
+   обещаний за донаты. Donation Points тоже можно.
+
+8. Ссылки на GitHub. Ссылку на INSTALL.md я не ставил: установка и так
+   полностью расписана на странице. Ссылки на репозиторий и релиз
+   остались: GPL требует указать, где исходники, и это обычная практика
+   на Nexus. Все они ведут на тег v1.1.0. В его README и INSTALL.md
+   ссылка на Patreon автора CSP есть (см. пункт 1), про неё спрашивает
+   письмо.
+
+9. Шапка. Nexus хранит шапки размером 1300 на 372, наш баннер 1280 на 320
+   обрезался бы. Я добавил в tools\brand\make_logo.py функцию
+   nexus_header() и сделал только эту картинку: docs\logo\nexus-header.png.
+   Обложка — скриншот fg4x-1.jpg (формат 16:9, как просит Nexus),
+   на нём видны оба счётчика FPS.
+
+10. Тег ReShade не ставил: на Nexus он для пресетов ReShade, а мод только
+    совместим с ним. Лишние теги правила считают злоупотреблением.
+
+11. Скачивание через менеджер модов выключено: Vortex не поддерживает
+    Assetto Corsa, мод ставится своим install.bat.
+
+12. Согласие автора dlssg_for_sm86. Записи о нём нет, а правила Nexus
+    делают автора мода ответственным за каждое заявление на странице.
+    Поэтому на странице и в письме только «указан в благодарностях,
+    с нами не связан», без слов о согласии.
+
+
+ЧТО РЕШИТЬ ТЕБЕ
+
+1. Упоминать ли Patreon словом. Сейчас в описании одна фраза без ссылки,
+   что preview-сборки выходят для подписчиков Patreon: так честнее для
+   пользователей, и письмо спрашивает про неё дословно. Если поддержка
+   скажет убрать, удали эту фразу в английском тексте и в русском
+   спойлере, остальное оставь. Если поддержка скажет убрать ссылку на
+   Patreon с GitHub (README, INSTALL, CHANGELOG), пришли мне ответ,
+   я уберу её до публикации.
+2. Имя автора на странице: flopsy2iqq или твой ник на Nexus.
+3. Кнопка PayPal и Donation Points — по желанию.
+4. На странице Ko-fi есть Discord (phorofobia) и сайт flopsy2iq.love.
+   Nexus считает нарушением даже косвенные ссылки на места, где
+   рекламируют платные моды. Проверь, что там нет рекламы Patreon-сборок
+   или платных модов.
+5. Предупредить ли x4fab (автора CSP) перед широким релизом. Вежливо,
+   по желанию: мод работает поверх его DLSS.
+6. Согласие sdli1995 (автора dlssg_for_sm86). Если хочешь писать, что
+   он согласен, нужно письменное согласие, которое покрывает именно
+   автоматическое скачивание его файлов установщиком (например, ответ
+   в issue или discussion на его GitHub). Дай мне ссылку, я добавлю.
+   Без неё тексты остаются как сейчас.
+7. dlssg_for_sm86, если поддержка против автоматического скачивания:
+   выбери явный вопрос в установщике (ставить только после согласия)
+   или версию для Nexus только для RTX 40 и 50. Скажи мне, я сделаю.
+
+
+=====================================================================
+ДАЛЬШЕ ИДУТ ТЕКСТЫ ДЛЯ ФОРМЫ (English, copy and paste)
+=====================================================================
+
+
+#####################################################################
+0. EMAIL TO NEXUS SUPPORT (send after the draft exists, before Publish)
+#####################################################################
+
+To: support@nexusmods.com
+
+=== BEGIN: Email subject ===
+Question before publishing: Assetto Corsa mod "ac-dlssg" (installer downloads, CSP preview requirement)
+=== END: Email subject ===
+
+=== BEGIN: Email body ===
+Hello Nexus Mods team,
+
+I am preparing to upload my free, open-source mod ac-dlssg for Assetto Corsa. It adds NVIDIA DLSS Frame Generation (DLSS-G) and NVIDIA Reflex to the game through a DirectX 11 to DirectX 12 bridge DLL. The mod page is still an unpublished draft, and I will not publish it before I hear from you. I would like to check three points with you, as the File Submission Guidelines ask for files that access the internet.
+
+Source code (GPL-3.0): https://github.com/flopsy2iqq/ac-dlssg
+This version: https://github.com/flopsy2iqq/ac-dlssg/tree/v1.1.0
+Release zip (the same file I upload to Nexus): https://github.com/flopsy2iqq/ac-dlssg/releases/tag/v1.1.0
+
+1. The installer downloads NVIDIA Streamline.
+The mod cannot work without NVIDIA's Streamline runtime DLLs, and I may not redistribute them, so the zip contains none. install.bat runs PowerShell scripts (readable in the zip) that download the pinned Streamline 2.14.1 SDK zip from NVIDIA's official GitHub release (https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1), check its SHA-256 and NVIDIA's Authenticode signature on every DLL, and copy the DLLs into the game folder. Versions are pinned: there is no auto-update, no telemetry and no upload of any kind, and the bridge DLL itself makes no network connections. Users can also install without internet from a Streamline zip they downloaded themselves.
+
+2. On RTX 30 GPUs the installer also downloads dlssg_for_sm86.
+NVIDIA limits DLSS-G to RTX 40 and newer. The third-party project dlssg_for_sm86 by sdli1995 lifts that limit on RTX 30. It is not made by NVIDIA. It embeds NVIDIA's nvngx_dlssg.dll, which is not relicensed, its repository has no license file, and using it works around a technical limitation, which section 4.d of NVIDIA's RTX SDKs license forbids for that license's licensees. On an RTX 30 GPU the installer prints a notice that says all of this and then downloads two files (version.dll and dlssg_sm86.ini), pinned to release 0.3.5 (commit 9621db5), directly from its author's GitHub repository, by itself and without asking; it checks their git hashes and the SHA-256 of version.dll before it installs them, and it never replaces a version.dll that is already in the game folder. "install.bat -NoSpoof" installs the mod without it (frame generation then does not run on RTX 30). On RTX 40 and 50 it is never downloaded. The zip contains none of its files. The mod page names the repository and the commit but does not link to it, and the release notes do not link to it either; the project's GitHub README credits it with a link to its repository. dlssg_for_sm86 is credited and not affiliated with my project. I have seen similar tools on Nexus (for example site mods 738 and 2237). Is this automatic download acceptable? If you prefer, I can make it an explicit opt-in question in the installer (nothing downloaded unless the user agrees), or make the Nexus version support RTX 40 and 50 only, without dlssg_for_sm86.
+
+3. The mod needs a Custom Shaders Patch preview build.
+ac-dlssg uses the DLSS upscaler of Custom Shaders Patch (CSP), which exists only in the CSP 0.3.0 preview builds; the latest public CSP (0.2.11) has no DLSS. ac-dlssg itself is completely free and is not affiliated with CSP. The mod page states the requirement in these exact words: "You need Custom Shaders Patch 0.3.0-preview or newer with NVIDIA DLSS selected as the upscaler. The free public CSP 0.2.11 has no DLSS and will not work. CSP preview builds are not public: CSP's author, x4fab, currently releases them to his Patreon supporters. This page does not link to them, and ac-dlssg is not affiliated with CSP." The Russian section of the page says the same. The CSP requirement entry links to CSP's official page, https://acstuff.club/patch/. There is no link to Patreon on the mod page, and none in the documentation inside the zip (the release package leaves it out). The GitHub repository that the page links to does mention it: its README.md and docs/INSTALL.md (and their Russian versions, and the 1.0.0 entry of CHANGELOG.md) say that the CSP preview builds are available from CSP's author on Patreon, with a link to his Patreon page. My questions: may a free mod that needs a CSP preview build be published? May the page name Patreon as where the preview builds come from, without a link, or should I remove that sentence? And may the GitHub pages keep their Patreon link, or should I remove it before I publish? If a mod with this requirement cannot be published, I will keep the page unpublished until a public CSP release includes DLSS.
+
+For transparency: the mod was developed with AI coding tools, and I tag it as AI-Generated Content and AI Media.
+
+Thank you for your time.
+
+<your Nexus username>
+Draft mod page: <paste the link of your draft page>
+=== END: Email body ===
+
+
+#####################################################################
+1. CREATE YOUR DRAFT MOD PAGE (first window)
+#####################################################################
+
+=== BEGIN: Mod Name ===
+ac-dlssg - DLSS Frame Generation for Assetto Corsa (CSP)
+=== END: Mod Name ===
+(56 characters.)
+
+Short description (summary), plain text. 331 of 350 characters:
+=== BEGIN: Summary ===
+Adds NVIDIA DLSS Frame Generation (2X, 3X, 4X) and Reflex to Assetto Corsa with Custom Shaders Patch. Needs an RTX 30/40/50 GPU and CSP 0.3.0-preview or newer with DLSS on; the public CSP 0.2.11 will not work. One-click install.bat. RTX 3080 test: 62 to 124 fps at 2X, 41 to 160 at 4X. On RTX 30 it adds third-party dlssg_for_sm86.
+=== END: Summary ===
+
+Game: Assetto Corsa
+Category: Visuals and Graphics
+
+
+#####################################################################
+2. STEP "1 General"
+#####################################################################
+
+Full description. Paste in the BBCode view ([ ] button). 19,487 characters:
+15,109 English and 4,378 for the Russian part (heading plus spoiler).
+Nexus publishes no limit (live pages hold about 13,000 and more). If the
+form says it is too long, delete the Russian part: from the line
+"[size=5][b]На русском" down to and including "[/spoiler]". The zip has
+the Russian docs anyway.
+=== BEGIN: Full description ===
+[center][size=6][b]ac-dlssg[/b][/size]
+[size=4]NVIDIA DLSS Frame Generation (2X / 3X / 4X) and Reflex for Assetto Corsa with Custom Shaders Patch[/size]
+Free and open source (GPL-3.0). Source code: [url=https://github.com/flopsy2iqq/ac-dlssg]github.com/flopsy2iqq/ac-dlssg[/url][/center]
+
+[quote][b]Please check before you download[/b]
+[list]
+[*]You need [b]Custom Shaders Patch 0.3.0-preview or newer[/b] with [b]NVIDIA DLSS selected as the upscaler[/b]. The free public CSP 0.2.11 has no DLSS and will not work. CSP preview builds are not public: CSP's author, x4fab, currently releases them to his Patreon supporters. This page does not link to them, and ac-dlssg is not affiliated with CSP.
+[*]You need an [b]NVIDIA GeForce RTX 30, 40 or 50[/b] GPU (laptop GPUs too). RTX 20, GTX, AMD and Intel GPUs are not supported.
+[*]The installer [b]downloads files while it installs[/b]: NVIDIA Streamline from NVIDIA, and on RTX 30 also the third-party dlssg_for_sm86 (install.bat -NoSpoof leaves it out). Details below.
+[/list][/quote]
+
+[size=5][b]What it does[/b][/size]
+Assetto Corsa renders with DirectX 11, but DLSS Frame Generation (DLSS-G) needs DirectX 12 (or Vulkan). ac-dlssg is a small bridge: the game keeps rendering in DirectX 11, and each finished frame is handed to DirectX 12, where DLSS-G adds 1, 2 or 3 generated frames after every real one. It takes depth and motion vectors from the DLSS upscaling CSP already runs, and the camera from a small CSP app the installer adds. The result is a much smoother picture, so you can afford heavier weather, traffic, shadows or resolution.
+[list]
+[*][b]2X, 3X and 4X[/b], switchable in game. 3X and 4X need RTX 50, or RTX 30 through dlssg_for_sm86; RTX 40 runs 2X.
+[*][b]NVIDIA Reflex[/b] low latency, on by itself.
+[*][b]The AC DLSS-G window[/b] in CSP's app bar, with its own icon there: a dark design with the ac-dlssg logo, an animated on/off switch, one 2X/3X/4X control, an FPS card with the real and on-screen fps, a video memory bar and a Details section. It says why frame generation is off when it is, and [b]Save as default[/b] shows "Saved" only when the bridge confirms the save.
+[*][b]Ctrl+F10[/b] switches it on and off for a quick comparison. It turns itself off in the pause and main menus.
+[*]Works [b]with or without ReShade[/b] (6.8 or newer, add-on build), and on [b]laptops[/b], even with 4 GB of video memory.
+[*][b]One-click installer[/b], and an uninstaller that restores every file. The uninstaller and the log collector stay in the game folder, so you can delete the extracted folder and the zip after the install.
+[/list]
+
+[size=5][b]Results[/b][/size]
+The numbers are [b]real fps → fps on screen with DLSS-G[/b]. Real fps come from CSP's own counter, on-screen fps from the NVIDIA overlay (Alt+R). The screenshots in the Images tab show both counters.
+[list]
+[*][b]Desktop:[/b] Intel Core i9-9900 (8 cores, 16 threads), GeForce RTX 3080 10 GB (driver 616.64), 16 GB DDR4-3600, Windows 10 22H2, CSP 0.3.0-preview622, ReShade 6.8.0, dlssg_for_sm86 0.3.5.
+2X: [b]62 → 124 fps[/b]. 4X: [b]41 → 160 fps[/b].
+[*][b]Laptop:[/b] Acer Nitro 5 AN515-57, GeForce RTX 3050 Ti Laptop 4 GB (driver 610.88), Core i5-11400H, 32 GB RAM, Windows 11 25H2, no ReShade, CSP preview634, dlssg_for_sm86 0.3.5.
+2X: [b]31 → 60 fps[/b]. 4X: [b]23 → 89 fps[/b].
+[/list]
+Our testers reported no ghosting and no stutter; your results depend on your GPU, settings and scene. Both test machines have RTX 30 GPUs, so these results use the third-party dlssg_for_sm86 (see below).
+[b]Good to know:[/b] frame generation makes motion smoother, but not the game's response: input latency follows the real frame rate, and Reflex keeps the extra latency small. It feels best from roughly 35-40 real fps.
+
+[size=5][b]Requirements[/b][/size]
+[list]
+[*][b]Assetto Corsa[/b] (Steam version).
+[*][b]Custom Shaders Patch 0.3.0-preview or newer[/b] (tested with preview622 and preview634), with CSP's [b]DLSS upscaling turned on[/b] in any quality mode, DLAA included. The public CSP 0.2.11 has no DLSS and does not work.
+[*][b]NVIDIA GeForce RTX 40 or RTX 50[/b]: supported directly.
+[*][b]NVIDIA GeForce RTX 30[/b], laptops included: works through the third-party dlssg_for_sm86, which the installer downloads by itself (see below). Needs driver R580 or newer.
+[*][b]Windows 10 version 2004 or newer, or Windows 11[/b], with [b]Hardware-accelerated GPU scheduling[/b] on: Settings > System > Display > Graphics > Change default graphics settings.
+[*][b]Smart App Control (Windows 11) must be off.[/b] It blocks the unsigned bridge DLL, so the installer stops when it is on.
+[*][b]Laptops:[/b] set acs.exe to "High performance" in the same Windows Graphics settings, so the game runs on the NVIDIA GPU.
+[*][b]Internet during the first install[/b] (about 276 MB, plus about 30 MB on RTX 30), unless you use the offline install below.
+[/list]
+
+[size=5][b]What is in the download, and what the installer downloads[/b][/size]
+The zip (about 450 KB) holds only this project's files: install.bat, ac-dlssg.dll, the CSP app, the PowerShell scripts, the tools folder and the docs. [b]It contains no NVIDIA files and no dlssg_for_sm86 files.[/b] They are not ours to share, so install.bat downloads them on your PC from their publishers:
+[list]
+[*][b]NVIDIA Streamline 2.14.1[/b] (always, about 276 MB): streamline-sdk-v2.14.1.zip from NVIDIA's official release, [url=https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1]github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1[/url]. Before anything is installed, the zip must have SHA-256 92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b and every DLL must carry NVIDIA's digital signature. The installer shows where NVIDIA's license files are; installing means you accept NVIDIA's licenses.
+[*][b]dlssg_for_sm86 0.3.5[/b] (only on RTX 30, about 30 MB; install.bat -NoSpoof leaves it out): exactly two files, version.dll and dlssg_sm86.ini, of commit 9621db5 of its author's GitHub repository sdli1995/dlssg_for_sm86. Before anything is installed, both files must match their pinned git hashes, and version.dll also its SHA-256 c3934a09399f022504227c72df0bf8c0de55f9a08880dddde898c5262cefa838. On RTX 40 and 50 it is never downloaded.
+[/list]
+Versions are pinned and there is no auto-update. An update from a new zip does not download Streamline (or dlssg_for_sm86) again when the installed copy is intact: the installed files must pass the same checks. Nothing is ever sent anywhere: no telemetry, no uploads, and ac-dlssg.dll itself makes no network connections.
+
+[size=5][b]RTX 30 and dlssg_for_sm86 (please read)[/b][/size]
+NVIDIA officially enables DLSS Frame Generation only on RTX 40 and newer. On RTX 30, ac-dlssg relies on [b]dlssg_for_sm86[/b] by sdli1995 (with Coldwood1026's work), a third-party project that lifts that restriction. It is credited here and is not affiliated with this project.
+[list]
+[*]It is [b]not made, supported or endorsed by NVIDIA[/b], and it is not part of this mod.
+[*]It embeds NVIDIA's nvngx_dlssg.dll, which is not relicensed, and its repository has no license file.
+[*]Using it on RTX 30 works around a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids for that license's licensees.
+[*]On RTX 30 the installer prints a notice about what it is and then [b]downloads it by itself[/b], without a question. It never replaces a version.dll that is already in your game folder, and the uninstaller (ac-dlssg\uninstall.bat in the game folder) removes it again.
+[/list]
+Whether to use it is your decision. If you do not want it, run [code]install.bat -NoSpoof[/code] (see "Running install.bat with an option" below): the mod is then installed without it, and on RTX 30 frame generation does not run. Running install.bat without the option later adds it.
+
+[size=5][b]Install (about 5 minutes)[/b][/size]
+[b]1.[/b] Close Assetto Corsa and the game session in Content Manager.
+[b]2.[/b] Download the Main file, right-click the zip and choose "Extract All".
+[b]3.[/b] Double-click [b]install.bat[/b]. It asks nothing: it finds the game through Steam, downloads what it needs and installs. On RTX 30 it also prints the dlssg_for_sm86 notice and downloads it (see above). If the game is under C:\Program Files (x86), Windows asks for administrator rights; click Yes and the install goes on in a new window. When it says it is done, press Enter. You can now delete the extracted folder and the zip: the uninstaller and the log collector are in the game folder, in ac-dlssg.
+[b]4.[/b] [b]Before you start the game, turn on DLSS in CSP.[/b] In Content Manager: Settings > Custom Shaders Patch > ADJUSTMENTS (under Graphics) > Upscaling: tick Active and set Method to NVIDIA DLSS. EXTRA FX must be active too.
+Using DLAA (Quality: DLAA (100%))? Then also open Settings > Assetto Corsa > Video, set MSAA to Off, untick FXAA and keep post-processing on, or moving things leave a ghost trail.
+[b]5.[/b] Start the game as usual and drive. Frame generation turns on by itself.
+To check it: press Ctrl+F10 to switch it off and on, or open the AC DLSS-G window. CSP's FPS counter shows only the real frames; the NVIDIA overlay (Alt+R) or RTSS shows the frames on screen.
+[b]Upgrading:[/b] run install.bat of the new version over the old install. It replaces the old files by itself, the uninstaller in the game folder included. It does not download Streamline again when the installed copy is intact.
+
+[b]No internet on the gaming PC?[/b] Download streamline-sdk-v2.14.1.zip from NVIDIA's release page (link above) anywhere. In the folder that contains install.bat, open the files folder, create a folder named deps in it and a folder named download inside deps, and put the zip there unchanged. install.bat then uses it, after the same checks. On RTX 30, dlssg_for_sm86 still needs internet; without internet, run install.bat -NoSpoof.
+[b]Running install.bat with an option:[/b] open the folder that contains install.bat, type cmd into the Explorer address bar and press Enter, then type for example install.bat -NoSpoof and press Enter. The same works for uninstall.bat -RemoveData in the game's ac-dlssg folder.
+
+[size=5][b]What it changes in the game folder[/b][/size]
+[list]
+[*][b]Without ReShade (standalone mode):[/b] the bridge becomes dxgi.dll next to acs.exe. If another mod's dxgi.dll is there, the installer stops and changes nothing.
+[*][b]With ReShade 6.8+ (ReShade mode):[/b] the bridge is added as ac-dlssg.dll, and two lines in ReShade.ini (EnableProxyLibrary and ProxyLibrary in its PROXY section) make ReShade load it.
+[*][b]The ac-dlssg folder[/b]: the Streamline DLLs with NVIDIA's license files (ac-dlssg\sl), the settings file ac-dlssg.ini, logs, the install journal, and uninstall.bat and collect-logs.bat with the scripts they run (ac-dlssg\scripts).
+[*][b]The apps\lua\AcDlssg folder[/b]: the small CSP app that passes the camera to the bridge and shows the AC DLSS-G window.
+[*][b]Only on RTX 30, unless you used -NoSpoof:[/b] version.dll and dlssg_sm86.ini of dlssg_for_sm86, next to acs.exe. When the game runs, dlssg_for_sm86 writes its logs to the dlssg_sm86 folder in the game folder and its data to %LOCALAPPDATA%\DlssgSm86 (uninstall.bat -RemoveData deletes them).
+[/list]
+Nothing else: no car, track, physics or CSP files are touched. Every change is recorded before it is made and rolled back if the install fails. Frame generation happens only on your own PC.
+
+[size=5][b]Uninstall[/b][/size]
+Close the game. Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local files), open the [b]ac-dlssg[/b] folder and double-click [b]uninstall.bat[/b]. It restores every file the installer changed and removes the bridge, the Streamline files, the CSP app and the dlssg_for_sm86 files it installed; a dlssg_for_sm86 you had before stays. After the Enter at its end it removes itself too. Your settings and logs stay in the game's ac-dlssg folder; you can delete that folder afterwards, or run [code]uninstall.bat -RemoveData[/code] instead, which removes them in the same run. Still on 1.0.0? It has no uninstaller in the game folder: run tools\uninstall.bat of the extracted 1.0.0 folder, or install 1.1.0 first.
+
+[size=5][b]If something goes wrong[/b][/size]
+[list]
+[*][b]The frame rate does not go up:[/b] check that DLSS is on in CSP (install step 4), then open the AC DLSS-G window. It says why frame generation is off.
+[*][b]Ghost trails with DLAA:[/b] turn off MSAA and FXAA (install step 4).
+[*][b]"Not enough video memory" in the window:[/b] lower CSP's texture quality, shadows or the render resolution. The bridge checks again by itself.
+[*][b]The game does not start or crashes:[/b] first collect the logs (next point), then run ac-dlssg\uninstall.bat in the game folder. The game is then back to how it was, and the log zip stays in ac-dlssg.
+[*][b]Reporting a problem:[/b] close the game, open the game folder (see Uninstall), open ac-dlssg and double-click [b]collect-logs.bat[/b] (do this before you uninstall). It only reads files and writes one zip into that ac-dlssg folder (its window prints the zip's full path), including a Windows system report (dxdiag), so look inside before you share it. Attach it to a [url=https://github.com/flopsy2iqq/ac-dlssg/issues]GitHub issue[/url], or describe the problem in the Bugs tab here.
+[/list]
+
+[size=5][b]Known limitations[/b][/size]
+[list]
+[*]CSP app windows and on-screen UI can show small artifacts in fast motion.
+[*]Not supported: VR, triple screens, HDR output, MSAA, EXCLUSIVE_FULLSCREEN=1, OLD_SWAPCHAIN=1 and letterboxed output.
+[*]Only CSP's DLSS upscaler works; CSP's FSR and XeSS do not provide what frame generation needs.
+[*]CSP's FPS counter shows only the real frames.
+[*]On a 4 GB card video memory is tight. If the game stutters, lower CSP's texture or shadow quality.
+[/list]
+
+[size=5][b]Source code, license and credits[/b][/size]
+ac-dlssg is free software under GPL-3.0 with the exceptions in EXCEPTIONS.md (both in the docs folder of the download). Source code of this version: [url=https://github.com/flopsy2iqq/ac-dlssg/tree/v1.1.0]github.com/flopsy2iqq/ac-dlssg/tree/v1.1.0[/url]. The same release is on [url=https://github.com/flopsy2iqq/ac-dlssg/releases/tag/v1.1.0]GitHub[/url], built by GitHub Actions with build provenance attestations.
+[b]Thanks to:[/b] sdli1995 and Coldwood1026 (dlssg_for_sm86), NVIDIA (Streamline, DLSS and Reflex), x4fab (Custom Shaders Patch), NIGos (dlss5-bridge, the approach for hooking CSP's DLSS call), alandtse (open-shaders) and the Community Shaders team (the frame generation design), crosire (ReShade), Kunos Simulazioni (Assetto Corsa), and our testers.
+Developed with AI coding tools (Claude Code), and this page was written with AI help. Tested on real hardware by the author and testers.
+[i]Not affiliated with or endorsed by NVIDIA, Kunos Simulazioni or the Custom Shaders Patch project. NVIDIA, GeForce RTX, DLSS and Reflex are trademarks of NVIDIA Corporation.[/i]
+
+[size=5][b]На русском[/b][/size]
+[spoiler]
+[b]Что это.[/b] ac-dlssg — бесплатный мод с открытым кодом. Он добавляет в Assetto Corsa с Custom Shaders Patch генерацию кадров NVIDIA DLSS Frame Generation (2X, 3X, 4X) и NVIDIA Reflex. Игра по-прежнему рисует в DirectX 11, а мод показывает кадры через DirectX 12, где DLSS-G добавляет сгенерированные кадры между настоящими.
+
+[b]Результаты[/b] (настоящие кадры → кадры на экране):
+[list]
+[*]ПК: Intel Core i9-9900 (8 ядер), RTX 3080 10 GB: 2X — 62 → 124, 4X — 41 → 160.
+[*]Ноутбук Acer Nitro 5, RTX 3050 Ti 4 GB: 2X — 31 → 60, 4X — 23 → 89.
+[/list]
+Оба компьютера с RTX 30, поэтому результаты получены со сторонним dlssg_for_sm86. Генерация делает картинку плавнее, но не ускоряет отклик: задержка зависит от настоящих кадров, а Reflex держит добавку небольшой.
+
+[b]Что нужно[/b]
+[list]
+[*]Custom Shaders Patch 0.3.0-preview или новее, в CSP включён апскейлер DLSS. Публичный CSP 0.2.11 не подходит: в нём нет DLSS. Preview-сборки CSP не публичные: автор CSP (x4fab) сейчас выпускает их для подписчиков на Patreon. Ссылок на них здесь нет.
+[*]Видеокарта NVIDIA RTX 30, 40 или 50 (ноутбучные тоже). RTX 20, GTX, AMD и Intel не поддерживаются.
+[*]Windows 10 2004 или новее, или Windows 11, с включённым «Планированием графического процессора с аппаратным ускорением». Smart App Control в Windows 11 должен быть выключен.
+[*]На ноутбуке: для acs.exe выберите «Высокая производительность» в настройках графики Windows.
+[*]Интернет при первой установке.
+[/list]
+
+[b]Что скачивает установщик.[/b] В архиве нет файлов NVIDIA и dlssg_for_sm86. install.bat скачивает на ваш ПК NVIDIA Streamline 2.14.1 с официального GitHub NVIDIA (около 276 МБ, проверяются SHA-256 и подпись NVIDIA), а на RTX 30 сам, без вопроса, ещё dlssg_for_sm86 0.3.5 из репозитория его автора (около 30 МБ, проверяются хеши; install.bat -NoSpoof ставит мод без него). Версии зафиксированы, автообновления нет, мод ничего никуда не отправляет. При обновлении Streamline заново не скачивается, если установленные файлы целы.
+
+[b]RTX 30 и dlssg_for_sm86.[/b] NVIDIA официально включает генерацию кадров только на RTX 40 и новее. На RTX 30 её включает сторонний dlssg_for_sm86 (автор sdli1995), он с нами не связан. Это не проект NVIDIA. Он встраивает nvngx_dlssg.dll от NVIDIA, а его использование обходит техническое ограничение, что раздел 4.d лицензии NVIDIA RTX SDKs запрещает её лицензиатам. Решать вам: на RTX 30 установщик печатает это предупреждение и скачивает его сам. Если он вам не нужен, запустите install.bat -NoSpoof: мод поставится без него, но тогда на RTX 30 генерация не работает.
+
+[b]Установка[/b]
+[b]1.[/b] Закройте игру.
+[b]2.[/b] Скачайте основной файл (Main) и распакуйте zip: правой кнопкой, «Извлечь всё».
+[b]3.[/b] Дважды щёлкните install.bat. Вопросов он не задаёт; на RTX 30 он покажет предупреждение про dlssg_for_sm86 и скачает его. Если Windows спросит разрешение, нажмите «Да». Дождитесь сообщения о готовности и нажмите Enter. После этого распакованную папку и zip можно удалить: программа удаления и сборщик логов лежат в папке игры, в ac-dlssg.
+[b]4.[/b] До запуска игры включите DLSS в CSP: Content Manager, Settings, Custom Shaders Patch, ADJUSTMENTS, Upscaling: отметьте Active и выберите Method: NVIDIA DLSS (EXTRA FX тоже должен быть включён). С DLAA ещё выключите MSAA и FXAA (Settings, Assetto Corsa, Video), иначе за движущимися объектами тянется шлейф.
+[b]5.[/b] Запускайте игру. Генерация включится сама. Ctrl+F10 включает и выключает её. Окно AC DLSS-G со своим значком есть на панели приложений CSP: тёмное, с логотипом, в нём переключатель, выбор 2X/3X/4X, FPS, полоса видеопамяти и раздел Details.
+[b]Обновление:[/b] запустите install.bat новой версии поверх старой. Streamline заново не скачивается, если установленные файлы целы.
+
+[b]Удаление.[/b] Закройте игру. Откройте папку игры (в Steam: правой кнопкой по Assetto Corsa, «Управление», «Просмотреть локальные файлы»), в ней папку ac-dlssg, и дважды щёлкните uninstall.bat. Все изменённые файлы вернутся как было. У вас ещё 1.0.0? Тогда запустите tools\uninstall.bat из её распакованной папки.
+[b]Проблемы.[/b] До удаления мода закройте игру, в папке игры откройте ac-dlssg и дважды щёлкните collect-logs.bat. Приложите zip, который появится там же, к issue на GitHub. Подробная инструкция на русском есть в архиве: docs\README.ru.md и docs\INSTALL.ru.md.
+[/spoiler]
+
+ac-dlssg is free. If you'd like to say thanks, you can do it on [url=https://ko-fi.com/flopsy2iq]Ko-fi[/url].
+=== END: Full description ===
+
+Language: English
+("This is a translation of another mod": not ticked. The Russian docs
+inside the zip do not make it a translation.)
+
+Tags (type and pick from the list, four in total):
+    Performance Optimization
+    Utilities for Players
+    AI-Generated Content
+    AI Media
+Adult tags: none.
+
+Extra options:
+    Author or team name: flopsy2iqq
+    Mod version: 1.1.0
+    Comments: Allow comments ON; Allow discussions optional
+    Bug tracker: Public (open)
+    Donations: PayPal donation button optional; donation message OFF
+    Community tagging: ON
+
+Download mirrors, "+ Add mirror". Each block goes into the field of the
+same name:
+=== BEGIN: Mirror Name ===
+GitHub
+=== END: Mirror Name ===
+=== BEGIN: Mirror URL ===
+https://github.com/flopsy2iqq/ac-dlssg/releases/tag/v1.1.0
+=== END: Mirror URL ===
+
+
+#####################################################################
+3. STEP "2 Media"
+#####################################################################
+
+Images, in this order (the first one is the Thumbnail). Files are in
+H:\code projects\ac-dlssg-bridge\docs\screenshots (the folder has more
+images; upload only these ten). The "title" goes into each image's title
+field.
+
+ 1. fg4x-1.jpg          (THUMBNAIL)  title: DLSS-G 4X on an RTX 3080: 41 real fps, 160 fps on screen
+ 2. fg2x-1.jpg                       title: DLSS-G 2X on an RTX 3080, cockpit: 62 real fps, 124 fps on screen
+ 3. fg4x-laptop-1.jpg                title: Laptop RTX 3050 Ti, DLSS-G 4X: 23 real fps, 89 fps on screen
+ 4. fg2x-laptop-1.jpg                title: Laptop RTX 3050 Ti, DLSS-G 2X: 31 real fps, 60 fps on screen
+ 5. fg4x-2.jpg                       title: DLSS-G 4X, tunnel: 40 real fps, 159 fps on screen
+ 6. fg4x-4.jpg                       title: DLSS-G 4X, cockpit in the rain: 40 real fps, 159 fps on screen
+ 7. fg2x-6.jpg                       title: DLSS-G 2X, wet road at sunset: 54 real fps, 108 fps on screen
+ 8. fg2x-3.jpg                       title: DLSS-G 2X at night: 53 real fps, 105 fps on screen
+ 9. fg2x-5.jpg                       title: DLSS-G 2X, cockpit in the rain: 46 real fps, 90 fps on screen
+10. fg2x-laptop-2.jpg                title: Laptop RTX 3050 Ti, DLSS-G 2X in a tunnel: 30 real fps, 57 fps on screen
+
+Not used: fg4x-3 (CSP 40.0, overlay 169), fg2x-2 (54.8, 112), fg2x-4
+(57.5, 116) and fg2x-7 (59.4, 119). In these the on-screen number is
+higher than the multiplier times the real number, because the two
+counters sample at different moments, and that reads as more than 2X or
+4X. The desktop screenshots are about 2560 x 1440 (16:9); the two laptop
+2X shots are 2210 x 1128 and 2192 x 1258. All are under 1 MB.
+The logo images in docs\logo are not used in the gallery.
+
+Header:
+    H:\code projects\ac-dlssg-bridge\docs\logo\nexus-header.png
+    (1300 x 372, the size Nexus stores headers in; made by
+    tools\brand\make_logo.py, function nexus_header())
+
+Videos: none.
+
+
+#####################################################################
+4. STEP "3 Files"
+#####################################################################
+
+File: ac-dlssg-1.1.0.zip (about 450 KB; check the size on the release
+page), downloaded from
+https://github.com/flopsy2iqq/ac-dlssg/releases/tag/v1.1.0
+
+File category: Main
+Display name:  ac-dlssg 1.1.0
+File version:  1.1.0
+
+File description, plain text. 249 of 255 characters:
+=== BEGIN: File description ===
+Release 1.1.0. Unpack and run install.bat; then the folder can be deleted. It downloads NVIDIA Streamline 2.14.1; on RTX 30 also third-party dlssg_for_sm86. Needs CSP 0.3.0-preview+ with DLSS on. Uninstall: ac-dlssg\uninstall.bat in the game folder.
+=== END: File description ===
+
+Mod managers: "Allow mod manager download" OFF,
+              "Set as default file for mod manager download" OFF.
+Miscellaneous: "Display requirements popup on download" ON (it becomes
+               active only once the requirements exist, so turn it on
+               after STEP "4 Requirements"),
+               "Update mod version to match this file's version" ON.
+
+Changelog, version 1.1.0 (one entry per line):
+=== BEGIN: Changelog 1.1.0 ===
+First release on Nexus Mods.
+New in 1.1.0: a new AC DLSS-G window, dark with the ac-dlssg logo: status pill, animated on/off switch, one 2X/3X/4X control, FPS card, video memory bar and a Details section. The settings and buttons do the same as before.
+New in 1.1.0: the window has its own icon in CSP's app bar.
+New in 1.1.0: Save as default shows "Saved" only when the bridge confirms that it wrote ac-dlssg.ini; a failed save is shown in red.
+New in 1.1.0: uninstall.bat and collect-logs.bat are installed into the game's ac-dlssg folder, so the extracted folder and the zip can be deleted after the install.
+New in 1.1.0: an update does not download Streamline (or dlssg_for_sm86) again when the installed copy is intact.
+New in 1.1.0: upgrading or uninstalling a ReShade-mode install in a game folder with non-ASCII letters in its path works.
+New in 1.1.0: the guides say to turn on DLSS in CSP before the first start, and to turn off MSAA and FXAA with DLAA.
+NVIDIA DLSS Frame Generation 2X, 3X and 4X for Assetto Corsa with Custom Shaders Patch, through NVIDIA Streamline 2.14.1 (3X and 4X on RTX 50, and on RTX 30 through dlssg_for_sm86; RTX 40 runs 2X).
+NVIDIA Reflex Low Latency and PCL latency markers.
+Frame generation turns on by itself once CSP's DLSS runs and stays off in the pause menu and the main menu; Ctrl+F10 switches it on and off.
+The AC DLSS-G window in CSP's app bar: switch, 2X/3X/4X buttons, real and on-screen fps, GPU time, video memory, the reason when frame generation is off, and Save as default.
+ReShade mode (the bridge loads as ReShade 6.8+ ProxyLibrary) and standalone mode (the bridge is dxgi.dll), picked automatically.
+Laptops with Optimus supported (NVIDIA GPU renders, integrated GPU drives the panel), Windows 11 25H2 included.
+Video memory guard: frame generation stays off, or falls back to 2X, when the video memory does not fit, with an adaptive reserve (fg_vram_headroom_mib=auto).
+Pass-through: when frame generation cannot run, the game runs as it does without the mod.
+Log file with versions, decisions and statistics in the game's ac-dlssg\logs folder.
+One-click installer: finds the game through Steam, asks for administrator rights only when needed, downloads NVIDIA Streamline 2.14.1 from NVIDIA's GitHub release and checks its SHA-256 and NVIDIA's signatures.
+On RTX 30 the installer prints a notice and downloads dlssg_for_sm86 0.3.5 from its author's repository by itself and checks its hashes; install.bat -NoSpoof installs without it.
+Journaled install, upgrade and uninstall; the uninstaller restores every file, and the log collector zips the logs for a bug report.
+The zip contains no NVIDIA files and no dlssg_for_sm86 files.
+=== END: Changelog 1.1.0 ===
+
+
+#####################################################################
+5. STEP "4 Requirements"
+#####################################################################
+
+Nexus Mods requirements: none.
+DLC: none.
+
+External resources (off-site), "+ Add requirement" three times. Each
+block goes into the field of the same name (Name, URL or Notes), without
+the block title. Notes are at most 100 characters each (the count is
+given).
+
+Requirement 1
+=== BEGIN: Requirement 1 Name ===
+Custom Shaders Patch 0.3.0-preview or newer
+=== END: Requirement 1 Name ===
+=== BEGIN: Requirement 1 URL ===
+https://acstuff.club/patch/
+=== END: Requirement 1 URL ===
+=== BEGIN: Requirement 1 Notes ===
+Select DLSS as upscaler before you start. The public CSP 0.2.11 has no DLSS and won't work.
+=== END: Requirement 1 Notes ===
+(Notes: 91 characters.)
+
+Requirement 2
+=== BEGIN: Requirement 2 Name ===
+NVIDIA GeForce RTX 30, 40 or 50 GPU with a current driver
+=== END: Requirement 2 Name ===
+=== BEGIN: Requirement 2 URL ===
+https://www.nvidia.com/en-us/drivers/
+=== END: Requirement 2 URL ===
+=== BEGIN: Requirement 2 Notes ===
+RTX 30: driver R580+ and third-party dlssg_for_sm86, which install.bat downloads (see description).
+=== END: Requirement 2 Notes ===
+(Notes: 99 characters.)
+
+Requirement 3
+=== BEGIN: Requirement 3 Name ===
+NVIDIA Streamline 2.14.1
+=== END: Requirement 3 Name ===
+=== BEGIN: Requirement 3 URL ===
+https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.1
+=== END: Requirement 3 URL ===
+=== BEGIN: Requirement 3 Notes ===
+Downloaded by install.bat from NVIDIA and checked. No manual step. Not included in the zip.
+=== END: Requirement 3 Notes ===
+(Notes: 91 characters.)
+
+(No requirement entry links to Patreon or to dlssg_for_sm86. See the
+Russian part, "ПОЧЕМУ", points 1 and 3.)
+
+Then go back to STEP "3 Files", open the zip's file options, turn on
+"Display requirements popup on download" and Save.
+
+
+#####################################################################
+6. STEP "5 Permissions"
+#####################################################################
+
+"Does your mod include content created by others?": the option that means
+yes (not "No (all content is mine)"; the other labels were not seen).
+
+Credits (File credits):
+=== BEGIN: Credits ===
+sdli1995 and Coldwood1026: dlssg_for_sm86, DLSS Frame Generation on RTX 30 (the installer downloads it from its author's repository; not included, not affiliated)
+NVIDIA: Streamline SDK, DLSS Frame Generation, Reflex and NVAPI (runtime files downloaded from NVIDIA's GitHub release, not included; headers used under MIT)
+x4fab: Custom Shaders Patch
+NIGos: dlss5-bridge (MIT), the approach for hooking CSP's DLSS call
+alandtse: open-shaders, the frame generation design and the text of the GPL exceptions
+doodlum and the Community Shaders team: design reference
+crosire: ReShade
+Kunos Simulazioni: Assetto Corsa
+Our testers, including the owner of the Acer Nitro 5 test laptop
+=== END: Credits ===
+
+Permission settings: "Write your own (custom)". Paste:
+=== BEGIN: Permissions ===
+ac-dlssg is free software, licensed under the GNU General Public License version 3 (GPL-3.0) with the additional permissions in EXCEPTIONS.md. Both files are in the docs folder of the download:
+License: https://github.com/flopsy2iqq/ac-dlssg/blob/v1.1.0/LICENSE
+Exceptions: https://github.com/flopsy2iqq/ac-dlssg/blob/v1.1.0/EXCEPTIONS.md
+
+Under these terms you may re-upload, modify, convert and reuse ac-dlssg, including in mods and files that are sold or earn Donation Points, as long as you follow the GPL: keep the license and the notices, and make the source code of your version available.
+
+Source code of this version: https://github.com/flopsy2iqq/ac-dlssg/tree/v1.1.0
+
+Third-party material: the download contains compiled-in MIT-licensed headers from NVIDIA (Streamline SDK 2.14.1 and NVAPI) and MIT-licensed code adapted from NIGos/dlss5-bridge; see docs\THIRD_PARTY_NOTICES.txt. It contains no NVIDIA binaries and no dlssg_for_sm86 files. The installer downloads NVIDIA Streamline from NVIDIA's GitHub release and, on RTX 30 (unless install.bat -NoSpoof is used), dlssg_for_sm86 from its author's repository. Those files keep their own licenses, which this permission does not cover.
+=== END: Permissions ===
+
+If the form has no custom text, pick "Pick your own" and choose, in every
+row, the option that allows it with credit (not an option such as "can use
+assets without permission or credit": the GPL requires keeping the
+notices):
+    Upload permission:            allowed, with credit
+    Modification permission:      allowed, with credit
+    Conversion permission:        allowed, with credit
+    Asset use permission:         allowed, with credit
+    Asset use in sold mods:       allowed
+    Asset use in DP-earning mods: allowed
+If that form has a text field for author notes (its name was not
+confirmed), paste the Permissions text above into it.
