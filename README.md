@@ -84,6 +84,7 @@ Double-click `tools\uninstall.bat`. It restores every file the installer changed
 
 - **The game starts but the frame rate does not change.** Look at `<game>\ac-dlssg\logs\bridge.log`. The line `fg: DLSS-G on` means frame generation runs. A line `fg: frame without DLSS-G: <reason>`, or `DLSS-G is not supported on this adapter (...)`, says why it does not.
 - **"Not enough video memory" in the window.** Frame generation needs the memory the window names. Lower CSP's texture quality, shadows or the render resolution; the bridge checks again every 60 frames and turns frame generation on when it fits.
+- **"Bridge and window versions differ" in the window.** The bridge and the AC DLSS-G app come from different releases. Close the game and run `install.bat` of one release again.
 - **The game crashes or does not start.** Run `tools\uninstall.bat`; the game is then back to how it was.
 - **Reporting a problem:** double-click `tools\collect-logs.bat` after the game is closed. It only reads files and writes one zip into the `tools` folder. Attach that zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
 
