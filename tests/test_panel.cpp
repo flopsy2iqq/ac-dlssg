@@ -421,6 +421,30 @@ TEST(LuaApp_SaveButtonShowsOnlyTheResultOfTheLatestSave) {
     CHECK(guard < body.find("if flash > 0 then"));
 }
 
+// The opened "Details" is a child window whose height eases; the mouse wheel
+// over it must still scroll the app's window. CSP's SDK says of
+// NoScrollWithMouse: "On child window, mouse wheel will be forwarded to the
+// parent unless NoScrollbar is also set", so the child has NoScrollWithMouse
+// without NoScrollbar, and its scrollbar (there while the height is below the
+// content's) is made zero wide around ui.beginChild instead.
+TEST(LuaApp_TheDetailsChildForwardsTheMouseWheel) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    std::smatch m;
+    REQUIRE(std::regex_search(lua, m, std::regex(R"(childFlags = ([^\n]*))")));
+    const std::string flags = m[1];
+    CHECK(flags.find("ui.WindowFlags.NoScrollWithMouse") != std::string::npos);
+    CHECK(flags.find("ui.WindowFlags.NoScrollbar") == std::string::npos);
+    const std::string body = acdb_test::LuaFunctionBody(lua, "detailsSection");
+    REQUIRE(!body.empty());
+    const size_t push = body.find("ui.pushStyleVar(ui.StyleVar.ScrollbarSize, 0)");
+    const size_t begin = body.find("ui.beginChild(ID.detailsChild, CHILD_SIZE, false, K.childFlags)");
+    const size_t pop = body.find("ui.popStyleVar(1)");
+    const size_t content = body.find("pcall(detailsContent)");
+    CHECK(push != std::string::npos && begin != std::string::npos && pop != std::string::npos);
+    CHECK(push < begin && begin < pop && pop < content);
+}
+
 // No Lua interpreter runs in these tests; a block that is never closed (or
 // closed twice) is the easiest mistake to make in the app, so the block
 // keywords are counted: every function, if and do has its end, every

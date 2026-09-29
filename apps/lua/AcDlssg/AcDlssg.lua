@@ -651,7 +651,9 @@ local SIZE, CHILD_SIZE = vec2(0, 0), vec2(0, 0)
 local K = {
   alignStart = ui.Alignment.Start, alignCenter = ui.Alignment.Center, alignEnd = ui.Alignment.End,
   corners = ui.CornerFlags.All, buttonNone = ui.ButtonFlags.None, buttonDisabled = ui.ButtonFlags.Disabled,
-  childFlags = bit.bor(ui.WindowFlags.NoScrollbar, ui.WindowFlags.NoScrollWithMouse, ui.WindowFlags.NoBackground),
+  -- The details' child: the wheel goes to the window (the SDK: "forwarded to
+  -- the parent unless NoScrollbar is also set", so no NoScrollbar here).
+  childFlags = bit.bor(ui.WindowFlags.NoScrollWithMouse, ui.WindowFlags.NoBackground),
 }
 
 -- Layout, in pixels; gap is added between blocks on top of ImGui's spacing.
@@ -1139,8 +1141,13 @@ local function detailsSection(controls)
     if h >= 1 then
       ui.setCursorX(x + 4)
       CHILD_SIZE.x, CHILD_SIZE.y = lw - 4, h
-      -- pcall: a failing row cannot leave the child open.
-      if ui.beginChild(ID.detailsChild, CHILD_SIZE, false, K.childFlags) then
+      -- While it opens, the child is lower than its content and would show a
+      -- scrollbar: a zero-wide one, for the child only (ImGui sizes and draws
+      -- it in beginChild). pcall: a failing row cannot leave the child open.
+      ui.pushStyleVar(ui.StyleVar.ScrollbarSize, 0)
+      local visible = ui.beginChild(ID.detailsChild, CHILD_SIZE, false, K.childFlags)
+      ui.popStyleVar(1)
+      if visible then
         local ok, err = pcall(detailsContent)
         if not ok and not a.detailsFailureLogged then
           a.detailsFailureLogged = true
