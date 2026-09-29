@@ -534,20 +534,91 @@ std::string IdentAt(const std::string& s, size_t at) {
     return s.substr(at, e - at);
 }
 
+// How many arguments a ui function takes: at most max (-1: any number, as
+// with "...") and at least min, the parameters up to the last one whose
+// ---@param type is neither optional ("type?") nor nil-able (0 when an
+// ---@overload may take fewer).
+struct Arity {
+    int min = 0;
+    int max = -1;
+};
+
+// The names in a parameter list "a, b, ..." (the text between the parentheses).
+std::vector<std::string> ParamNames(const std::string& list) {
+    std::vector<std::string> names;
+    std::string cur;
+    for (char c : list + ",") {
+        if (c != ',') {
+            cur.push_back(c);
+            continue;
+        }
+        const size_t b = cur.find_first_not_of(" \t");
+        if (b != std::string::npos) names.push_back(cur.substr(b, cur.find_last_not_of(" \t") - b + 1));
+        cur.clear();
+    }
+    return names;
+}
+
+// The text between the '(' at open and the next ')', or empty.
+std::string ParenList(const std::string& line, size_t open) {
+    if (open == std::string::npos) return {};
+    const size_t close = line.find(')', open);
+    return close == std::string::npos ? std::string() : line.substr(open + 1, close - open - 1);
+}
+
+// The ---@param and ---@overload lines of the doc comment above a declaration.
+struct DocComment {
+    std::map<std::string, bool> optional;  // parameter name -> optional
+    int overloadMax = -1;                  // the most parameters an overload takes
+    bool overload = false;
+};
+
+Arity ArityOf(const std::vector<std::string>& params, const DocComment& doc) {
+    Arity a;
+    for (const auto& p : params)
+        if (p == "...") return a;
+    a.max = std::max(static_cast<int>(params.size()), doc.overloadMax);
+    if (doc.overload) return a;
+    for (size_t i = 0; i < params.size(); ++i) {
+        const auto found = doc.optional.find(params[i]);
+        if (found != doc.optional.end() && !found->second) a.min = static_cast<int>(i) + 1;
+    }
+    return a;
+}
+
 // What lib.lua declares under ui: functions ("function ui.name(" and
-// "ui.name = function ..."), and enums ("ui.Name = {" with one member per line).
+// "ui.name = function (") with their arity, and enums ("ui.Name = {" with one
+// member per line).
 struct SdkUi {
     std::set<std::string> functions;
+    std::map<std::string, Arity> arity;
     std::map<std::string, std::set<std::string>> enums;
 };
 
 SdkUi ParseSdkUi(const std::string& lib) {
+    static const std::regex param(R"(^---@param\s+([A-Za-z_][A-Za-z0-9_]*)\s+(\S+))");
     SdkUi out;
     std::istringstream in(lib);
     std::string line;
     std::string openEnum;
+    DocComment doc;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("---", 0) == 0) {
+            std::smatch m;
+            if (std::regex_search(line, m, param)) {
+                const std::string type = m[2];
+                doc.optional[m[1]] = type.back() == '?' || type.find("nil") != std::string::npos;
+            } else if (line.rfind("---@overload fun(", 0) == 0) {
+                doc.overload = true;
+                doc.overloadMax =
+                    std::max(doc.overloadMax, static_cast<int>(ParamNames(ParenList(line, line.find('('))).size()));
+            }
+            continue;
+        }
+        // Any other line ends the doc comment; it belongs to this line only.
+        const DocComment above = std::move(doc);
+        doc = DocComment();
         if (!openEnum.empty()) {
             if (line.rfind('}', 0) == 0) {
                 openEnum.clear();
@@ -562,7 +633,10 @@ SdkUi ParseSdkUi(const std::string& lib) {
         }
         if (line.rfind("function ui.", 0) == 0) {
             const std::string name = IdentAt(line, 12);
-            if (!name.empty() && line.size() > 12 + name.size() && line[12 + name.size()] == '(') out.functions.insert(name);
+            if (!name.empty() && line.size() > 12 + name.size() && line[12 + name.size()] == '(') {
+                out.functions.insert(name);
+                out.arity[name] = ArityOf(ParamNames(ParenList(line, 12 + name.size())), above);
+            }
         } else if (line.rfind("ui.", 0) == 0) {
             const std::string name = IdentAt(line, 3);
             size_t at = line.find_first_not_of(' ', 3 + name.size());
@@ -573,8 +647,40 @@ SdkUi ParseSdkUi(const std::string& lib) {
                 out.enums[name];
             } else {
                 out.functions.insert(name);
+                if (line.compare(at, 8, "function") == 0)
+                    out.arity[name] = ArityOf(ParamNames(ParenList(line, line.find('(', at))), above);
+                else
+                    out.arity[name] = Arity();
             }
         }
+    }
+    return out;
+}
+
+// Each call "ui.name(...)" in code (LuaCodeOnly with a string stand-in, so a
+// string argument still counts) with the number of its arguments: the commas
+// outside nested (), {} and [] plus one, or 0 for "()".
+std::vector<std::pair<std::string, int>> UiCallArgCounts(const std::string& code) {
+    static const std::regex call(R"((?:^|[^A-Za-z0-9_.:])ui\.([A-Za-z_][A-Za-z0-9_]*)\s*\()");
+    std::vector<std::pair<std::string, int>> out;
+    for (auto it = std::sregex_iterator(code.begin(), code.end(), call); it != std::sregex_iterator(); ++it) {
+        size_t i = static_cast<size_t>(it->position() + it->length());  // after '('
+        int depth = 0;
+        int commas = 0;
+        bool any = false;
+        for (; i < code.size(); ++i) {
+            const char c = code[i];
+            if (c == '(' || c == '{' || c == '[') {
+                ++depth;
+            } else if (c == ')' || c == '}' || c == ']') {
+                if (depth == 0) break;
+                --depth;
+            } else if (c == ',' && depth == 0) {
+                ++commas;
+            }
+            if (!std::isspace(static_cast<unsigned char>(c))) any = true;
+        }
+        out.emplace_back((*it)[1], any ? commas + 1 : 0);
     }
     return out;
 }
@@ -621,13 +727,44 @@ TEST(LuaApp_EveryUiFunctionAndEnumTheAppUsesIsInTheCspSdk) {
     }
     CHECK(members >= 10);
 
+    // Every call passes no more arguments than the function declares, and at
+    // least its required ones: a colour, position or flag in the wrong place
+    // usually shows up as one argument too many or too few.
+    const std::vector<std::pair<std::string, int>> calls = UiCallArgCounts(acdb_test::LuaCodeOnly(lua, 's'));
+    CHECK(calls.size() >= 60);
+    for (const auto& [name, args] : calls) {
+        const auto found = sdk.arity.find(name);
+        if (found == sdk.arity.end()) continue;  // reported above
+        const Arity& a = found->second;
+        const bool ok = args >= a.min && (a.max < 0 || args <= a.max);
+        if (!ok) std::printf("  ui.%s called with %d arguments; the SDK takes %d to %d\n", name.c_str(), args, a.min, a.max);
+        CHECK(ok);
+    }
+    CHECK(sdk.arity.at("drawRectFilled").min == 3 && sdk.arity.at("drawRectFilled").max == 5);
+    CHECK(sdk.arity.at("dwriteDrawTextClipped").min == 4 && sdk.arity.at("dwriteDrawTextClipped").max == 8);
+
     // The parsing itself.
     const SdkUi sample = ParseSdkUi(
         "function ui.text(text) end\r\nui.Font = {\r\n  Small = 1, ---@type ui.Font\r\n}\r\n"
-        "ui.DWriteFont = function (name, dir) end\r\nfunction ui.DWriteFont.Weight(x) end\r\n--ui.nope = 1\r\n");
+        "ui.DWriteFont = function (name, dir) end\r\nfunction ui.DWriteFont.Weight(x) end\r\n--ui.nope = 1\r\n"
+        "---@param p1 vec2\r\n---@param color rgbm\r\n---@param rounding number? @Default value: 0.\r\n"
+        "function ui.box(p1, color, rounding) end\r\n---@param a string\r\nfunction ui.any(a, ...) end\r\n"
+        "---@overload fun(a: string)\r\n---@param a string\r\n---@param b number\r\nfunction ui.over(a, b) end\r\n");
     CHECK(sample.functions.count("text") == 1 && sample.functions.count("DWriteFont") == 1);
-    CHECK(sample.functions.count("nope") == 0 && sample.functions.size() == 2);
+    CHECK(sample.functions.count("nope") == 0 && sample.functions.size() == 5);
     CHECK(sample.enums.count("Font") == 1 && sample.enums.at("Font").count("Small") == 1);
+    CHECK(sample.arity.at("text").min == 0 && sample.arity.at("text").max == 1);  // no ---@param: optional
+    CHECK(sample.arity.at("DWriteFont").max == 2);
+    CHECK(sample.arity.at("box").min == 2 && sample.arity.at("box").max == 3);
+    CHECK(sample.arity.at("any").max == -1);
+    CHECK(sample.arity.at("over").min == 0 && sample.arity.at("over").max == 2);
+    const std::vector<std::pair<std::string, int>> counted = UiCallArgCounts(acdb_test::LuaCodeOnly(
+        "ui.box(P1, f(a, b), {1, 2})\nui.text('a, b')\nui.endChild()\nx.ui.no(1)\nui.box(P1, c, 2, K.corners)\n", 's'));
+    REQUIRE(counted.size() == 4u);
+    CHECK(counted[0] == std::make_pair(std::string("box"), 3));
+    CHECK(counted[1] == std::make_pair(std::string("text"), 1));
+    CHECK(counted[2] == std::make_pair(std::string("endChild"), 0));
+    CHECK(counted[3] == std::make_pair(std::string("box"), 4));  // one too many for box: the check above fails it
 }
 
 // One visible CSP app window titled "AC DLSS-G"; LAZY = NONE keeps the
