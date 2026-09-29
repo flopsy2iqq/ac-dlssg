@@ -19,8 +19,18 @@ section of a version as its GitHub release notes.
 - The window has its own icon in CSP's app bar.
 - **Save as default** shows "Saved" only when the bridge confirms that it wrote `ac-dlssg.ini`. A failed save is shown in red under the button.
 - The mouse wheel over the open Details section scrolls the window.
+- **The unpacked folder is not needed after the install.** The installer puts `uninstall.bat` and `collect-logs.bat` into the game folder's `ac-dlssg` folder, with the scripts they run in `ac-dlssg\scripts`, so the unpacked folder and the zip can be deleted. They are recorded in the install manifest like every other file (schema 5): an upgrade replaces them, a failed install rolls them back, and an upgrade over 1.0.0 adds them.
+- The `uninstall.bat` in the game folder works on that game folder without looking up Steam, takes the same options (`-RemoveData`), asks for administrator rights when the game folder needs them, and after the Enter at its end removes itself, `collect-logs.bat` and `scripts`. With `-RemoveData` the whole `ac-dlssg` folder goes; without it the logs and `ac-dlssg.ini` stay.
+- The `collect-logs.bat` in the game folder writes its zip into `ac-dlssg` and prints the zip's full path. The system report no longer leaves a folder next to the scripts.
+- **An update does not download Streamline again.** When each Streamline 2.14.1 file in `ac-dlssg\sl` matches its pinned SHA-256 and every DLL carries NVIDIA's signature, the installer uses them and says "Streamline 2.14.1 is already installed and verified; not downloaded again". A changed or missing file means a download as before. dlssg_for_sm86 on RTX 30 works the same way; a `version.dll` that an earlier install put there and that was changed since is downloaded again and replaced.
+
+### Fixed
+
+- Upgrading or uninstalling a ReShade-mode install in a game folder whose path has Cyrillic or other non-ASCII letters works: the install manifest is now read as UTF-8. Before, the upgrade refused because "the first install edited" another ReShade.ini, and the uninstall because "ReShade would still load ac-dlssg.dll".
 
 ### Documentation
+
+- The install guides and READMEs say that the unpacked folder can be deleted after the install, that the uninstaller and the log collector are in the game folder's `ac-dlssg` folder (in Steam: right-click Assetto Corsa, Manage, Browse local files), and that an update does not download Streamline again.
 
 - The logo, a README header with it, and a square cover for the Steam guide (`docs/logo`, drawn by `tools/brand/make_logo.py`).
 - The install guides now say to turn on DLSS in CSP before the first start. With DLAA they also say to turn off MSAA and FXAA in the game's video settings, since either of them with DLAA leaves a ghost trail behind moving things.

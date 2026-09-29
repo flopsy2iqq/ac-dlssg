@@ -18,6 +18,7 @@ It takes about 5 minutes.
 4. **Double-click `install.bat`.**
    - If Windows asks "Do you want to allow this app to make changes?", click **Yes**.
    - Wait until the window says it is done, then press **Enter**.
+   - Done. You can now delete the unpacked folder and the zip. Everything the mod needs, its uninstaller too, is in the game folder.
 5. **Turn on DLSS before you start the game.** Frame generation needs it.
    - In Content Manager, open Settings, then Custom Shaders Patch, and click **ADJUSTMENTS** (under Graphics) in the list on the left.
    - Under **Upscaling**, tick **Active** and set **Method** to **NVIDIA DLSS**. **EXTRA FX** (also under Graphics) must be active too.
@@ -35,9 +36,17 @@ It takes about 5 minutes.
 - **No FPS gain:** check that DLSS is on (step 5), then open the **AC DLSS-G** window. It says why frame generation is off.
 - **Ghosting** (a trail behind moving things) **with DLAA:** turn off MSAA and FXAA (step 5).
 - **On a laptop:** in Windows Settings, open System, then Display, then Graphics, and set `acs.exe` to **High performance**.
-- **The game does not start:** in the unpacked folder, open `tools` and double-click **`uninstall.bat`**. The game is back to how it was.
-- **Ask for help:** close the game, double-click `tools\collect-logs.bat`, and attach the zip it makes to a [new issue](https://github.com/flopsy2iqq/ac-dlssg/issues/new).
+- **The game does not start:** uninstall the mod (see [Uninstall](#uninstall)). The game is back to how it was.
+- **Ask for help:** close the game, open the game folder (see [Uninstall](#uninstall)), open `ac-dlssg` and double-click **`collect-logs.bat`**. Attach the zip it makes next to it to a [new issue](https://github.com/flopsy2iqq/ac-dlssg/issues/new).
+
+## Update
+
+Download the new zip, unpack it and double-click its `install.bat`, as above. It replaces the old version by itself. It does not download NVIDIA's files again while the ones in the game folder are intact.
 
 ## Uninstall
 
-Double-click `tools\uninstall.bat` in the unpacked folder.
+1. **Open the game folder.** In Steam, right-click **Assetto Corsa**, choose **Manage**, then **Browse local files**.
+2. **Open the `ac-dlssg` folder** and double-click **`uninstall.bat`**.
+3. Wait until the window says it is done, then press **Enter**. The uninstaller removes itself too.
+
+Your settings and logs stay in `ac-dlssg`. To delete them as well, run `uninstall.bat -RemoveData` from a command prompt in that folder.
