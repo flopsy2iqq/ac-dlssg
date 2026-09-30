@@ -166,6 +166,7 @@ Section title: Links and credits
 [list]
 [*]The mod, source code and releases: [url=https://github.com/flopsy2iqq/ac-dlssg]github.com/flopsy2iqq/ac-dlssg[/url]
 [*]Found a bug? Open an issue on GitHub and attach the zip from collect-logs.bat in the game folder's ac-dlssg folder.
+[*]The mod on Nexus Mods: [url=https://www.nexusmods.com/assettocorsa/mods/124]nexusmods.com/assettocorsa/mods/124[/url]
 [*]Support the author (optional): [url=https://ko-fi.com/flopsy2iq]ko-fi.com/flopsy2iq[/url]
 [/list]
 
