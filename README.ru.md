@@ -4,7 +4,7 @@
 
 [![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Установка](https://img.shields.io/badge/Установка-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.ru.md) [![Nexus Mods](https://img.shields.io/badge/Nexus_Mods-D98F40?style=for-the-badge)](https://www.nexusmods.com/assettocorsa/mods/124) [![Поддержать на Ko-fi](https://img.shields.io/badge/Поддержать-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
 
-[![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![Нужен тестер RTX 20](https://img.shields.io/badge/нужен_тестер-RTX_20-orange)](#ищем-тестера-с-rtx-20) [![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 Генерация кадров NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X и 4X) для **Assetto Corsa** с **Custom Shaders Patch**.
 
@@ -65,7 +65,7 @@ DLSS-G 2X в Assetto Corsa с CSP:
 - **Видеокарта NVIDIA RTX:**
   - RTX 40 и RTX 50 поддерживают DLSS-G сами.
   - RTX 30, в том числе ноутбучные вроде 3050 Ti, требует сторонний [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). Ставить его руками не нужно: на RTX 30 установщик сам скачивает закреплённую версию 0.3.5 из репозитория автора, проверяет её хеши и кладёт рядом с `acs.exe`. См. [Про dlssg_for_sm86](#про-dlssg_for_sm86). Нужен драйвер NVIDIA R580 или новее.
-  - RTX 20 этот проект не поддерживает.
+  - RTX 20 пока не поддерживается. Ищем тестера, чтобы это исправить: см. [Ищем тестера с RTX 20](#ищем-тестера-с-rtx-20).
 - **Windows 10 2004+ или Windows 11.** Аппаратное планирование GPU должно быть включено: Параметры > Система > Дисплей > Графика > Изменить стандартные параметры графики.
 - **Ноутбук:** там же, в настройках графики, поставьте `acs.exe` в «Высокая производительность», чтобы игра шла на NVIDIA.
 - **Интернет при первой установке.** Установщик скачивает NVIDIA Streamline 2.14.1 (около 276 МБ) с GitHub NVIDIA и проверяет хеш и подписи NVIDIA, а на RTX 30 ещё dlssg_for_sm86 (около 30 МБ). При обновлении он их заново не скачивает, пока установленные файлы целы. Ни файлов NVIDIA, ни dlssg_for_sm86 в проекте нет.
@@ -115,6 +115,16 @@ DLSS-G 2X в Assetto Corsa с CSP:
 - Окна приложений CSP и интерфейс на экране при быстром движении могут давать мелкие артефакты. Буфер без интерфейса запланирован.
 - Не поддерживаются: VR, тройные мониторы, HDR, MSAA, `EXCLUSIVE_FULLSCREEN=1`, вывод с чёрными полосами.
 - Другие апскейлеры CSP (FSR, XeSS) не дают данных, которые нужны генерации кадров.
+
+## Ищем тестера с RTX 20
+
+Хотим, чтобы DLSS-G заработала и на картах RTX 20: 2060, 2070, 2080, в том числе Super, Ti и ноутбучные. В dlssg_for_sm86 уже есть работа Coldwood1026 для RTX 20, но на RTX 20 ac-dlssg ещё никто не проверял, поэтому установщик их пока не поддерживает.
+
+Если у вас такая карта, вы можете помочь:
+
+- **Что нужно:** видеокарта RTX 20, Windows 10 (2004 или новее) или 11 с включённым аппаратным планированием GPU, Assetto Corsa с preview-версией CSP 0.3.0 и включённым DLSS, драйвер NVIDIA R580 или новее.
+- **Что делать:** ставить тестовые сборки, которые мы пришлём, кататься 10–15 минут и присылать zip из `ac-dlssg\collect-logs.bat` с парой слов о том, как всё работало. Одна сборка занимает около получаса, а `ac-dlssg\uninstall.bat` возвращает папку игры как было.
+- **Как откликнуться:** [создайте issue «RTX 20 tester»](https://github.com/flopsy2iqq/ac-dlssg/issues/new?title=RTX%2020%20tester&labels=help%20wanted&body=GPU%3A%20%0ADriver%3A%20%0AWindows%3A%20%0ACSP%20version%3A%20%0ALaptop%20or%20desktop%3A%20) и укажите видеокарту, драйвер, Windows и версию CSP.
 
 ## Про dlssg_for_sm86
 
