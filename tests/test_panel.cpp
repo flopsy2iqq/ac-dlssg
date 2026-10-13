@@ -468,6 +468,41 @@ TEST(LuaApp_BlockKeywordsBalance) {
     CHECK_EQ(acdb_test::LuaKeywordCount(sampleCode, "function"), 0u);
 }
 
+// Older CSP builds lack some ac.StateSim fields (0.3.0-preview445 has no
+// renderSize), and reading a missing field of an FFI struct raises an error.
+// That error once stopped the camera writer for good ("camera: not written",
+// GitHub issue 1). So the writer probes the optional fields once and reads
+// each one in open() and fill() only behind its simHas check.
+TEST(LuaApp_CameraWriterReadsOptionalSimFieldsOnlyBehindAProbe) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string code = acdb_test::LuaCodeOnly(lua);
+    std::smatch m;
+    REQUIRE(std::regex_search(lua, m, std::regex(R"(local OPTIONAL_SIM_FIELDS = \{([^}]*)\})")));
+    const std::string listed = m[1];
+    const char* const optional[] = {"renderSize",      "originShift",    "cameraJumped", "driveableCameraMode",
+                                    "carCameraIndex",  "trackCamerasSet", "isTripleMode", "isVRConnected",
+                                    "cameraClipNear",  "cameraClipFar"};
+    const std::string body = acdb_test::LuaFunctionBody(lua, "open") + acdb_test::LuaFunctionBody(lua, "fill");
+    REQUIRE(!body.empty());
+    auto count = [](const std::string& s, const std::string& what) {
+        size_t n = 0;
+        for (size_t at = s.find(what); at != std::string::npos; at = s.find(what, at + what.size())) ++n;
+        return n;
+    };
+    for (const char* name : optional) {
+        const std::string field = name;
+        const bool isListed = listed.find("'" + field + "'") != std::string::npos;
+        if (!isListed) std::printf("  %s is not in OPTIONAL_SIM_FIELDS\n", name);
+        CHECK(isListed);
+        const size_t reads = count(body, "sim." + field);
+        const size_t guarded = count(body, "simHas." + field + " and sim." + field);
+        if (reads != guarded) std::printf("  sim.%s: %zu reads, %zu behind simHas\n", name, reads, guarded);
+        CHECK_EQ(reads, guarded);
+    }
+    CHECK(code.find("pcall(function () return object[name] end)") != std::string::npos);
+}
+
 namespace {
 
 // The locals the main chunk declares at its top level: LuaJIT refuses a

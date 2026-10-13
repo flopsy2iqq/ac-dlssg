@@ -70,9 +70,33 @@ local simPos, simLook, simUp, simSide, simOrigin, simRenderSize
 local mmf, mPos, mFwd, mUp, mSide, mOrigin
 local frameCounter = 0
 
+-- Fields of ac.StateSim that older CSP builds lack: 0.3.0-preview445, for
+-- example, has no renderSize. Reading a missing field of an FFI struct raises
+-- an error, so each of these is probed once here, and fill() uses a default
+-- for the ones that are absent instead of failing every frame.
+local function hasField(object, name)
+  return (pcall(function () return object[name] end))
+end
+local OPTIONAL_SIM_FIELDS = { 'renderSize', 'originShift', 'cameraJumped', 'driveableCameraMode', 'carCameraIndex',
+  'trackCamerasSet', 'isTripleMode', 'isVRConnected', 'cameraClipNear', 'cameraClipFar' }
+local simHas = {}
+for _, name in ipairs(OPTIONAL_SIM_FIELDS) do simHas[name] = hasField(sim, name) end
+local missingSimFields = {}
+for _, name in ipairs(OPTIONAL_SIM_FIELDS) do
+  if not simHas[name] then missingSimFields[#missingSimFields + 1] = name end
+end
+if #missingSimFields > 0 then
+  ac.warn('AcDlssg: this CSP build has no ac.getSim().' .. table.concat(missingSimFields, ', ')
+    .. '; using defaults for them')
+end
+local ZERO_ORIGIN = vec3(0, 0, 0)
+-- AC's usual clip planes, for builds without cameraClipNear/cameraClipFar.
+local DEFAULT_CLIP_NEAR, DEFAULT_CLIP_FAR = 0.1, 10000
+
 local function open()
   simPos, simLook, simUp, simSide = sim.cameraPosition, sim.cameraLook, sim.cameraUp, sim.cameraSide
-  simOrigin, simRenderSize = sim.originShift, sim.renderSize
+  simOrigin = simHas.originShift and sim.originShift or ZERO_ORIGIN
+  simRenderSize = simHas.renderSize and sim.renderSize or nil
   -- persist = true: CSP never unmaps the view, not even if this reference
   -- were collected; mmf also stays referenced by the callbacks below.
   mmf = ac.writeMemoryMappedFile(SECTION_NAME, LAYOUT, true)
@@ -107,10 +131,12 @@ local function fill()
   local sx, sy, sz = normalize(simSide.x, simSide.y, simSide.z)
   local fov = sim.cameraFOV
   local dt = uiState.dt
-  local mode, driveable, carCamera = sim.cameraMode, sim.driveableCameraMode, sim.carCameraIndex
-  local focused, trackSet = sim.focusedCar, sim.trackCamerasSet
+  local mode, focused = sim.cameraMode, sim.focusedCar
+  local driveable = simHas.driveableCameraMode and sim.driveableCameraMode or -1
+  local carCamera = simHas.carCameraIndex and sim.carCameraIndex or -1
+  local trackSet = simHas.trackCamerasSet and sim.trackCamerasSet or -1
 
-  local jumped = sim.cameraJumped or not havePrev or mode ~= prevMode or driveable ~= prevDriveable
+  local jumped = (simHas.cameraJumped and sim.cameraJumped) or not havePrev or mode ~= prevMode or driveable ~= prevDriveable
     or carCamera ~= prevCarCamera or focused ~= prevFocused or trackSet ~= prevTrackSet
   if not jumped then
     local dx, dy, dz = px - prevX, py - prevY, pz - prevZ
@@ -127,12 +153,14 @@ local function fill()
   if jumped then flags = flags + FLAG_JUMPED end
   if sim.isPaused then flags = flags + FLAG_PAUSED end
   if sim.isReplayActive then flags = flags + FLAG_REPLAY end
-  if sim.isVRMode or sim.isVRConnected then flags = flags + FLAG_VR end
-  if sim.isTripleMode then flags = flags + FLAG_TRIPLE end
+  if sim.isVRMode or (simHas.isVRConnected and sim.isVRConnected) then flags = flags + FLAG_VR end
+  if simHas.isTripleMode and sim.isTripleMode then flags = flags + FLAG_TRIPLE end
   if sim.isInMainMenu then flags = flags + FLAG_MAIN_MENU end
 
-  -- The 3D render size fed to the upscaler; the window size until CSP has one.
-  local rw, rh = simRenderSize.x, simRenderSize.y
+  -- The 3D render size fed to the upscaler; the window size until CSP has one,
+  -- or always on builds without renderSize.
+  local rw, rh = 0, 0
+  if simRenderSize then rw, rh = simRenderSize.x, simRenderSize.y end
   if not (rw > 0 and rh > 0) then rw, rh = sim.windowWidth, sim.windowHeight end
 
   mPos[0], mPos[1], mPos[2] = px, py, pz
@@ -142,8 +170,8 @@ local function fill()
   -- AC's camera FOV is vertical, in degrees (the SDK's ac.GrabbedCamera calls
   -- the same camera's FOV "Original camera vertical FOV, in degrees").
   mmf.fovVDeg = fov
-  mmf.clipNear = sim.cameraClipNear
-  mmf.clipFar = sim.cameraClipFar
+  mmf.clipNear = simHas.cameraClipNear and sim.cameraClipNear or DEFAULT_CLIP_NEAR
+  mmf.clipFar = simHas.cameraClipFar and sim.cameraClipFar or DEFAULT_CLIP_FAR
   mOrigin[0], mOrigin[1], mOrigin[2] = simOrigin.x, simOrigin.y, simOrigin.z
   mmf.renderW = rw
   mmf.renderH = rh

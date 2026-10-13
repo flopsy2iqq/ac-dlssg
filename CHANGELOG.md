@@ -4,6 +4,12 @@ All notable changes to ac-dlssg are listed here. Versions follow
 [Semantic Versioning](https://semver.org/). The release workflow publishes the
 section of a version as its GitHub release notes.
 
+## [1.1.1] - 2026-10-13
+
+### Fixed
+
+- **"camera: not written" on older CSP previews** (GitHub issue 1). On CSP 0.3.0-preview445 the AC DLSS-G app stopped at load with `'struct state_sim' has no member named 'renderSize'`, so it never sent the camera to the bridge and frame generation stayed off. The app now checks once which camera-related fields the installed CSP has (`renderSize`, `originShift`, `cameraJumped`, `driveableCameraMode`, `carCameraIndex`, `trackCamerasSet`, `isTripleMode`, `isVRConnected`, `cameraClipNear`, `cameraClipFar`) and uses a fallback for the missing ones: the window size instead of the render size, no origin shift, and AC's usual clip planes. It logs one warning that names them in the CSP log.
+
 ## [1.1.0] - 2026-09-30
 
 ### Changed
