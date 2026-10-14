@@ -80,6 +80,23 @@ TEST(Mfg_NeverLoadedNextToTheSpoof) {
     CHECK(d.reason.find("dlssg_for_sm86") != std::string::npos);
 }
 
+// A game-folder version.dll that is neither the pinned spoof nor
+// MFG-Unlocker counts as the spoof (another dlssg_for_sm86 build or another
+// mod): MFG-Unlocker stays out, and the log does not call that file
+// dlssg_for_sm86 (issue 2).
+TEST(Mfg_AnUnidentifiedVersionDllKeepsItOutAndIsNotCalledTheSpoof) {
+    MfgInputs in = Ready();
+    in.spoof_loaded = true;
+    in.spoof_unidentified = true;
+    const MfgDecision d = DecideMfg(in);
+    CHECK(d.action == MfgAction::Skip);
+    CHECK(!d.warn);
+    CHECK(d.reason.find("unidentified version.dll") != std::string::npos);
+    CHECK(d.reason.find("not the pinned dlssg_for_sm86") != std::string::npos);
+    CHECK(d.reason.find("dlssg_for_sm86 (version.dll in the game folder) is loaded") == std::string::npos);
+    CHECK(d.reason.find("remove") != std::string::npos);
+}
+
 TEST(Mfg_NotLoadedForARenderAdapterThatIsNotAnRtx40) {
     for (GpuArch arch : {GpuArch::Ampere, GpuArch::Blackwell, GpuArch::Turing, GpuArch::NonNvidia, GpuArch::Unknown}) {
         MfgInputs in = Ready();
@@ -145,6 +162,9 @@ TEST(Mfg_LoadsTheCopyByFullPathAndTimesIt) {
 
     CHECK(LoadMfgModule(data + L"\\mfg\\missing.dll", &ms, &err) == nullptr);
     CHECK(!err.empty());
+    DeleteFileW(path.c_str());
+    RemoveDirectoryW((data + L"\\mfg").c_str());
+    RemoveDirectoryW(data.c_str());
 }
 
 TEST(Mfg_TheLoadLineNamesThePathTheFileVersionAndTheTime) {

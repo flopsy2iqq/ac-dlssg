@@ -390,6 +390,7 @@ void Run(BootstrapState* s) {
         mi.render_arch = renderArch;
         mi.render_adapter = renderAdapter.name;
         mi.spoof_loaded = s->spoof_loaded;
+        mi.spoof_unidentified = s->spoof_panel == kPanelSpoofUnidentified;
         mi.other_copy_loaded = FindLoadedMfgCopy(&mi.other_copy_path);
         const MfgDecision d = DecideMfg(mi);
         switch (d.action) {

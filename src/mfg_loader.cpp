@@ -84,6 +84,13 @@ MfgDecision DecideMfg(const MfgInputs& in) {
         d.reason = pinned + " is installed but not loaded: mfg_unlocker=0 in ac-dlssg.ini";
         return d;
     }
+    if (in.spoof_loaded && in.spoof_unidentified) {
+        d.reason = pinned + " is installed but not loaded: an unidentified version.dll from the game folder is "
+                            "loaded (not the pinned dlssg_for_sm86 and not MFG-Unlocker; it may be another "
+                            "dlssg_for_sm86 build), and MFG-Unlocker is never loaded next to a spoof; remove that "
+                            "version.dll to use MFG-Unlocker";
+        return d;
+    }
     if (in.spoof_loaded) {
         d.reason = pinned + " is installed but not loaded: dlssg_for_sm86 (version.dll in the game folder) is "
                             "loaded, and the two are never loaded together";

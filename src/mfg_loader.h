@@ -66,6 +66,9 @@ struct MfgInputs {
     GpuArch render_arch = GpuArch::Unknown;
     std::string render_adapter;  // its name, for the log
     bool spoof_loaded = false;   // dlssg_for_sm86 (or a game-folder version.dll taken for it) is loaded
+    // ... and that version.dll is neither the pinned spoof nor MFG-Unlocker
+    // (kPanelSpoofUnidentified), so the log does not call it dlssg_for_sm86.
+    bool spoof_unidentified = false;
     // A module that exports kMfgQueryExport is loaded already: a copy the
     // user installed (FindLoadedMfgCopy).
     bool other_copy_loaded = false;
