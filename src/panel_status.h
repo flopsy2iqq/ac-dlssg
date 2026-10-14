@@ -48,6 +48,14 @@ enum PanelModeCode : uint32_t {
     kPanelModeStandalone = 2,  // the game folder's dxgi.dll
 };
 
+// StatusLayout::spoofLoaded (SpoofPanelCode). A window of an earlier build
+// reads every value but 0 as "dlssg_for_sm86 loaded".
+enum PanelSpoofCode : uint32_t {
+    kPanelSpoofNone = 0,          // no game-folder version.dll is loaded as the spoof
+    kPanelSpoofPinned = 1,        // the pinned dlssg_for_sm86 0.3.5
+    kPanelSpoofUnidentified = 2,  // a game-folder version.dll that is neither the pin nor MFG-Unlocker
+};
+
 constexpr size_t kPanelReasonChars = 160;
 constexpr size_t kPanelStateReasonChars = 256;  // pass-through and unsupported-adapter reasons are long
 // A fix whose ac-dlssg.ini could not be saved names the file's path.
@@ -65,7 +73,7 @@ struct StatusLayout {
     uint32_t fgUserOn;    // the user's switch: start_with_fg, then the hotkey and the panel
     uint32_t fgPaused;    // fgOn, but Streamline generated no frame in the last statistics second
                           // (it pauses DLSS-G while the game window is not focused): FgPausedInSecond
-    uint32_t spoofLoaded; // dlssg_for_sm86's version.dll is loaded from the game folder
+    uint32_t spoofLoaded; // a game-folder version.dll is loaded as the spoof: PanelSpoofCode
     uint32_t rtx30;       // the render GPU is an SM86 Ampere chip (RTX 30)
     uint32_t vsyncNote;   // VSync was asked for but is not available with DLSS-G here
     uint32_t driverWarning;  // a driver profile setting changes DLSS-G (warning holds the text)

@@ -194,6 +194,13 @@ add_library(acdb_spoof_fixture SHARED tests/spoof_fixture.cpp)
 target_compile_definitions(acdb_tests PRIVATE
     ACDB_SPOOF_FIXTURE_PATH="$<TARGET_FILE:acdb_spoof_fixture>")
 add_dependencies(acdb_tests acdb_spoof_fixture)
+# A stand-in for MFG-Unlocker (never the real one): it exports
+# MfgUnlockSingleModuleQuery, and its DllMain leaves a mark, so a test can
+# prove it was loaded, or that the export probe did not run it.
+add_library(acdb_mfg_fixture SHARED tests/mfg_fixture.cpp)
+target_compile_definitions(acdb_tests PRIVATE
+    ACDB_MFG_FIXTURE_PATH="$<TARGET_FILE:acdb_mfg_fixture>")
+add_dependencies(acdb_tests acdb_mfg_fixture)
 
 # A fake NGX module for the NgxHook tests: it exports the three D3D11 entry
 # points with NVIDIA's signatures and records what its "original" was called

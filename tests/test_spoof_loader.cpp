@@ -117,3 +117,115 @@ TEST(Spoof_LoadsASecondVersionDllByFullPath) {
     CHECK(!err.empty());
     FreeLibrary(loaded);
 }
+
+// ---------------------------------------------------------------------------
+// What a game-folder version.dll is: the pinned dlssg_for_sm86 by its hash, a
+// copy of MFG-Unlocker by the export every build of it has, else unknown.
+
+namespace {
+
+const std::string kOtherSha = "1111111111111111111111111111111111111111111111111111111111111111";
+
+SpoofInputs LoadedFromGameDir(const std::string& sha, bool mfg) {
+    SpoofInputs in;
+    in.version_loaded = true;
+    in.loaded_from_game_dir = true;
+    in.loaded_path = L"D:\\Games\\assettocorsa\\version.dll";
+    in.loaded_sha256 = sha;
+    in.loaded_is_mfg = mfg;
+    in.game_file_exists = true;
+    return in;
+}
+
+}  // namespace
+
+TEST(Spoof_VersionDllIsIdentifiedByHashThenByExport) {
+    CHECK(IdentifyVersionDll(kPinnedSpoofSha256, false) == VersionDllKind::Sm86Pin);
+    CHECK(IdentifyVersionDll(kOtherSha, true) == VersionDllKind::MfgUnlocker);
+    CHECK(IdentifyVersionDll(kOtherSha, false) == VersionDllKind::Unknown);
+    CHECK(IdentifyVersionDll("", false) == VersionDllKind::Unknown);
+    CHECK(IdentifyVersionDll("", true) == VersionDllKind::MfgUnlocker);
+}
+
+// Windows 10 binds acs.exe's VERSION.dll to whatever version.dll is next to
+// it. A user's own MFG-Unlocker there is not dlssg_for_sm86 (issue 2).
+TEST(Spoof_ALoadedMfgUnlockerCopyIsNotTakenForTheSpoof) {
+    const SpoofDecision d = DecideSpoof(LoadedFromGameDir(kOtherSha, true));
+    CHECK(d.action == SpoofAction::NotTheSpoof);
+    CHECK(d.kind == VersionDllKind::MfgUnlocker);
+    CHECK(d.reason.find("MFG-Unlocker") != std::string::npos);
+    CHECK(d.reason.find("not dlssg_for_sm86") != std::string::npos);
+    CHECK(SpoofPanelCode(d) == 0u);
+}
+
+TEST(Spoof_TheLoadedPinnedSpoofIsNamedWithItsVersion) {
+    const SpoofDecision d = DecideSpoof(LoadedFromGameDir(kPinnedSpoofSha256, false));
+    CHECK(d.action == SpoofAction::AlreadyLoaded);
+    CHECK(d.kind == VersionDllKind::Sm86Pin);
+    CHECK(d.reason.find("dlssg_for_sm86 0.3.5") != std::string::npos);
+    CHECK(SpoofPanelCode(d) == 1u);
+}
+
+// Another dlssg_for_sm86 build, or another mod: loaded by the process, so it
+// counts as the spoof for the rest of the bridge, but it is not named as one.
+TEST(Spoof_ALoadedUnknownVersionDllIsLabelledUnknown) {
+    const SpoofDecision d = DecideSpoof(LoadedFromGameDir(kOtherSha, false));
+    CHECK(d.action == SpoofAction::AlreadyLoaded);
+    CHECK(d.kind == VersionDllKind::Unknown);
+    CHECK(d.reason.find(kOtherSha) != std::string::npos);
+    CHECK(d.reason.find("not the pinned dlssg_for_sm86 0.3.5") != std::string::npos);
+    CHECK(d.reason.find("(dlssg_for_sm86)") == std::string::npos);
+    CHECK(SpoofPanelCode(d) == 2u);
+}
+
+// spoof_load_any=1 loads any other version.dll, never MFG-Unlocker: the
+// bridge loads only the pinned copy in ac-dlssg\mfg.
+TEST(Spoof_MfgUnlockerInTheGameFolderIsNeverLoadedAsTheSpoof) {
+    SpoofInputs in = System32Bound();
+    in.game_file_exists = true;
+    in.game_file_sha256 = kOtherSha;
+    in.game_file_is_mfg = true;
+    in.allow_any = true;
+    const SpoofDecision d = DecideSpoof(in);
+    CHECK(d.action == SpoofAction::NotTheSpoof);
+    CHECK(d.kind == VersionDllKind::MfgUnlocker);
+    CHECK(d.reason.find("spoof_load_any") != std::string::npos);
+    CHECK(d.reason.find("ac-dlssg\\mfg") != std::string::npos);
+    CHECK(SpoofPanelCode(d) == 0u);
+
+    in.allow_any = false;
+    CHECK(DecideSpoof(in).action == SpoofAction::NotTheSpoof);
+}
+
+TEST(Spoof_AnUnknownFileLoadedWithSpoofLoadAnyIsLabelledUnknown) {
+    SpoofInputs in = System32Bound();
+    in.game_file_exists = true;
+    in.game_file_sha256 = kOtherSha;
+    in.allow_any = true;
+    const SpoofDecision d = DecideSpoof(in);
+    CHECK(d.action == SpoofAction::LoadExplicitly);
+    CHECK(d.kind == VersionDllKind::Unknown);
+    CHECK(SpoofPanelCode(d) == 2u);
+    in.game_file_sha256 = kPinnedSpoofSha256;
+    CHECK(SpoofPanelCode(DecideSpoof(in)) == 1u);
+}
+
+// The export probe maps the file as data: its DllMain never runs.
+TEST(Spoof_TheExportProbeReadsAFileWithoutRunningIt) {
+    SetEnvironmentVariableW(L"ACDB_MFG_FIXTURE_LOADED", nullptr);
+    std::string err;
+    CHECK(FileExportsName(L"" ACDB_MFG_FIXTURE_PATH, "MfgUnlockSingleModuleQuery", &err));
+    CHECK(!FileExportsName(L"" ACDB_SPOOF_FIXTURE_PATH, "MfgUnlockSingleModuleQuery", &err));
+    CHECK(FileExportsName(L"" ACDB_SPOOF_FIXTURE_PATH, "AcdbSpoofFixture", &err));
+    wchar_t mark[4] = {};
+    CHECK(GetEnvironmentVariableW(L"ACDB_MFG_FIXTURE_LOADED", mark, 4) == 0);
+
+    err.clear();
+    CHECK(!FileExportsName(TempDir(L"acdb_spoof_probe") + L"\\missing.dll", "MfgUnlockSingleModuleQuery", &err));
+    CHECK(!err.empty());
+    const std::wstring text = TempDir(L"acdb_spoof_probe") + L"\\not-a-dll.dll";
+    REQUIRE(WriteBytes(text, "not a PE file", 13));
+    err.clear();
+    CHECK(!FileExportsName(text, "MfgUnlockSingleModuleQuery", &err));
+    CHECK(!err.empty());
+}
