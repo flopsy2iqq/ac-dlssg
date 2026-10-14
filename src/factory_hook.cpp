@@ -18,6 +18,7 @@
 #include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
+#include "mfg_loader.h"
 #include "panel_status.h"
 #include "proxy_swapchain.h"
 #include "streamline_runtime.h"
@@ -165,6 +166,7 @@ void PublishPassThrough(const std::string& reason, const RenderAdapter& adapter)
         s.fgOn = 0;
         s.fgPaused = 0;
         s.rtx30 = adapter.known && IsAmpereSm86(adapter.vendor_id, adapter.device_id) ? 1u : 0u;
+        s.rtx40 = adapter.known && ArchFromIds(adapter.vendor_id, adapter.device_id) == GpuArch::Ada ? 1u : 0u;
         CopyText(s.gpuName, adapter.known ? adapter.description : std::string());
         CopyText(s.reason, reason);
         CopyText(s.stateReason, reason);
@@ -200,6 +202,11 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         adapterReason = RenderAdapterRefusal(adapter);
         in.nvidia_adapter = adapterReason.empty();
         const HagsDecision hags = RenderAdapterHags(adapter, bs.compat.hags_on);
+        if (adapter.known) {
+            const std::string mfgNote = MfgRenderAdapterNote(
+                bs.mfg_loaded, ArchFromIds(adapter.vendor_id, adapter.device_id) == GpuArch::Ada, adapter.description);
+            if (!mfgNote.empty()) LOGW("mfg-unlocker: %s", mfgNote.c_str());
+        }
         // Files come from the bootstrap; add-ons may have loaded since.
         CompatInputs ci = bs.compat;
         ci.dlss5_bridge_loaded = GetModuleHandleW(L"dlss5-bridge.addon64") != nullptr;
@@ -236,6 +243,8 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         PresenterEnvironment env;
         env.install_ngx_hook = true;
         env.spoof_loaded = bs.spoof_loaded;
+        env.spoof_panel = bs.spoof_panel;
+        env.mfg_loaded = bs.mfg_loaded;
         env.allow_stretching = bs.compat.allow_stretching.value_or(0) == 1;
         // Spec 6.9: only a process that owns the panel's status reads its requests.
         if (PanelStatusChannel::Get().Owned()) {

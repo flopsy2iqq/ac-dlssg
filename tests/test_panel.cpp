@@ -85,6 +85,9 @@ const FieldSpec kStatusFields[] = {
     STATUS_FIELD("char", restartNote, 160),
     // Appended after those: a setting the bridge fixed by itself (spec 6.11).
     STATUS_FIELD("char", autoFixNote, 384),
+    // Appended for RTX 40: NVIDIA's 2X limit there and MFG-Unlocker.
+    STATUS_FIELD("uint32_t", rtx40, 1),
+    STATUS_FIELD("uint32_t", mfgUnlockerLoaded, 1),
 };
 #undef STATUS_FIELD
 
@@ -309,7 +312,7 @@ TEST(LuaApp_WindowShowsTheNotesAndTheMultiplierButtons) {
     CHECK(acdb_test::LuaString(lua, "TEXT_MULT_UNSUPPORTED") == "not supported by this GPU/driver");
     // Disabled buttons answer the hover test only with AllowWhenDisabled.
     CHECK(lua.find("ui.itemHovered(ui.HoveredFlags.AllowWhenDisabled)") != std::string::npos);
-    CHECK(lua.find("ui.setTooltip(TEXT_MULT_UNSUPPORTED)") != std::string::npos);
+    CHECK(lua.find("ui.setTooltip(texts.multUnsupported)") != std::string::npos);
     for (const char* label : {"'2X###fgMult2'", "'3X###fgMult3'", "'4X###fgMult4'"}) {
         if (lua.find(label) == std::string::npos) std::printf("  no button label %s\n", label);
         CHECK(lua.find(label) != std::string::npos);
@@ -322,6 +325,52 @@ TEST(LuaApp_WindowShowsTheNotesAndTheMultiplierButtons) {
     REQUIRE(!buttons.empty());
     CHECK(buttons.find("texts.multNote") != std::string::npos);
     CHECK(buttons.find("MULT_LABELS[m]") != std::string::npos);
+}
+
+// RTX 40 (issue 2): NVIDIA enables 3X/4X only on RTX 50, and MFG-Unlocker
+// lifts that. The hover text of a dimmed 3X/4X and the GPU line say which.
+TEST(LuaApp_Rtx40TextsNameNvidiasLimitAndMfgUnlocker) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    CHECK(acdb_test::LuaString(lua, "TEXT_MULT_RTX50_ONLY") == "NVIDIA enables 3X/4X only on RTX 50");
+    CHECK(acdb_test::LuaString(lua, "TEXT_MULT_NOT_UNLOCKED") == "MFG-Unlocker is loaded but did not unlock 3X/4X");
+    CHECK(acdb_test::LuaString(lua, "TEXT_GPU_MFG") == ", RTX 40 via MFG-Unlocker (unofficial)");
+    CHECK(acdb_test::LuaString(lua, "TEXT_GPU_MFG_OTHER") == ", via MFG-Unlocker (unofficial)");
+    CHECK(acdb_test::LuaString(lua, "TEXT_GPU_MFG_LOCKED") == ", MFG-Unlocker loaded but did not unlock");
+    CHECK(acdb_test::LuaString(lua, "TEXT_GPU_MFG_LOADED") == ", MFG-Unlocker loaded");
+    CHECK_EQ(acdb_test::LuaNumber(lua, "SPOOF_PINNED"), static_cast<long long>(kPanelSpoofPinned));
+    CHECK_EQ(acdb_test::LuaNumber(lua, "SPOOF_UNIDENTIFIED"), static_cast<long long>(kPanelSpoofUnidentified));
+
+    // The hover text while Streamline allows 2X only: MFG-Unlocker that did
+    // not unlock, else NVIDIA's RTX 40 limit; else the general one.
+    const std::string tip = acdb_test::LuaFunctionBody(lua, "multUnsupportedText");
+    REQUIRE(!tip.empty());
+    const size_t mfg = tip.find("if s.mfgUnlockerLoaded ~= 0 and s.fgMultMax <= 2 then return TEXT_MULT_NOT_UNLOCKED end");
+    const size_t rtx40 = tip.find("if s.rtx40 ~= 0 and s.fgMultMax <= 2 then return TEXT_MULT_RTX50_ONLY end");
+    const size_t other = tip.find("return TEXT_MULT_UNSUPPORTED");
+    CHECK(mfg != std::string::npos && rtx40 != std::string::npos && other != std::string::npos);
+    CHECK(mfg < rtx40 && rtx40 < other);
+
+    // The GPU line: fgMultMax is 0 until Streamline answered, 2 for 2X only.
+    const std::string suffix = acdb_test::LuaFunctionBody(lua, "gpuSuffix");
+    REQUIRE(!suffix.empty());
+    const size_t loaded = suffix.find("if s.mfgUnlockerLoaded ~= 0 then");
+    const size_t unlocked = suffix.find("if s.fgMultMax > 2 then return s.rtx40 ~= 0 and TEXT_GPU_MFG or TEXT_GPU_MFG_OTHER end");
+    const size_t locked = suffix.find("if s.fgMultMax == 2 then return TEXT_GPU_MFG_LOCKED end");
+    const size_t waiting = suffix.find("return TEXT_GPU_MFG_LOADED");
+    const size_t rtx30 = suffix.find("if s.rtx30 ~= 0 then");
+    CHECK(loaded != std::string::npos && unlocked != std::string::npos && locked != std::string::npos &&
+          waiting != std::string::npos && rtx30 != std::string::npos);
+    CHECK(loaded < unlocked && unlocked < locked && locked < waiting && waiting < rtx30);
+    // A game-folder version.dll the bridge could not identify is not called dlssg_for_sm86.
+    CHECK(suffix.find("s.spoofLoaded == SPOOF_UNIDENTIFIED") != std::string::npos);
+    CHECK(suffix.find("', RTX 30 with an unidentified version.dll'") != std::string::npos);
+    CHECK(suffix.find("', unidentified version.dll loaded'") != std::string::npos);
+
+    const std::string rebuild = acdb_test::LuaFunctionBody(lua, "rebuildTexts");
+    CHECK(rebuild.find("texts.gpu = (s.gpuName ~= '' and s.gpuName or 'GPU unknown') .. gpuSuffix(s)") != std::string::npos);
+    CHECK(rebuild.find("texts.multUnsupported = multUnsupportedText(s)") != std::string::npos);
+    CHECK(std::regex_search(lua, std::regex("local texts = \\{[^}]*[{,\\s]multUnsupported = TEXT_MULT_UNSUPPORTED")));
 }
 
 // A bridge whose status record has another version (a later build with a

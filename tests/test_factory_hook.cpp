@@ -746,7 +746,9 @@ TEST(Bootstrap_CreatesThePanelSectionsAndPublishesItsPart) {
     CHECK(TextOf(s.bridgeVersion) == ACDB_VERSION);
     CHECK(TextOf(s.hotkey) == HotkeyText(bs.config.hotkey));
     CHECK_EQ(s.startWithFg, bs.config.start_with_fg ? 1u : 0u);
-    CHECK_EQ(s.spoofLoaded, bs.spoof_loaded ? 1u : 0u);
+    CHECK_EQ(s.spoofLoaded, bs.spoof_panel);
+    CHECK_EQ(s.rtx40, bs.predicted_rtx40 ? 1u : 0u);
+    CHECK_EQ(s.mfgUnlockerLoaded, bs.mfg_loaded ? 1u : 0u);
     CHECK_EQ(s.driverWarning, bs.driver_warnings.empty() ? 0u : 1u);
     // Before any main-window chain: waiting, or passing everything through
     // when the bootstrap already refused (no Streamline next to the test exe).
@@ -760,6 +762,24 @@ TEST(Bootstrap_CreatesThePanelSectionsAndPublishesItsPart) {
     const std::string log = acdb_test::ReadAll(bs.data_dir + L"\\logs\\bridge.log");
     CHECK(log.find(" INFO panel: status section Local\\AcDlssg.Status.v1 and control section "
                    "Local\\AcDlssg.Control.v1 ready\n") != std::string::npos);
+}
+
+// MFG-Unlocker (issue 2): next to the test exe there is no
+// ac-dlssg\mfg\version.dll, so the bootstrap says it is not installed, loads
+// nothing, and logs the ini switch.
+TEST(Bootstrap_LogsThatMfgUnlockerIsNotInstalled) {
+    const BootstrapState& bs = EnsureBootstrap();
+    REQUIRE(GetFileAttributesW((bs.data_dir + L"\\mfg\\version.dll").c_str()) == INVALID_FILE_ATTRIBUTES);
+    CHECK(!bs.mfg_loaded);
+    const std::string log = acdb_test::ReadAll(bs.data_dir + L"\\logs\\bridge.log");
+    CHECK(log.find(" INFO mfg-unlocker: not installed (no ac-dlssg\\mfg\\version.dll)\n") != std::string::npos);
+    CHECK(log.find(bs.config.mfg_unlocker ? " mfg_unlocker=1\n" : " mfg_unlocker=0\n") != std::string::npos);
+    // In this order: the spoof, MFG-Unlocker, the driver profile.
+    const size_t spoof = log.find(" spoof: ");
+    const size_t mfg = log.find(" mfg-unlocker: ");
+    const size_t profile = log.find(" driver profile: ");
+    CHECK(spoof != std::string::npos && mfg != std::string::npos && profile != std::string::npos);
+    CHECK(spoof < mfg && mfg < profile);
 }
 
 // A main-window chain that passes through is published with its reason.
@@ -792,6 +812,7 @@ TEST(FactoryHook_PublishesAPassThroughToThePanel) {
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
     CHECK(TextOf(s.gpuName) == std::string(name).substr(0, sizeof(s.gpuName) - 1));
     CHECK_EQ(s.rtx30, IsAmpereSm86(ad.VendorId, ad.DeviceId) ? 1u : 0u);
+    CHECK_EQ(s.rtx40, ArchFromIds(ad.VendorId, ad.DeviceId) == GpuArch::Ada ? 1u : 0u);
 }
 
 // ---------------------------------------------------------------- the DLL

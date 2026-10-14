@@ -23,6 +23,7 @@
 #include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
+#include "module_version.h"
 #include "ngx_hook.h"
 #include "panel_control.h"
 #include "panel_status.h"
@@ -168,6 +169,12 @@ std::string Utf8(const std::wstring& w) {
     return s;
 }
 constexpr uint32_t kViewport = 0;
+
+std::wstring ModulePathOf(HMODULE module) {
+    wchar_t path[MAX_PATH * 2] = {};
+    const DWORD n = GetModuleFileNameW(module, path, static_cast<DWORD>(std::size(path)));
+    return n > 0 && n < std::size(path) ? std::wstring(path, n) : std::wstring();
+}
 
 // NgxHook is installed once per process, by the first presenter that asks.
 std::atomic<bool> g_ngx_installed{false};
@@ -384,6 +391,8 @@ struct D3D12Presenter::Impl {
     std::string state_reason;      // why DLSS-G cannot run here (status stateReason)
     std::string gpu_name;
     bool rtx30 = false;
+    bool rtx40 = false;            // the render adapter is Ada: NVIDIA allows 2X there without MFG-Unlocker
+    bool provider_logged = false;  // the "DLSS-G provider" line was written
     bool vsync_note = false;       // the last Present planned "VSync not available with DLSS-G"
     struct PanelNumbers {
         float baseFps = 0;
@@ -711,6 +720,7 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
     gpu_name = name;
     rtx30 = IsAmpereSm86(ad.VendorId, ad.DeviceId);
+    rtx40 = ArchFromIds(ad.VendorId, ad.DeviceId) == GpuArch::Ada;
     if (!sl) state_reason = "no Streamline: the plain D3D12 path of the tests";
     if (!fg_supported) gate_reason = "not supported on this adapter";
     LOGI("presenter created: %s (LUID %08lX:%08lX), D3D12 chain %ux%u, %u buffers, flags 0x%X, tearing %s, "
@@ -889,8 +899,10 @@ void D3D12Presenter::Impl::PublishStatus() {
         s.fgOn = mode_on ? 1u : 0u;
         s.fgUserOn = fg_user_on ? 1u : 0u;
         s.fgPaused = mode_on && n.fgPaused ? 1u : 0u;
-        s.spoofLoaded = env.spoof_loaded ? 1u : 0u;
+        s.spoofLoaded = env.spoof_panel;
         s.rtx30 = rtx30 ? 1u : 0u;
+        s.rtx40 = rtx40 ? 1u : 0u;
+        s.mfgUnlockerLoaded = env.mfg_loaded ? 1u : 0u;
         s.vsyncNote = vsync_note ? 1u : 0u;
         s.cameraFlipHandedness = config.camera_flip_handedness ? 1u : 0u;
         s.cameraNegateSide = config.camera_negate_side ? 1u : 0u;
@@ -1224,8 +1236,28 @@ void D3D12Presenter::Impl::QueryFramesMax() {
         max = st.numFramesToGenerateMax;
     else
         LOGW("fg: slDLSSGGetState failed (%s); numFramesToGenerateMax unknown, 2X only", SlResultName(r));
-    if (!mult.MaxKnown() || max != mult.FramesMax())
+    const bool newMax = !mult.MaxKnown() || max != mult.FramesMax();
+    if (newMax)
         LOGI("fg: Streamline allows up to %uX (numFramesToGenerateMax %u)", max > 1 ? max + 1 : 2u, max);
+    // NGX has loaded the DLSS-G provider by now; MFG-Unlocker patches only
+    // the versions it knows, and NGX may take another copy than ac-dlssg\sl's.
+    if (!provider_logged) {
+        provider_logged = true;
+        const HMODULE provider = GetModuleHandleW(L"nvngx_dlssg.dll");
+        LOGI("fg: %s", DlssgProviderLine(provider != nullptr, provider ? Utf8(ModulePathOf(provider)) : std::string(),
+                                         provider ? ModuleVersionText(provider) : std::string())
+                           .c_str());
+    }
+    if (newMax) {
+        const MfgLogLine line = MfgUnlockLogLine(rtx40, env.mfg_loaded, max);
+        if (!line.text.empty()) {
+            if (line.warn) {
+                LOGW("mfg-unlocker: %s", line.text.c_str());
+            } else {
+                LOGI("mfg-unlocker: %s", line.text.c_str());
+            }
+        }
+    }
     const std::string note = mult.OnFramesMax(max);
     if (!note.empty()) LOGI("fg: %s", note.c_str());
     status_due = true;  // the panel's fgMultMax, fgMultUsed and note
@@ -1238,7 +1270,8 @@ unsigned D3D12Presenter::Impl::UsedMultiplier() const {
 std::string D3D12Presenter::Impl::MultiplierNote() const {
     const bool fellBack =
         vram_guard.Passed() && vram_guard.Wanted() == mult.Wanted() && vram_guard.Granted() < mult.Wanted();
-    return FgMultiplierNote(mult.ClampNote(), fellBack ? vram_fallback : std::string());
+    const std::string hint = MultiplierGpuHint(rtx40, env.mfg_loaded, mult.MaxKnown(), mult.FramesMax());
+    return FgMultiplierNote(ClampNoteWithHint(mult.ClampNote(), hint), fellBack ? vram_fallback : std::string());
 }
 
 // "fg: DLSS-G on" / "fg: DLSS-G off (<reason>)" on every mode change, and

@@ -111,9 +111,15 @@ struct StatusLayout {
     // fg_vram_headroom_mib switched to auto: VramHeadroomSwitchNote, spec
     // 6.11); empty otherwise.
     char autoFixNote[kPanelAutoFixChars];
+    // Appended for RTX 40, where NVIDIA allows 2X only: the render GPU is an
+    // Ada chip, and MFG-Unlocker is in the process (the copy the installer
+    // put into ac-dlssg\mfg, or one the user installed), so that the window
+    // can tell NVIDIA's limit from an unlock that did not work.
+    uint32_t rtx40;
+    uint32_t mfgUnlockerLoaded;
 };
 
-static_assert(sizeof(StatusLayout) == 1692);
+static_assert(sizeof(StatusLayout) == 1700);
 static_assert(alignof(StatusLayout) == 4);
 static_assert(offsetof(StatusLayout, magic) == 0);
 static_assert(offsetof(StatusLayout, version) == 4);
@@ -156,6 +162,8 @@ static_assert(offsetof(StatusLayout, fgMultNote) == 828);
 static_assert(offsetof(StatusLayout, vramNote) == 988);
 static_assert(offsetof(StatusLayout, restartNote) == 1148);
 static_assert(offsetof(StatusLayout, autoFixNote) == 1308);
+static_assert(offsetof(StatusLayout, rtx40) == 1692);
+static_assert(offsetof(StatusLayout, mfgUnlockerLoaded) == 1696);
 
 struct ControlLayout {
     uint32_t magic;           // kControlMagic once the app has written a request

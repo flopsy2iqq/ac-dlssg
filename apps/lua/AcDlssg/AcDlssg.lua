@@ -270,6 +270,7 @@ local STATUS_LAYOUT = [[
   uint32_t fgMultRequested; uint32_t fgMultUsed; uint32_t fgMultMax;
   char fgMultNote[160]; char vramNote[160]; char restartNote[160];
   char autoFixNote[384];
+  uint32_t rtx40; uint32_t mfgUnlockerLoaded;
 ]]
 
 local CONTROL_SECTION = 'AcDlssg.Control.v1'
@@ -322,6 +323,17 @@ local TEXT_VSYNC = 'VSync is not available with frame generation here: presentin
   .. ' window stays tear-free).'
 local TEXT_RESTART = 'Restart the game to apply'
 local TEXT_MULT_UNSUPPORTED = 'not supported by this GPU/driver'
+-- RTX 40: NVIDIA allows 2X only, unless MFG-Unlocker lifted that limit.
+local TEXT_MULT_RTX50_ONLY = 'NVIDIA enables 3X/4X only on RTX 50'
+local TEXT_MULT_NOT_UNLOCKED = 'MFG-Unlocker is loaded but did not unlock 3X/4X'
+local TEXT_GPU_MFG = ', RTX 40 via MFG-Unlocker (unofficial)'
+local TEXT_GPU_MFG_OTHER = ', via MFG-Unlocker (unofficial)'
+local TEXT_GPU_MFG_LOCKED = ', MFG-Unlocker loaded but did not unlock'
+local TEXT_GPU_MFG_LOADED = ', MFG-Unlocker loaded'
+-- spoofLoaded: the pinned dlssg_for_sm86, or a game-folder version.dll the
+-- bridge could not identify (0: none).
+local SPOOF_PINNED = 1
+local SPOOF_UNIDENTIFIED = 2
 -- The 2X/3X/4X segments: IDs that never change, so the selection can move
 -- without ImGui seeing new widgets; the text drawn on them is MULT_TEXTS.
 local MULT_LABELS = { [2] = '2X###fgMult2', [3] = '3X###fgMult3', [4] = '4X###fgMult4' }
@@ -344,7 +356,7 @@ local function newStatus()
     bridgeGpuMs = -1, vramUsageMib = 0, vramBudgetMib = 0, capturesPerSec = 0, cameraFreshPerSec = 0,
     taggedPerSec = 0, reason = '', stateReason = '', warning = '', gpuName = '', hotkey = '', bridgeVersion = '',
     fgMultRequested = 0, fgMultUsed = 0, fgMultMax = 0, fgMultNote = '', vramNote = '', restartNote = '',
-    autoFixNote = '',
+    autoFixNote = '', rtx40 = 0, mfgUnlockerLoaded = 0,
     -- Not a field: the version of a record with our magic that this window
     -- cannot read, else 0.
     otherVersion = 0
@@ -358,7 +370,7 @@ local status, spare = newStatus(), newStatus()
 local texts = {
   status = '', unavailable = '', state = '', version = '', fgHint = '', gpuMs = '', vramValue = '', gpu = '',
   mode = '', hotkey = '', warning = '', perSecond = '', save = '', stopped = '', mult = '', multNote = '',
-  vramNote = '', restartNote = '', autoFixNote = '', versions = ''
+  vramNote = '', restartNote = '', autoFixNote = '', versions = '', multUnsupported = TEXT_MULT_UNSUPPORTED
 }
 local vramLevel = 0 -- 0 fine, 1 near the budget, 2 over it
 local vramFill = 0 -- used / budget, 0 while unknown
@@ -449,6 +461,8 @@ local function readStatus()
     c.vramNote = ffi.string(st.vramNote)
     c.restartNote = ffi.string(st.restartNote)
     c.autoFixNote = ffi.string(st.autoFixNote)
+    c.rtx40 = st.rtx40
+    c.mfgUnlockerLoaded = st.mfgUnlockerLoaded
   end
   memoryBarrier()
   if st.seq ~= s1 then return false end
@@ -505,6 +519,32 @@ local function sendRequest(fg, flip, negate, save, mult)
   desired.fg, desired.flip, desired.negate, desired.mult = fg, flip, negate, mult
 end
 
+-- What the GPU line adds to the GPU's name: MFG-Unlocker (fgMultMax is 0
+-- until Streamline answered, 2 when it allows 2X only), else the RTX 30
+-- spoof.
+local function gpuSuffix(s)
+  if s.mfgUnlockerLoaded ~= 0 then
+    if s.fgMultMax > 2 then return s.rtx40 ~= 0 and TEXT_GPU_MFG or TEXT_GPU_MFG_OTHER end
+    if s.fgMultMax == 2 then return TEXT_GPU_MFG_LOCKED end
+    return TEXT_GPU_MFG_LOADED
+  end
+  if s.rtx30 ~= 0 then
+    if s.spoofLoaded == SPOOF_UNIDENTIFIED then return ', RTX 30 with an unidentified version.dll' end
+    return s.spoofLoaded ~= 0 and ', RTX 30 via dlssg_for_sm86' or ', RTX 30 without dlssg_for_sm86'
+  end
+  if s.spoofLoaded == SPOOF_UNIDENTIFIED then return ', unidentified version.dll loaded' end
+  if s.spoofLoaded == SPOOF_PINNED then return ', dlssg_for_sm86 loaded' end
+  return ''
+end
+
+-- The hover text of a multiplier Streamline does not allow: while it allows
+-- 2X only, MFG-Unlocker that did not unlock or NVIDIA's RTX 40 limit.
+local function multUnsupportedText(s)
+  if s.mfgUnlockerLoaded ~= 0 and s.fgMultMax <= 2 then return TEXT_MULT_NOT_UNLOCKED end
+  if s.rtx40 ~= 0 and s.fgMultMax <= 2 then return TEXT_MULT_RTX50_ONLY end
+  return TEXT_MULT_UNSUPPORTED
+end
+
 local function rebuildTexts()
   local s = status
   if s.fgOn ~= 0 and s.fgPaused ~= 0 then
@@ -542,13 +582,8 @@ local function rebuildTexts()
     vramFill = 0
     vramLevel = 0
   end
-  local spoof = ''
-  if s.rtx30 ~= 0 then
-    spoof = s.spoofLoaded ~= 0 and ', RTX 30 via dlssg_for_sm86' or ', RTX 30 without dlssg_for_sm86'
-  elseif s.spoofLoaded ~= 0 then
-    spoof = ', dlssg_for_sm86 loaded'
-  end
-  texts.gpu = (s.gpuName ~= '' and s.gpuName or 'GPU unknown') .. spoof
+  texts.gpu = (s.gpuName ~= '' and s.gpuName or 'GPU unknown') .. gpuSuffix(s)
+  texts.multUnsupported = multUnsupportedText(s)
   local mode = 'mode unknown'
   if s.mode == MODE_RESHADE then
     mode = 'ReShade mode'
@@ -968,7 +1003,7 @@ local function multiplierButtons(available)
     local clicked = ui.invisibleButton(MULT_LABELS[m], SIZE, usable and K.buttonNone or K.buttonDisabled)
     local hovered = ui.itemHovered(ui.HoveredFlags.AllowWhenDisabled)
     if not supported and hovered then
-      ui.setTooltip(TEXT_MULT_UNSUPPORTED)
+      ui.setTooltip(texts.multUnsupported)
     end
     if usable and hovered and not chosen then ui.setMouseCursor(ui.MouseCursor.Hand) end
     local hover = ease(a.segHover[m], (usable and hovered and not chosen) and 1 or 0, 14)

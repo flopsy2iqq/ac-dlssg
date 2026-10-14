@@ -105,6 +105,7 @@ jobs:
               'test_ini_config.cpp'         # the INI reader and writer, ac-dlssg.ini, the log
               'test_inline_hook.cpp'        # the x64 decoder and inline hooks on local functions
               'test_latency_semaphore.cpp'  # the frame-latency semaphore
+              'test_mfg_loader.cpp'         # when the bridge loads MFG-Unlocker (a stand-in DLL, never the real one)
               'test_panel.cpp'              # the panel's status and control sections and the Lua window
               'test_pcl_sequencer.cpp'      # the PCL marker order
               'test_present_flags.cpp'      # the Present flag rules

@@ -7,6 +7,7 @@
 // that moment.
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,16 @@ struct BootstrapState {
                                 // HAGS taken from the render adapter per swap chain (FactoryHook)
     bool streamline_ok = false;       // StreamlineRuntime::Init succeeded
     std::string streamline_error;     // why not, for the log and the decision line
-    bool spoof_loaded = false;        // version.dll loaded from game_dir (dlssg_for_sm86)
+    // version.dll loaded from game_dir as dlssg_for_sm86: the pinned build or
+    // one that is neither the pin nor MFG-Unlocker (DecideSpoof).
+    bool spoof_loaded = false;
+    uint32_t spoof_panel = 0;         // StatusLayout::spoofLoaded: SpoofPanelCode, 0 when none is loaded
+    // MFG-Unlocker is in the process: the pinned copy in data_dir\mfg that
+    // the bootstrap loaded (DecideMfg), or a copy the user installed.
+    bool mfg_loaded = false;
+    // The adapter the game is expected to render on (PredictRenderAdapter)
+    // is Ada; the panel's rtx40 until a swap chain is decided.
+    bool predicted_rtx40 = false;
     DriverProfileReport driver_profile;
     std::vector<std::string> driver_warnings;  // DriverProfileWarnings(driver_profile)
 };
@@ -67,7 +77,10 @@ HMODULE BridgeModule();
 // adapter a "adapter <i> D3DKMT:" line (hybrid role, HAGS supported/enabled,
 // number of outputs; logging only) plus a WARN per NvidiaDriverWarnings for
 // NVIDIA adapters), reads CompatInputs and logs them. M2 adds, in this order: spoof detection
-// (version.dll's path is game_dir), ReadDriverProfile(host exe) with every
+// (version.dll's path is game_dir, identified by hash or MFG-Unlocker's
+// export, DecideSpoof), MFG-Unlocker ("mfg-unlocker:" lines: DecideMfg on
+// data_dir\mfg\version.dll and PredictRenderAdapter of the adapters; a load
+// is timed and logged with the file version), ReadDriverProfile(host exe) with every
 // warning logged at WARN before any D3D device exists, and, only when the
 // config enables the bridge, CameraChannel::Get().Create (M3; a failure is
 // logged and leaves DLSS-G without a camera) and StreamlineRuntime::Get().Init(<data_dir>\sl,

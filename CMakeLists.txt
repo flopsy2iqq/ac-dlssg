@@ -108,6 +108,7 @@ add_library(acdb_core STATIC
     src/proxy_swapchain.cpp
     src/pcl_sequencer.cpp
     src/spoof_loader.cpp
+    src/mfg_loader.cpp
     src/streamline_runtime.cpp
     src/driver_profile.cpp
     src/camera_channel.cpp
@@ -159,6 +160,7 @@ add_executable(acdb_tests
     tests/test_module_version.cpp
     tests/test_pcl_sequencer.cpp
     tests/test_spoof_loader.cpp
+    tests/test_mfg_loader.cpp
     tests/test_streamline_prefs.cpp
     tests/test_streamline_runtime.cpp
     tests/test_driver_profile.cpp

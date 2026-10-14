@@ -8,12 +8,14 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "adapter_caps.h"
 #include "camera_channel.h"
 #include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
+#include "mfg_loader.h"
 #include "module_version.h"
 #include "spoof_loader.h"
 #include "panel_control.h"
@@ -123,11 +125,13 @@ void LogDriverProfile(const DriverProfileReport& r, const std::vector<std::strin
     for (const auto& w : warnings) LOGW("driver profile: %s", w.c_str());
 }
 
-void LogAdapters() {
+// Every adapter, in DXGI's order, for PredictRenderAdapter.
+std::vector<AdapterId> LogAdapters() {
+    std::vector<AdapterId> list;
     const SystemDxgi& sys = GetSystemDxgi();
     if (!sys.CreateDXGIFactory1) {
         LOGW("adapters: System32 dxgi.dll or its CreateDXGIFactory1 is not available");
-        return;
+        return list;
     }
     InternalCallScope internal;
     ComPtr<IDXGIFactory1> factory;
@@ -135,7 +139,7 @@ void LogAdapters() {
         sys.CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.GetAddressOf()));
     if (FAILED(hr) || !factory) {
         LOGW("adapters: CreateDXGIFactory1 failed (0x%08lX)", static_cast<unsigned long>(hr));
-        return;
+        return list;
     }
     UINT i = 0;
     for (; i < 64; ++i) {
@@ -151,6 +155,7 @@ void LogAdapters() {
             LOGW("adapter %u: GetDesc1 failed", i);
             continue;
         }
+        list.push_back({d.VendorId, d.DeviceId, (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0, ToUtf8(d.Description)});
         LARGE_INTEGER umd{};
         const bool haveUmd = SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd));
         const std::string driver = haveUmd ? DriverVersionText(d.VendorId, umd.QuadPart) : std::string("unknown");
@@ -173,6 +178,7 @@ void LogAdapters() {
         }
     }
     if (i == 0) LOGW("adapters: none found");
+    return list;
 }
 
 void LogCompatInputs(const CompatInputs& c) {
@@ -217,7 +223,9 @@ void SetUpPanel(const BootstrapState& s) {
         st.startWithFg = c.start_with_fg ? 1u : 0u;
         st.cameraFlipHandedness = c.camera_flip_handedness ? 1u : 0u;
         st.cameraNegateSide = c.camera_negate_side ? 1u : 0u;
-        st.spoofLoaded = s.spoof_loaded ? 1u : 0u;
+        st.spoofLoaded = s.spoof_panel;
+        st.rtx40 = s.predicted_rtx40 ? 1u : 0u;
+        st.mfgUnlockerLoaded = s.mfg_loaded ? 1u : 0u;
         st.driverWarning = s.driver_warnings.empty() ? 0u : 1u;
         CopyText(st.warning, s.driver_warnings.empty() ? std::string() : s.driver_warnings.front());
         CopyText(st.hotkey, hotkey);
@@ -284,14 +292,17 @@ void Run(BootstrapState* s) {
          c.enabled ? 1 : 0, c.start_with_fg ? 1 : 0, c.hotkey.ctrl ? "ctrl+" : "", c.hotkey.shift ? "shift+" : "",
          c.hotkey.alt ? "alt+" : "", c.hotkey.vk, c.max_frame_latency, LevelName(c.log_level));
     LOGI("config: camera_flip_handedness=%d camera_negate_side=%d proxy_without_fg=%d tag_without_fg=%d "
-         "fg_vram_headroom_mib=%s spoof_load_any=%d fg_multiplier=%u",
+         "fg_vram_headroom_mib=%s spoof_load_any=%d fg_multiplier=%u mfg_unlocker=%d",
          c.camera_flip_handedness ? 1 : 0, c.camera_negate_side ? 1 : 0, c.proxy_without_fg ? 1 : 0,
          c.tag_without_fg ? 1 : 0,
          c.fg_vram_headroom_auto ? "auto" : std::to_string(c.fg_vram_headroom_mib).c_str(),
-         c.spoof_load_any ? 1 : 0, c.fg_multiplier);
+         c.spoof_load_any ? 1 : 0, c.fg_multiplier, c.mfg_unlocker ? 1 : 0);
     for (const auto& w : c.warnings) LOGW("config: %s", w.c_str());
 
-    LogAdapters();
+    const PredictedAdapter renderAdapter = PredictRenderAdapter(LogAdapters());
+    const GpuArch renderArch =
+        renderAdapter.known ? ArchFromIds(renderAdapter.vendor, renderAdapter.device) : GpuArch::Unknown;
+    s->predicted_rtx40 = renderArch == GpuArch::Ada;
 
     s->docs_ac_dir = DocumentsAcDir();
     LOGI("game dir: %s", ToUtf8(s->game_dir).c_str());
@@ -302,28 +313,42 @@ void Run(BootstrapState* s) {
     // Spoof: dlssg_for_sm86's version.dll next to acs.exe (spec 10). On
     // Windows 11 25H2 the process can bind VERSION.dll to System32 before
     // acs.exe's own import; then the pinned spoof is loaded here, before slInit.
+    // A game-folder version.dll is identified first (issue 2): the pinned
+    // spoof by its hash, a copy of MFG-Unlocker by its export, else unknown.
     {
         SpoofInputs si;
         si.allow_any = s->config.spoof_load_any;
+        const std::wstring gameFile = s->game_dir + L"\\version.dll";
         if (const HMODULE version = GetModuleHandleW(L"version.dll")) {
             si.version_loaded = true;
             si.loaded_path = ModuleFileName(version);
             si.loaded_from_game_dir = SamePathNoCase(ParentDir(si.loaded_path), s->game_dir);
+            if (si.loaded_from_game_dir) {
+                si.loaded_is_mfg = GetProcAddress(version, kMfgQueryExport) != nullptr;
+                std::string hashErr;
+                if (!Sha256File(si.loaded_path, &si.loaded_sha256, &hashErr))
+                    LOGW("spoof: could not hash %s: %s", ToUtf8(si.loaded_path).c_str(), hashErr.c_str());
+            }
         }
-        const std::wstring gameFile = s->game_dir + L"\\version.dll";
         si.game_file_exists = GetFileAttributesW(gameFile.c_str()) != INVALID_FILE_ATTRIBUTES;
         if (si.game_file_exists && !si.loaded_from_game_dir) {
             std::string hashErr;
             if (!Sha256File(gameFile, &si.game_file_sha256, &hashErr))
                 LOGW("spoof: could not hash %s: %s", ToUtf8(gameFile).c_str(), hashErr.c_str());
+            std::string probeErr;
+            si.game_file_is_mfg = FileExportsName(gameFile, kMfgQueryExport, &probeErr);
+            if (!probeErr.empty())
+                LOGW("spoof: could not read the exports of %s: %s", ToUtf8(gameFile).c_str(), probeErr.c_str());
         }
         const SpoofDecision d = DecideSpoof(si);
         switch (d.action) {
             case SpoofAction::AlreadyLoaded:
                 s->spoof_loaded = true;
+                s->spoof_panel = SpoofPanelCode(d);
                 LOGI("spoof: %s", d.reason.c_str());
                 break;
             case SpoofAction::NotPresent:
+            case SpoofAction::NotTheSpoof:
                 LOGI("spoof: %s", d.reason.c_str());
                 break;
             case SpoofAction::Refused:
@@ -338,11 +363,66 @@ void Run(BootstrapState* s) {
                 std::string loadErr;
                 if (LoadSpoofModule(gameFile, &loadErr)) {
                     s->spoof_loaded = true;
+                    s->spoof_panel = SpoofPanelCode(d);
                     LOGI("spoof: loaded %s explicitly", ToUtf8(gameFile).c_str());
                 } else {
                     LOGW("spoof: loading %s failed: %s", ToUtf8(gameFile).c_str(), loadErr.c_str());
                 }
                 break;
+        }
+    }
+
+    // MFG-Unlocker on an RTX 40: the pinned copy the installer put into
+    // data_dir\mfg, by full path, before NVAPI and Streamline's interposer
+    // are loaded, so that it sees sl.dlss_g and nvngx_dlssg arrive.
+    {
+        MfgInputs mi;
+        mi.enabled = c.enabled;
+        mi.configured = c.mfg_unlocker;
+        const std::wstring mfgPath = MfgPath(s->data_dir);
+        mi.file_exists = FileExists(mfgPath);
+        if (mi.file_exists) {
+            std::string hashErr;
+            if (!Sha256File(mfgPath, &mi.file_sha256, &hashErr))
+                LOGW("mfg-unlocker: could not hash %s: %s", ToUtf8(mfgPath).c_str(), hashErr.c_str());
+        }
+        mi.render_adapter_known = renderAdapter.known;
+        mi.render_arch = renderArch;
+        mi.render_adapter = renderAdapter.name;
+        mi.spoof_loaded = s->spoof_loaded;
+        mi.other_copy_loaded = FindLoadedMfgCopy(&mi.other_copy_path);
+        const MfgDecision d = DecideMfg(mi);
+        switch (d.action) {
+            case MfgAction::NotInstalled:
+                LOGI("mfg-unlocker: %s", d.reason.c_str());
+                break;
+            case MfgAction::Skip:
+                if (d.warn) {
+                    LOGW("mfg-unlocker: %s", d.reason.c_str());
+                } else {
+                    LOGI("mfg-unlocker: %s", d.reason.c_str());
+                }
+                break;
+            case MfgAction::AlreadyLoaded:
+                s->mfg_loaded = true;
+                LOGI("mfg-unlocker: %s", d.reason.c_str());
+                break;
+            case MfgAction::Load: {
+                LOGI("mfg-unlocker: %s", d.reason.c_str());
+                double ms = 0;
+                std::string loadErr;
+                if (const HMODULE m = LoadMfgModule(mfgPath, &ms, &loadErr)) {
+                    s->mfg_loaded = true;
+                    LOGI("mfg-unlocker: %s",
+                         MfgLoadedLine(ToUtf8(mfgPath), ms, ModuleVersionText(m),
+                                       GetProcAddress(m, kMfgQueryExport) != nullptr)
+                             .c_str());
+                } else {
+                    LOGW("mfg-unlocker: loading %s failed after %.0f ms: %s; frame generation stays at 2X",
+                         ToUtf8(mfgPath).c_str(), ms, loadErr.c_str());
+                }
+                break;
+            }
         }
     }
 

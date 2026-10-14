@@ -37,6 +37,8 @@ struct PresenterEnvironment {
     // presenter's capture coordinator with NgxHook::SetSink.
     bool install_ngx_hook = false;
     bool spoof_loaded = false;      // dlssg_for_sm86's version.dll from the game folder
+    uint32_t spoof_panel = 0;       // the panel's spoofLoaded (SpoofPanelCode); 0 in the unit tests
+    bool mfg_loaded = false;        // MFG-Unlocker is in the process (BootstrapState::mfg_loaded)
     bool allow_stretching = false;  // dxgi_tweaks.ini ALLOW_STRETCHING=1 (runtime aspect test)
     const CameraChannel* camera = nullptr;  // nullptr: CameraChannel::Get()
     // Spec 6.9, the in-game panel: the status section the presenter publishes
