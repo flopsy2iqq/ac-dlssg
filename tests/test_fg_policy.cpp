@@ -480,6 +480,54 @@ TEST(FgMult_TheStatusNoteJoinsTheClampAndTheFallback) {
                          "400 MiB; falling back to 2X"));
 }
 
+// NVIDIA allows 3X and 4X only on RTX 50: an RTX 40 reports
+// numFramesToGenerateMax 1 unless MFG-Unlocker lifted that limit.
+TEST(FgMult_TheGpuHintNamesRtx50OnAnRtx40WithoutAnUnlock) {
+    for (uint32_t max : {0u, 1u}) {
+        CHECK_EQ(MultiplierGpuHint(true, false, true, max), std::string("NVIDIA enables 3X/4X only on RTX 50"));
+        CHECK_EQ(MultiplierGpuHint(true, true, true, max), std::string("MFG-Unlocker is loaded but did not unlock 3X/4X"));
+        CHECK_EQ(MultiplierGpuHint(false, true, true, max), std::string("MFG-Unlocker is loaded but did not unlock 3X/4X"));
+        CHECK(MultiplierGpuHint(false, false, true, max).empty());  // an RTX 30 or 50 says nothing about RTX 50
+    }
+    CHECK(MultiplierGpuHint(true, false, false, 0).empty());  // Streamline has not answered yet
+    CHECK(MultiplierGpuHint(true, true, false, 0).empty());
+    CHECK(MultiplierGpuHint(true, false, true, 2).empty());   // 3X allowed: nothing to explain
+    CHECK(MultiplierGpuHint(true, true, true, 3).empty());
+}
+
+TEST(FgMult_TheClampNoteCarriesTheGpuHint) {
+    CHECK_EQ(ClampNoteWithHint("4X requested, Streamline allows up to 2X; using 2X", "NVIDIA enables 3X/4X only on RTX 50"),
+             std::string("4X requested, Streamline allows up to 2X; using 2X (NVIDIA enables 3X/4X only on RTX 50)"));
+    CHECK(ClampNoteWithHint("", "NVIDIA enables 3X/4X only on RTX 50").empty());
+    CHECK_EQ(ClampNoteWithHint("4X requested, Streamline allows up to 3X; using 3X", ""),
+             std::string("4X requested, Streamline allows up to 3X; using 3X"));
+}
+
+TEST(FgText_TheMfgUnlockerLineSaysWhetherItUnlocked) {
+    MfgLogLine l = MfgUnlockLogLine(true, true, 3);
+    CHECK(!l.warn);
+    CHECK(l.text.find("4X") != std::string::npos);
+    CHECK(l.text.find("MFG-Unlocker") != std::string::npos);
+    CHECK(l.text.find("unofficial") != std::string::npos);
+    l = MfgUnlockLogLine(true, true, 2);
+    CHECK(!l.warn && l.text.find("3X") != std::string::npos);
+    l = MfgUnlockLogLine(true, true, 1);
+    CHECK(l.warn);
+    CHECK(l.text.find("did not unlock") != std::string::npos);
+    CHECK(l.text.find("RTXMFG-acs-") != std::string::npos);  // its own log in %TEMP%
+    l = MfgUnlockLogLine(true, false, 1);
+    CHECK(!l.warn);
+    CHECK(l.text.find("only on RTX 50") != std::string::npos);
+    CHECK(MfgUnlockLogLine(true, false, 3).text.empty());   // allowed without MFG-Unlocker: nothing to add
+    CHECK(MfgUnlockLogLine(false, false, 1).text.empty());  // not an RTX 40
+}
+
+TEST(FgText_TheDlssgProviderLineNamesPathAndVersion) {
+    CHECK_EQ(DlssgProviderLine(true, "D:/AC/ac-dlssg/sl/nvngx_dlssg.dll", "310.9.1.0"),
+             std::string("DLSS-G provider: D:/AC/ac-dlssg/sl/nvngx_dlssg.dll, version 310.9.1.0"));
+    CHECK_EQ(DlssgProviderLine(false, "", ""), std::string("DLSS-G provider: nvngx_dlssg.dll is not loaded"));
+}
+
 TEST(FgOptions_SentOnlyWhenStreamlineWouldSeeAChange) {
     // Nothing sent yet: always.
     CHECK(DlssgOptionsDue(false, false, 0, true, false, 1));

@@ -270,6 +270,33 @@ FgMultiplierChoice ChooseFgMultiplier(unsigned requested, uint32_t numFramesToGe
 // memory fallback, joined by "; " when both exist.
 std::string FgMultiplierNote(const std::string& clampNote, const std::string& vramFallback);
 
+// Why Streamline allows 2X only, once it answered (maxKnown) with a
+// numFramesToGenerateMax of 0 or 1: "MFG-Unlocker is loaded but did not
+// unlock 3X/4X" when it is in the process, else on an RTX 40 (rtx40, the
+// render adapter is Ada) "NVIDIA enables 3X/4X only on RTX 50". Empty
+// otherwise: a higher max, not known yet, or another GPU.
+std::string MultiplierGpuHint(bool rtx40, bool mfgLoaded, bool maxKnown, uint32_t numFramesToGenerateMax);
+
+// The clamp note with that hint in parentheses: "4X requested, Streamline
+// allows up to 2X; using 2X (NVIDIA enables 3X/4X only on RTX 50)". An empty
+// note stays empty, and an empty hint leaves the note as it is.
+std::string ClampNoteWithHint(const std::string& clampNote, const std::string& hint);
+
+// The "mfg-unlocker:" line of bridge.log once Streamline told the maximum,
+// without that prefix; empty text when there is nothing to say (not an
+// RTX 40 without MFG-Unlocker, or 3X/4X allowed without it). warn: log it at
+// WARN (MFG-Unlocker loaded, Streamline still at 2X).
+struct MfgLogLine {
+    std::string text;
+    bool warn = false;
+};
+MfgLogLine MfgUnlockLogLine(bool rtx40, bool mfgLoaded, uint32_t numFramesToGenerateMax);
+
+// "DLSS-G provider: <path>, version <version>", or "DLSS-G provider:
+// nvngx_dlssg.dll is not loaded": MFG-Unlocker patches only the provider
+// versions it knows, and NGX may load another copy than ac-dlssg\sl's.
+std::string DlssgProviderLine(bool loaded, const std::string& path, const std::string& version);
+
 // Spec 6.8: slDLSSGSetOptions only when something Streamline has would
 // change. known: options were sent before, with lastOn and lastFrames
 // (numFramesToGenerate). Always when nothing was sent; for a new mode; while

@@ -249,6 +249,45 @@ std::string FgMultiplierNote(const std::string& clampNote, const std::string& vr
     return clampNote + "; " + vramFallback;
 }
 
+std::string MultiplierGpuHint(bool rtx40, bool mfgLoaded, bool maxKnown, uint32_t numFramesToGenerateMax) {
+    if (!maxKnown || numFramesToGenerateMax > 1) return {};
+    if (mfgLoaded) return "MFG-Unlocker is loaded but did not unlock 3X/4X";
+    if (rtx40) return "NVIDIA enables 3X/4X only on RTX 50";
+    return {};
+}
+
+std::string ClampNoteWithHint(const std::string& clampNote, const std::string& hint) {
+    if (clampNote.empty() || hint.empty()) return clampNote;
+    return clampNote + " (" + hint + ")";
+}
+
+MfgLogLine MfgUnlockLogLine(bool rtx40, bool mfgLoaded, uint32_t numFramesToGenerateMax) {
+    MfgLogLine l;
+    const unsigned allowed = ChooseFgMultiplier(4, numFramesToGenerateMax).multiplier;
+    if (mfgLoaded && allowed > 2) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "Streamline allows up to %uX: MFG-Unlocker lifted NVIDIA's RTX 50-only limit (unofficial)", allowed);
+        l.text = buf;
+        return l;
+    }
+    if (mfgLoaded) {
+        l.warn = true;
+        l.text = "loaded, but Streamline still allows 2X only: MFG-Unlocker did not unlock 3X/4X. The DLSS-G provider "
+                 "(see the \"DLSS-G provider\" line) is probably a version it does not support; its own log is "
+                 "%TEMP%\\RTXMFG-acs-<id>.log";
+        return l;
+    }
+    if (rtx40 && allowed == 2)
+        l.text = "not loaded; NVIDIA enables 3X/4X only on RTX 50, so this RTX 40 runs 2X";
+    return l;
+}
+
+std::string DlssgProviderLine(bool loaded, const std::string& path, const std::string& version) {
+    if (!loaded) return "DLSS-G provider: nvngx_dlssg.dll is not loaded";
+    return "DLSS-G provider: " + path + ", version " + version;
+}
+
 bool DlssgOptionsDue(bool known, bool lastOn, uint32_t lastFrames, bool sameHints, bool on, uint32_t frames) {
     if (!known || on != lastOn) return true;
     return on && (!sameHints || frames != lastFrames);
