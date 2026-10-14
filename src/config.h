@@ -47,6 +47,10 @@ struct Config {
     // bootstrap loads the game folder's version.dll itself only if it is the
     // pinned dlssg_for_sm86 release; 1 loads any version.dll there.
     bool spoof_load_any = false;  // spoof_load_any=0|1
+    // On an RTX 40 the bootstrap loads the pinned MFG-Unlocker that the
+    // installer put into ac-dlssg\mfg (DecideMfg); 0 leaves it unloaded, so
+    // that DLSS-G runs as NVIDIA ships it (2X).
+    bool mfg_unlocker = true;  // mfg_unlocker=0|1
     // Multi frame generation (spec 3, 6.8): the multiplier asked of DLSS-G,
     // numFramesToGenerate = fg_multiplier - 1. Streamline's
     // numFramesToGenerateMax and the video memory guard may lower it

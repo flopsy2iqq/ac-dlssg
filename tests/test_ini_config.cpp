@@ -526,6 +526,18 @@ TEST(Config_SpoofLoadAny) {
     CHECK(c.warnings[0].find("spoof_load_any") != std::string::npos);
 }
 
+// mfg_unlocker=0 keeps the bridge from loading the MFG-Unlocker that the
+// installer put into ac-dlssg\mfg on an RTX 40; a missing key loads it.
+TEST(Config_MfgUnlockerIsOnUnlessSetToZero) {
+    CHECK(ParseConfig(IniFile::Parse("")).mfg_unlocker);
+    CHECK(ParseConfig(IniFile::Parse("[bridge]\nmfg_unlocker=1\n")).mfg_unlocker);
+    CHECK(!ParseConfig(IniFile::Parse("[bridge]\nmfg_unlocker=0\n")).mfg_unlocker);
+    Config c = ParseConfig(IniFile::Parse("[bridge]\nmfg_unlocker=off\n"));
+    CHECK(c.mfg_unlocker);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("mfg_unlocker") != std::string::npos);
+}
+
 // Multi frame generation (spec 3, 6.8): fg_multiplier=2|3|4, 2X by default.
 // The key asks for a multiplier; Streamline's numFramesToGenerateMax and the
 // video memory guard decide what DLSS-G gets (fg_policy.h).
