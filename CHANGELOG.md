@@ -4,6 +4,24 @@ All notable changes to ac-dlssg are listed here. Versions follow
 [Semantic Versioning](https://semver.org/). The release workflow publishes the
 section of a version as its GitHub release notes.
 
+## [1.2.0] - 2026-10-14
+
+### Added
+
+- **3X and 4X on RTX 40 through MFG-Unlocker** (GitHub issue 2). NVIDIA allows DLSS Frame Generation 2X on RTX 40 and enables 3X and 4X only on RTX 50. On a PC whose NVIDIA GPUs are all RTX 40 (no RTX 30 and no RTX 50 next to them), the installer now prints a notice and downloads the third-party [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker) by dashdogy, which lifts that limit (unofficial): the release asset `MFGUnlocker-v1.5.0.zip` of tag v1.5.0 from the author's GitHub release, checked against its pinned size and SHA-256, and the SHA-256 of `MFGUnlocker.dll` in it. Only that DLL is kept, as `<game>\ac-dlssg\mfg\version.dll`, never next to `acs.exe`. The notice says that it is a third-party project by dashdogy and not an NVIDIA project, that its code is under MIT and it contains Intel XeSS-derived data under Intel's terms, that it lifts NVIDIA's RTX 50-only restriction (section 4.d of the NVIDIA RTX SDKs License) by patching NVIDIA's DLSS-G code in memory (no file on disk is changed), that its own Backspace menu should stay on "Follow game", and that the game may load slower. `install.bat -NoMfgUnlocker` installs without it and removes the copy an earlier install put there.
+- The bridge loads it by full path at start, before Streamline, only with `enabled=1` and the new `mfg_unlocker=1` (the default; the installer writes it), only the pinned file, only when the GPU the game renders on is an RTX 40, and never next to dlssg_for_sm86. `bridge.log` logs the load with its time in ms and its file version, and later the loaded DLSS-G provider (`nvngx_dlssg.dll`) with its path and version, and whether 3X/4X were unlocked.
+- A failed MFG-Unlocker download or a hash mismatch is a warning: everything else is installed, and frame generation stays at 2X. An MFG-Unlocker you installed yourself (a proxy DLL next to `acs.exe` that exports `MfgUnlockSingleModuleQuery`, or its older file names) is left alone, and the installer does not add its own copy next to it.
+- On an RTX 40 without MFG-Unlocker, the dimmed 3X and 4X buttons and the multiplier note say "NVIDIA enables 3X/4X only on RTX 50". With it, the GPU line under Details says ", RTX 40 via MFG-Unlocker (unofficial)", or ", MFG-Unlocker loaded but did not unlock" when Streamline still allows 2X only. The 4X cap and the clamp to what Streamline allows stay.
+- The uninstaller removes MFG-Unlocker (only while it is the file installed), and `uninstall.bat -RemoveData` also deletes its settings next to `acs.exe` (`RTXMFG-Universal.json`, `RTXMFG-Universal.status.json`, `RTX40MFG-UI.ini`, `RTX40MFG-UI-layout.ini`) and its logs in `%TEMP%` when the installer put it there. `collect-logs.bat` collects them. The install manifest records it (schema 6); schema 5 manifests upgrade without a step.
+
+### Fixed
+
+- A `version.dll` in the game folder is identified before the bridge calls it dlssg_for_sm86: by the pinned SHA-256, as MFG-Unlocker by its export, or as unknown. Before, any `version.dll` that Windows 10 loaded from the game folder (also a user's MFG-Unlocker) was logged and shown as "dlssg_for_sm86 loaded". `spoof_load_any=1` never loads MFG-Unlocker as the spoof.
+
+### Documentation
+
+- The READMEs, the install guides, the Steam guide, the Nexus and OverTake page texts and `THIRD_PARTY_NOTICES.txt` describe NVIDIA's 2X limit on RTX 40 and MFG-Unlocker, what it downloads and changes in the game folder, and how to leave it out or remove it. The earlier texts said that 3X and 4X run only on RTX 50 and on RTX 30.
+
 ## [1.1.1] - 2026-10-13
 
 ### Fixed
