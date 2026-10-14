@@ -16,11 +16,15 @@
     ac-dlssg\install\dev-manifest.json
                              what install.ps1 installed (mode, file hashes)
     game-files.txt           the game folder's files with versions, and SHA-256
-                             of its DLLs, of ac-dlssg\sl, of the CSP Lua app in
-                             apps\lua\AcDlssg and of dlssg_sm86
+                             of its DLLs, of ac-dlssg\sl, of ac-dlssg\mfg, of the
+                             CSP Lua app in apps\lua\AcDlssg and of dlssg_sm86
     dlssg_sm86\logs\...      the dlssg_for_sm86 spoof's own logs (loader_<pid>.jsonl,
                              backend_<pid>.jsonl), the newest 20, when the spoof
                              is installed
+    mfg-unlocker\...         MFG-Unlocker's settings and status next to acs.exe
+                             (RTXMFG-Universal.json, RTXMFG-Universal.status.json,
+                             RTX40MFG-UI.ini) and its logs in %TEMP%
+                             (RTXMFG-acs-<id>.log and .previous.log), when it ran
     documents\...            Assetto Corsa's log.txt and CSP's
                              custom_shaders_patch.log of the last run, and
                              acdlssg-lua-app.txt: the lines of that CSP log from or
@@ -168,7 +172,7 @@ try {
         foreach ($f in @(Get-ChildItem -LiteralPath $game -File -Force | Sort-Object Name)) {
             $listing.Add((Get-FileLine $f ($f.Extension -ieq '.dll')))
         }
-        foreach ($sub in @('ac-dlssg\sl', 'apps\lua\AcDlssg', 'dlssg_sm86')) {
+        foreach ($sub in @('ac-dlssg\sl', 'ac-dlssg\mfg', 'apps\lua\AcDlssg', 'dlssg_sm86')) {
             $dir = Join-Path $game $sub
             if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $listing.Add("($sub not present)"); continue }
             $listing.Add('')
@@ -187,6 +191,14 @@ try {
             if ($jsonl.Count -eq 0) { Note "no .jsonl files in $spoofLogs" }
         } else {
             Note "$spoofLogs not present (no dlssg_for_sm86 spoof)"
+        }
+
+        # MFG-Unlocker writes its settings next to acs.exe and its log, named
+        # after acs.exe's path, into %TEMP%.
+        if (Get-Command Get-MfgOwnFiles -ErrorAction SilentlyContinue) {
+            $mfgFiles = @(Get-MfgOwnFiles $game | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+            foreach ($f in $mfgFiles) { Add-File $f "mfg-unlocker\$(Split-Path -Leaf $f)" $staging }
+            if ($mfgFiles.Count -eq 0) { Note 'no MFG-Unlocker settings or logs (it is not installed, or has not run)' }
         }
     }
 

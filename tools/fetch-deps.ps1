@@ -35,6 +35,15 @@
   and on any mismatch the downloads are deleted. Never the repository
   archive and nothing under alternatives/ (spec 10).
 
+  Mfg (only with -Only Mfg; the test package's install.ps1 asks for it on a
+  PC whose NVIDIA GPUs are all RTX 40): downloads MFGUnlocker-v1.5.0.zip, the
+  release asset of tag v1.5.0 of github.com/dashdogy/MFG-Unlocker (pins in
+  dev-common.ps1), into <DepsDir>\download, checks its size and SHA-256 and
+  that it holds exactly one MFGUnlocker.dll, extracts that one file, checks
+  its SHA-256, and moves it into <DepsDir>\mfg-unlocker-1.5.0. The zip is
+  always deleted, and on any mismatch the extracted file too; nothing of it
+  is ever re-hosted.
+
   Idempotent: files that are already present and verified are not downloaded
   again. Everything temporary (downloads, extraction staging, a replaced
   streamline-2.14.1.old-* folder) stays under <DepsDir>. A relative
@@ -60,8 +69,8 @@ param(
     [string]$StreamlineZip = '',
     # Keep the downloaded Streamline zip in <DepsDir>\download.
     [switch]$KeepZip,
-    # Stage only these parts (default: Streamline and Nvapi; Spoof only when named).
-    [ValidateSet('Streamline', 'Nvapi', 'Spoof')]
+    # Stage only these parts (default: Streamline and Nvapi; Spoof and Mfg only when named).
+    [ValidateSet('Streamline', 'Nvapi', 'Spoof', 'Mfg')]
     [string[]]$Only = @('Streamline', 'Nvapi'),
     # Spoof: which of its files to stage (default: both).
     [ValidateSet('version.dll', 'dlssg_sm86.ini')]
@@ -71,7 +80,13 @@ param(
     [string]$SpoofSourceDir = '',
     # Spoof, for tests only: a JSON file with the pins of those files (see
     # Get-SpoofPins in dev-common.ps1).
-    [string]$SpoofPins = ''
+    [string]$SpoofPins = '',
+    # Mfg, for tests only: copy the release zip (named as the release asset)
+    # from this folder instead of downloading it; it goes through the same checks.
+    [string]$MfgSourceDir = '',
+    # Mfg, for tests only: a JSON file with the pins of that zip (see
+    # Get-MfgPins in dev-common.ps1).
+    [string]$MfgPins = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -432,6 +447,74 @@ function Invoke-SpoofFetch {
     Write-Host "$($script:AcdbSpoofProject): $($SpoofFiles.Count) files in $dir ($($todo.Count) fetched)"
 }
 
+# --- MFG-Unlocker -----------------------------------------------------------
+
+# MFGUnlocker.dll from the pinned release zip into
+# <DepsDir>\mfg-unlocker-<version>: the zip (downloaded into
+# <DepsDir>\download, or copied from -MfgSourceDir) must have the pinned size
+# and SHA-256 and exactly one entry named MFGUnlocker.dll, and that file the
+# pinned SHA-256. The zip is always deleted; on any mismatch the extracted
+# file too.
+function Invoke-MfgFetch {
+    $pins = Get-MfgPins $MfgPins
+    $asset = Get-MfgAsset
+    $dllName = $script:AcdbMfgZipDll
+    $dir = Join-Path $DepsDir (Get-MfgStageDirName)
+    $target = Join-Path $dir $dllName
+    $downloadDir = Join-Path $DepsDir 'download'
+    Write-Host "  $($script:AcdbMfgProject) $($script:AcdbMfgPin.Version): $dllName from the release asset $asset of github.com/$($script:AcdbMfgRepository)"
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        $sha = Get-Sha256Hex $target
+        if ($sha -eq $pins.DllSha256) {
+            Write-Host "  $dllName present and verified"
+            Write-Host "$($script:AcdbMfgProject): $target (0 fetched)"
+            return
+        }
+        Write-Host "  $target has SHA-256 $sha, not the pinned $($pins.DllSha256); deleted, fetching it again"
+        Remove-IfPresent $target
+    }
+    $zip = Join-Path $downloadDir $asset
+    $temp = Join-Path $downloadDir $dllName
+    try {
+        if ($MfgSourceDir) {
+            $from = Join-Path $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($MfgSourceDir) $asset
+            Write-Host "  copying $from (-MfgSourceDir, no download)"
+            if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { Stop-Fetch "-MfgSourceDir has no $asset" }
+            New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+            Copy-Item -LiteralPath $from -Destination $zip -Force
+        } else {
+            Write-Host "  downloading $(Get-MfgUrl) ($($pins.ZipSize) bytes)"
+            Invoke-Download (Get-MfgUrl) $zip
+        }
+        $size = (Get-Item -LiteralPath $zip).Length
+        $sha = Get-Sha256Hex $zip
+        if ($size -ne $pins.ZipSize -or $sha -ne $pins.ZipSha256) {
+            Stop-Fetch "the downloaded $asset is $size bytes with SHA-256 $sha; expected $($pins.ZipSize) bytes with SHA-256 $($pins.ZipSha256); the download was deleted"
+        }
+        Write-Host "  $asset verified ($size bytes, SHA-256 $sha)"
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+            $entries = @($archive.Entries | Where-Object { $_.Name -ieq $dllName })
+            if ($entries.Count -eq 0) { Stop-Fetch "$asset has no $dllName; the download was deleted" }
+            if ($entries.Count -gt 1) { Stop-Fetch "the zip holds $($entries.Count) entries named $dllName; the download was deleted" }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entries[0], $temp, $true)
+        } finally {
+            $archive.Dispose()
+        }
+        $sha = Get-Sha256Hex $temp
+        if ($sha -ne $pins.DllSha256) { Stop-Fetch "$dllName has SHA-256 $sha, expected $($pins.DllSha256); the download was deleted" }
+        Write-Host "  $dllName verified (SHA-256 $sha)"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Move-Item -LiteralPath $temp -Destination $target
+    } finally {
+        foreach ($f in @($zip, "$zip.partial", $temp)) { Remove-IfPresent $f }
+        Remove-IfEmptyDir $downloadDir
+    }
+    Write-Host "$($script:AcdbMfgProject): $target (1 fetched)"
+}
+
 # --- Main ------------------------------------------------------------------
 
 try {
@@ -444,6 +527,7 @@ try {
     if ($Only -contains 'Nvapi') { Invoke-NvapiFetch }
     if ($Only -contains 'Streamline') { Invoke-StreamlineFetch }
     if ($Only -contains 'Spoof') { Invoke-SpoofFetch }
+    if ($Only -contains 'Mfg') { Invoke-MfgFetch }
     Write-Host 'fetch-deps: OK'
     exit 0
 } catch {

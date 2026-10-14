@@ -102,6 +102,21 @@
   dev-uninstall.ps1 leaves them; a file that an earlier run installed and
   that is unchanged stays recorded as installed.
 
+.PARAMETER MfgInstall
+  MFG-Unlocker's MFGUnlocker.dll, already checked against its pin: the test
+  package's install.ps1 passes the one scripts\fetch-deps.ps1 staged on a PC
+  whose NVIDIA GPUs are all RTX 40. It goes into <game>\ac-dlssg\mfg\version.dll
+  after the Streamline files, through .new, a hash check and a rename, and is
+  recorded in the manifest (mfgUnlocker). A file there that the manifest
+  does not record as installed with its current hash is refused, also with
+  -Force or -AutoUpgrade. An existing ac-dlssg.ini without mfg_unlocker gets
+  "mfg_unlocker=1" with its comment at the end of [bridge]; every other byte
+  stays.
+
+.PARAMETER MfgRemove
+  Removes the MFG-Unlocker copy an earlier run installed (only while it is
+  the file installed; a changed one stays with a warning) and its record.
+
 .PARAMETER Tools
   A folder whose files go into <game>\ac-dlssg as they are: the test
   package's files\ac-dlssg, which its install.ps1 passes, with uninstall.bat
@@ -145,6 +160,8 @@ param(
     [string[]]$SpoofInstall = @(),
     [string[]]$SpoofFound = @(),
     [string]$Tools,
+    [string]$MfgInstall,
+    [switch]$MfgRemove,
     [switch]$Force,
     [switch]$AutoUpgrade
 )
@@ -246,9 +263,35 @@ function Get-DefaultConfigText {
         '; as the screen''s right (mirrors the reprojection).',
         'camera_flip_handedness=0',
         '; 1 negates only the right vector DLSS-G receives; the matrices stay.',
-        'camera_negate_side=0'
+        'camera_negate_side=0',
+        $script:AcdbMfgComment[0],
+        $script:AcdbMfgComment[1],
+        'mfg_unlocker=1'
     )
     return ($lines -join "`r`n") + "`r`n"
+}
+
+# mfg_unlocker: its comment in the ini the install writes, and in an existing
+# one that gets the key when MFG-Unlocker is installed.
+$script:AcdbMfgComment = @(
+    '; MFG-Unlocker (unofficial, 3X/4X on RTX 40; the installer puts it into ac-dlssg\mfg on such a PC):',
+    '; 1 loads it, 0 keeps NVIDIA''s 2X there.')
+
+# The ini's bytes with "mfg_unlocker=1" and its comment at the end of
+# [bridge] when no [bridge] block has the key, in the file's line endings;
+# $null when nothing is to change (the key is there, or no [bridge]).
+function Add-MfgUnlockerKey([byte[]]$Bytes) {
+    $doc = ConvertFrom-IniBytes $Bytes
+    $blocks = @(Get-IniSections $doc 'bridge')
+    if ($blocks.Count -eq 0) { return $null }
+    foreach ($b in $blocks) { if (@(Find-IniKeyLines $doc $b 'mfg_unlocker').Count -gt 0) { return $null } }
+    $block = $blocks[$blocks.Count - 1]
+    $at = $block.Header
+    for ($i = $block.Header + 1; $i -lt $block.End; $i++) {
+        if ((Get-IniLineInfo $doc.Lines[$i].Text).Kind -ne 'blank') { $at = $i }
+    }
+    Add-IniLines $doc ($at + 1) (@($script:AcdbMfgComment | ForEach-Object { ConvertTo-RawText $_ }) + 'mfg_unlocker=1')
+    return , (ConvertTo-IniBytes $doc)
 }
 
 # The ac-dlssg.ini keys M3 added; an existing ini without them gets the
@@ -641,6 +684,31 @@ try {
             Step "$path was already there; left as it is and recorded as found (dev-uninstall.ps1 leaves it)"
         }
     }
+    # MFG-Unlocker into <game>\ac-dlssg\mfg (-MfgInstall), after Streamline
+    # and before the Lua app. Only a file the manifest records as installed,
+    # with its hash, is ours; anything else there is never replaced.
+    if ($MfgInstall -and $MfgRemove) { Stop-Refused '-MfgInstall and -MfgRemove exclude each other.' }
+    $mfgOld = $null
+    if ($manifest -and $manifest.PSObject.Properties['mfgUnlocker'] -and $manifest.mfgUnlocker) { $mfgOld = $manifest.mfgUnlocker }
+    $mfgRecorded = $null
+    if ($mfgOld) {
+        $rec = @($mfgOld.files | Where-Object { [string]$_.path -ieq $script:AcdbMfgRel -and [string]$_.origin -eq 'installed' })
+        if ($rec.Count -eq 1) { $mfgRecorded = [string]$rec[0].sha256 }
+    }
+    $mfgDir = Join-Path $dataDir $script:AcdbMfgDirName
+    $mfgTarget = Join-Path $game $script:AcdbMfgRel
+    $mfgPlans = @()
+    if ($MfgInstall) {
+        if (-not (Test-Path -LiteralPath $MfgInstall -PathType Leaf)) { Stop-Refused "-MfgInstall $MfgInstall was not found." }
+        $mfgPlan = New-FilePlan (Get-NormalizedPath (Resolve-Path -LiteralPath $MfgInstall).ProviderPath) $mfgTarget $script:AcdbMfgRel $mfgRecorded
+        if ($mfgPlan.Foreign) {
+            Stop-Refused ("$mfgTarget (SHA-256 $($mfgPlan.TargetHash)) was not installed by this script, and an MFG-Unlocker file " +
+                'that is not ours is never replaced. Delete it first if you no longer use it.')
+        }
+        $mfgPlans += $mfgPlan
+    }
+    $mfgRemoval = $null
+    if ($MfgRemove -and $mfgOld -and $mfgRecorded) { $mfgRemoval = New-ObsoletePlan $script:AcdbMfgRel $mfgRecorded $mfgDir 'mfg' }
     # The Lua app after Streamline and before the bridge (spec 12 order). A
     # folder of that name that this script did not install may be another app:
     # refused. The folders a first install creates are recorded, deepest first,
@@ -686,7 +754,7 @@ try {
     $dllRecorded = $null
     if ($manifest -and -not $modeSwitch) { $dllRecorded = [string]$manifest.dll.sha256 }
     $dllPlan = New-FilePlan $source $target $targetRel $dllRecorded
-    $plans = @($slPlans) + @($spoofPlans) + @($luaPlans) + @($toolPlans) + @($dllPlan)
+    $plans = @($slPlans) + @($spoofPlans) + @($mfgPlans) + @($luaPlans) + @($toolPlans) + @($dllPlan)
     # Changed outside this script: replaced only with consent (spec 12).
     $foreign = @($plans | Where-Object { $_.Foreign })
     if ($foreign.Count -gt 0 -and -not ($Force -or $AutoUpgrade)) {
@@ -835,13 +903,30 @@ try {
     } elseif ($manifest -and $manifest.PSObject.Properties['spoof'] -and $manifest.spoof) {
         $spoofRecord = $manifest.spoof
     }
-    # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof, schema 5 tools;
-    # dev-uninstall.ps1 reads a schema 1 manifest as reshade, and one without
-    # luaApp, spoof or tools as one without the Lua app, the spoof or the
-    # tools. Every run writes the whole manifest, so an older one becomes
-    # schema 5 on the next install.
+    # MFG-Unlocker: the copy installed now; none after -MfgRemove (a changed
+    # copy that stays is no longer ours); else the earlier record.
+    $mfgRecord = $null
+    if ($mfgPlans.Count -gt 0) {
+        $mfgRecord = [ordered]@{
+            project     = $script:AcdbMfgProject
+            version     = $script:AcdbMfgPin.Version
+            repository  = $script:AcdbMfgRepository
+            tag         = Get-MfgTag
+            asset       = Get-MfgAsset
+            assetSha256 = $script:AcdbMfgPin.ZipSha256
+            files       = @([ordered]@{ path = $script:AcdbMfgRel; sha256 = $mfgPlans[0].SourceHash; origin = 'installed' })
+        }
+    } elseif (-not $MfgRemove -and $mfgOld) {
+        $mfgRecord = $mfgOld
+    }
+    # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof, schema 5 tools,
+    # schema 6 mfgUnlocker; dev-uninstall.ps1 reads a schema 1 manifest as
+    # reshade, and one without luaApp, spoof, tools or mfgUnlocker as one
+    # without the Lua app, the spoof, the tools or MFG-Unlocker. Every run
+    # writes the whole manifest, so an older one becomes schema 6 on the next
+    # install.
     $newManifest = [ordered]@{
-        schema       = 5
+        schema       = 6
         tool         = 'tools\dev-install.ps1'
         mode         = $chosen.Mode
         state        = 'installing'
@@ -851,6 +936,7 @@ try {
         reshade      = $reshadeRecord
         streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
         spoof        = $spoofRecord
+        mfgUnlocker  = $mfgRecord
         luaApp       = [ordered]@{ source = $luaSourceDir; dir = $script:AcdbLuaAppRelDir; createdDirs = $luaCreatedDirs; files = $luaFiles }
         tools        = $toolsRecord
         dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }
@@ -899,6 +985,15 @@ try {
     foreach ($o in $obsoleteKeep) {
         Step "note: $($o.Path) is a file an earlier run installed that this build no longer ships; it was changed since (SHA-256 $($o.Hash)), so it stays (-Force removes it)"
     }
+    if ($mfgRemoval -and $mfgRemoval.Hash) {
+        if ($mfgRemoval.Hash -eq $mfgRemoval.Recorded) {
+            $drop = Remove-ObsoleteFile $mfgRemoval $backupDir $stamp 'the MFG-Unlocker an earlier install put there (-MfgRemove)'
+            if ($drop) { $backupsToDrop += $drop }
+        } else {
+            Step ("WARNING: $($mfgRemoval.Path) was changed since the install (SHA-256 $($mfgRemoval.Hash)); it stays, and it is no " +
+                'longer recorded as ours. Delete it by hand if you no longer use it.')
+        }
+    }
 
     if ($configExisted) {
         Step "kept the existing $config"
@@ -909,6 +1004,16 @@ try {
             $tempFiles += "$config.new"
             [void](Write-BytesViaTemp $config $headroom.Bytes)
             foreach ($action in $headroom.Actions) { Step $action }
+        }
+        if ($mfgPlans.Count -gt 0) {
+            $configBytes = [System.IO.File]::ReadAllBytes($config)
+            $withKey = Add-MfgUnlockerKey $configBytes
+            if ($withKey) {
+                $rollback += @{ Kind = 'restorebytes'; Path = $config; Bytes = $configBytes }
+                $tempFiles += "$config.new"
+                [void](Write-BytesViaTemp $config $withKey)
+                Step 'added mfg_unlocker=1 to the end of [bridge] (MFG-Unlocker is installed)'
+            }
         }
         $configDoc = Read-IniDoc $config
         $lacking = @($script:AcdbM3ConfigKeys | Where-Object { $null -eq (Get-IniFirstValue $configDoc 'bridge' $_) })
@@ -935,6 +1040,10 @@ try {
 
     $newManifest.state = 'installed'
     Write-Manifest $manifestPath $newManifest
+    # ac-dlssg\mfg when -MfgRemove left it empty.
+    if ($mfgRemoval -and (Test-Path -LiteralPath $mfgDir -PathType Container) -and @(Get-ChildItem -LiteralPath $mfgDir -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $mfgDir -Force
+    }
     # Folders of the Lua app that the removed files leave empty.
     if ($obsoleteRemove.Count -gt 0 -and (Test-Path -LiteralPath $luaDir -PathType Container)) {
         foreach ($d in @(Get-ChildItem -LiteralPath $luaDir -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending)) {

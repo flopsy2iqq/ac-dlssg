@@ -25,7 +25,8 @@
                          when the game folder needs them, gets Streamline with
                          fetch-deps.ps1 into files\deps unless -StreamlineDir is
                          given, on an RTX 30 also dlssg_for_sm86 0.3.5 (unless
-                         -NoSpoof), runs dev-install.ps1 -AutoUpgrade (default
+                         -NoSpoof), on RTX 40 GPUs only MFG-Unlocker 1.5.0
+                         (unless -NoMfgUnlocker), runs dev-install.ps1 -AutoUpgrade (default
                          -Mode Auto); it asks nothing
     scripts\uninstall.ps1
                          tools\package\uninstall.ps1: runs dev-uninstall.ps1
@@ -47,12 +48,15 @@
   fails when the root would hold anything but install.bat and the folders
   docs, files, scripts and tools, or when docs\ lacks one of its files.
 
-  It never contains an NVIDIA DLL or a dlssg_for_sm86 file (spec 13): the
-  tester's install.ps1 downloads Streamline from NVIDIA's GitHub release and
-  checks its SHA-256 and NVIDIA's signatures, and on an RTX 30 downloads
-  dlssg_for_sm86 from its author's repository and checks its pinned hashes.
-  The script fails when the package would hold any DLL other than
-  files\ac-dlssg.dll.
+  It never contains an NVIDIA DLL, a dlssg_for_sm86 file or an MFG-Unlocker
+  file (spec 13): the tester's install.ps1 downloads Streamline from NVIDIA's
+  GitHub release and checks its SHA-256 and NVIDIA's signatures, on an RTX 30
+  downloads dlssg_for_sm86 from its author's repository and checks its pinned
+  hashes, and on a PC with RTX 40 GPUs only downloads MFG-Unlocker's release
+  asset from its author's GitHub and checks its pinned hashes. The script
+  fails when the package would hold any DLL other than files\ac-dlssg.dll, an
+  .asi file, or a file named like one of those projects' (Test-RehostedFile
+  in dev-common.ps1).
 
   An existing package folder and zip of the same version are replaced.
 
@@ -209,12 +213,10 @@ try {
     $missingDocs = @(@($script:PackageDocs) + 'README-test.txt' | Where-Object { -not (Test-Path -LiteralPath (Join-Path $docsDir (Split-Path -Leaf $_)) -PathType Leaf) })
     if ($missingDocs.Count -gt 0) { throw "docs\ lacks $($missingDocs -join ', ')" }
 
-    # Project rule: no NVIDIA DLL and no dlssg_for_sm86 file is ever re-hosted.
+    # Project rule: no NVIDIA, dlssg_for_sm86 or MFG-Unlocker file is ever
+    # re-hosted (Test-RehostedFile in dev-common.ps1).
     $files = @(Get-ChildItem -LiteralPath $pkg -Recurse -File)
-    $bad = @($files | Where-Object {
-            ($_.Extension -ieq '.dll' -and $_.FullName -ne (Join-Path $filesDir 'ac-dlssg.dll')) -or
-            $_.Name -match '(?i)^(nvngx|sl\.|dlssg_sm86)'
-        })
+    $bad = @($files | Where-Object { Test-RehostedFile $_.FullName.Substring($pkg.Length + 1) })
     if ($bad.Count -gt 0) { throw "the package would hold files it must not: $(($bad | ForEach-Object { $_.FullName }) -join ', ')" }
 
     Add-Type -AssemblyName System.IO.Compression

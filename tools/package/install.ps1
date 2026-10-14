@@ -55,6 +55,24 @@
          changed.
        - RTX 40 and RTX 50: nothing is needed.
        - RTX 20: frame generation is not supported there; no spoof.
+     3b. MFG-Unlocker, unless -NoMfgUnlocker is given, only when every NVIDIA
+     adapter is an RTX 40 (Ada; no RTX 30 and no RTX 50 next to it). NVIDIA
+     allows 2X there and 3X/4X only on RTX 50; MFG-Unlocker lifts that. It
+     prints what MFG-Unlocker is, then gets the pinned release (the asset
+     MFGUnlocker-v1.5.0.zip of tag v1.5.0 of github.com/dashdogy/MFG-Unlocker)
+     with scripts\fetch-deps.ps1 into files\deps\, checks the zip's size and
+     SHA-256 and the SHA-256 of MFGUnlocker.dll in it, and has dev-install.ps1
+     put that DLL into <game>\ac-dlssg\mfg\version.dll (never next to
+     acs.exe), where the bridge loads it. A copy that is already there as the
+     pinned version is not downloaded again. A download that fails or does
+     not match is deleted with a warning, and everything else is installed
+     (frame generation stays at 2X). It is not installed, with a warning, next
+     to dlssg_for_sm86's version.dll, next to an MFG-Unlocker the user
+     installed (a proxy name next to acs.exe that exports
+     MfgUnlockSingleModuleQuery, or the file names of its builds), or over a
+     file in ac-dlssg\mfg that no install put there. On any other PC, with
+     -NoMfgUnlocker, or next to a user's copy, a copy an earlier install put
+     into ac-dlssg\mfg is removed (only while it is the file installed).
   4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll, the
      CSP Lua app files\apps\lua\AcDlssg and, as -Tools, files\ac-dlssg: the
      uninstaller and the log collector go into <game>\ac-dlssg
@@ -82,6 +100,10 @@
   Skip step 3: no GPU check, no dlssg_for_sm86 download or install. Spoof
   files an earlier run installed stay, and uninstall.ps1 still removes them.
 
+.PARAMETER NoMfgUnlocker
+  Skip step 3b: no MFG-Unlocker download or install, and the copy an earlier
+  run put into <game>\ac-dlssg\mfg is removed.
+
 .PARAMETER NoElevate
   For tests: when the game folder is not writable, refuse instead of
   starting again with administrator rights.
@@ -102,11 +124,22 @@
   For tests: a JSON file with the pins of the -SpoofSourceDir files (see
   Get-SpoofPins in scripts\dev-common.ps1).
 
+.PARAMETER MfgSourceDir
+  For tests: a folder whose MFGUnlocker-v1.5.0.zip stands in for the
+  download; it goes through the same checks.
+
+.PARAMETER MfgPins
+  For tests: a JSON file with the pins of that zip (see Get-MfgPins in
+  scripts\dev-common.ps1).
+
 .EXAMPLE
   install.bat
 
 .EXAMPLE
   install.bat -NoSpoof
+
+.EXAMPLE
+  install.bat -NoMfgUnlocker
 #>
 param(
     [string]$GameDir,
@@ -119,7 +152,10 @@ param(
     [switch]$Elevated,
     [string[]]$GpuDeviceIds,
     [string]$SpoofSourceDir,
-    [string]$SpoofPins
+    [string]$SpoofPins,
+    [switch]$NoMfgUnlocker,
+    [string]$MfgSourceDir,
+    [string]$MfgPins
 )
 
 $ErrorActionPreference = 'Stop'
@@ -282,6 +318,130 @@ function Get-SpoofInstallArgs([string]$Game) {
     return $result
 }
 
+# Printed before the MFG-Unlocker download; the install goes on without a question.
+function Write-MfgNotice([string]$Game) {
+    $v = $script:AcdbMfgPin.Version
+    Say ('This PC has RTX 40 GPUs only. NVIDIA allows DLSS Frame Generation 2X on RTX 40 and enables 3X/4X only on ' +
+        'RTX 50. MFG-Unlocker lifts that limit; the installer now downloads it and puts it into the ac-dlssg folder:')
+    Write-Host "  - What: MFG-Unlocker $v, the file MFGUnlocker.dll of the release asset $(Get-MfgAsset) of"
+    Write-Host "    https://github.com/$($script:AcdbMfgRepository) (tag $(Get-MfgTag)), checked against its pinned SHA-256 before"
+    Write-Host "    anything is installed. It goes into $(Join-Path $Game $script:AcdbMfgRel), not next to acs.exe;"
+    Write-Host '    the bridge loads it.'
+    Write-Host '  - Who: a third-party project by dashdogy. It is not part of ac-dlssg and not an NVIDIA project.'
+    Write-Host '  - License: its code is under the MIT license; it also contains data derived from Intel XeSS, which'
+    Write-Host '    stays under Intel''s terms.'
+    Write-Host '  - NVIDIA: it lifts NVIDIA''s restriction of multi frame generation (3X/4X) to RTX 50. That circumvents'
+    Write-Host '    a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you are that'
+    Write-Host '    license''s licensee.'
+    Write-Host '  - How: it patches NVIDIA''s DLSS-G code (sl.dlss_g.dll, nvngx_dlssg.dll) in memory while the game runs;'
+    Write-Host '    no file on disk is changed.'
+    Write-Host '  - Its own menu (Backspace) should stay on "Follow game", so that the 2X/3X/4X buttons of the ac-dlssg'
+    Write-Host '    window decide.'
+    Write-Host '  - The game may take longer to load with it.'
+    Write-Host '  - To install without it: install.bat -NoMfgUnlocker (that also removes it again). mfg_unlocker=0 in'
+    Write-Host "    $(Join-Path $Game "$($script:AcdbDataDirName)\ac-dlssg.ini") keeps it from loading."
+}
+
+# The SHA-256 of the MFG-Unlocker copy an earlier install put into
+# ac-dlssg\mfg, as its manifest records it; $null when there is none.
+function Get-RecordedMfgHash([string]$Game) {
+    $path = Join-Path $Game "$($script:AcdbDataDirName)\install\dev-manifest.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try { $m = Read-Manifest $path } catch { return $null }
+    if (-not $m.PSObject.Properties['mfgUnlocker'] -or -not $m.mfgUnlocker) { return $null }
+    $rec = @($m.mfgUnlocker.files | Where-Object { [string]$_.path -ieq $script:AcdbMfgRel -and [string]$_.origin -eq 'installed' })
+    if ($rec.Count -ne 1) { return $null }
+    return [string]$rec[0].sha256
+}
+
+# Step 3b: the dev-install.ps1 arguments for MFG-Unlocker. MfgRemove takes
+# out the copy an earlier install put there; a failed download is a warning.
+function Get-MfgInstallArgs([string]$Game) {
+    $none = @{}
+    $remove = @{ MfgRemove = $true }
+    $recorded = Get-RecordedMfgHash $Game
+    $ours = if ($recorded) { $remove } else { $none }
+    $removed = if ($recorded) { ' The copy an earlier install put into ac-dlssg\mfg is removed.' } else { '' }
+    if ($NoMfgUnlocker) {
+        Say "MFG-Unlocker: skipped (-NoMfgUnlocker).$removed"
+        return $remove
+    }
+    try {
+        $adapters = @(Get-GpuAdapters $GpuDeviceIds)
+    } catch {
+        if (Test-IsRefusal $_) { throw }
+        Say "WARNING: the GPUs could not be read ($($_.Exception.Message)), so MFG-Unlocker is not installed. On an RTX 40, run install.bat again."
+        return $none
+    }
+    $nvidia = @($adapters | Where-Object { $_.VendorId -eq $script:AcdbNvidiaVendorId })
+    $ada = @($nvidia | Where-Object { $_.Arch -eq 'Ada' })
+    if ($nvidia.Count -eq 0 -or $ada.Count -ne $nvidia.Count) {
+        if ($nvidia.Count -eq 0) {
+            $why = 'there is no NVIDIA GPU'
+        } elseif ($ada.Count -eq 0 -and @($nvidia | Where-Object { $_.Arch -eq 'Blackwell' }).Count -eq $nvidia.Count) {
+            $why = 'RTX 50 runs 3X/4X natively, so it is not needed'
+        } elseif ($ada.Count -gt 0) {
+            $others = @($nvidia | Where-Object { $_.Arch -ne 'Ada' } | ForEach-Object { "$($_.Id) $(Get-GpuArchText $_)" })
+            $why = "it is installed only when every NVIDIA GPU is an RTX 40, and this PC also has $($others -join ', ')"
+        } else {
+            $why = 'it is for PCs whose NVIDIA GPUs are all RTX 40'
+        }
+        Say "MFG-Unlocker: not installed ($why).$removed"
+        return $ours
+    }
+    # Never next to dlssg_for_sm86 (a PC whose RTX 30 was swapped for an RTX 40).
+    $rootVersion = Join-Path $Game 'version.dll'
+    if ((Test-Path -LiteralPath $rootVersion -PathType Leaf) -and -not (Get-SpoofFileProblem $rootVersion (Get-SpoofPins $SpoofPins)['version.dll'])) {
+        Say ("WARNING: $rootVersion is dlssg_for_sm86, which is for RTX 30, and only one of the two may run, so MFG-Unlocker " +
+            'is not installed. If this PC has no RTX 30 any more, remove version.dll and dlssg_sm86.ini from the game folder ' +
+            "(the uninstaller removes them when this installer put them there), then run install.bat again.$removed")
+        return $ours
+    }
+    $user = @(Find-UserMfgCopies $Game)
+    if ($user.Count -gt 0) {
+        Say ("WARNING: MFG-Unlocker is already in the game folder outside ac-dlssg ($($user -join ', ')). It was left untouched, " +
+            "and ac-dlssg does not install its own copy next to it: only one copy may run.$removed")
+        return $ours
+    }
+    $what = "$($script:AcdbMfgProject) $($script:AcdbMfgPin.Version)"
+    $pins = Get-MfgPins $MfgPins
+    $target = Join-Path $Game $script:AcdbMfgRel
+    $staged = Join-Path (Join-Path $depsDir (Get-MfgStageDirName)) $script:AcdbMfgZipDll
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        $hash = Get-Sha256OfFile $target
+        if ($hash -eq $pins.DllSha256) {
+            # Installed from there again: dev-install.ps1 sees the same file and rewrites nothing.
+            New-Item -ItemType Directory -Path (Split-Path -Parent $staged) -Force | Out-Null
+            Copy-Item -LiteralPath $target -Destination $staged -Force
+            if ((Get-Sha256OfFile $staged) -eq $pins.DllSha256) {
+                Say "$what is already installed and verified ($target); not downloaded again."
+                return @{ MfgInstall = $staged }
+            }
+        } elseif ($hash -ne $recorded) {
+            Say ("WARNING: $target (SHA-256 $hash) is neither the pinned $what nor the copy an earlier install put there. It " +
+                'was left untouched, and MFG-Unlocker was not installed; the bridge loads only the pinned copy. To get it, ' +
+                'delete that file and run install.bat again.')
+            return $none
+        }
+    }
+    Write-MfgNotice $Game
+    $fetchArgs = @{ Only = 'Mfg'; DepsDir = $depsDir }
+    if ($MfgSourceDir) { $fetchArgs.MfgSourceDir = $MfgSourceDir }
+    if ($MfgPins) { $fetchArgs.MfgPins = $MfgPins }
+    & (Join-Path $scripts 'fetch-deps.ps1') @fetchArgs
+    $fetched = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $staged -PathType Leaf) -and (Get-Sha256OfFile $staged) -eq $pins.DllSha256
+    if (-not $fetched) {
+        Say ("WARNING: getting $what failed (see above), so it is not installed, and frame generation stays at 2X on this " +
+            'RTX 40. Everything else is installed; run install.bat again later to try once more.')
+        if ($recorded -and (Test-Path -LiteralPath $target -PathType Leaf) -and (Get-Sha256OfFile $target) -eq $recorded) {
+            Say 'The copy an earlier install put into ac-dlssg\mfg is not the pinned one any more and is removed.'
+            return $remove
+        }
+        return $none
+    }
+    return @{ MfgInstall = $staged }
+}
+
 $code = 1
 $reusedSl = $null
 try {
@@ -364,6 +524,8 @@ try {
     }
     $spoofArgs = Get-SpoofInstallArgs $game
     foreach ($k in @($spoofArgs.Keys)) { $installArgs[$k] = $spoofArgs[$k] }
+    $mfgArgs = Get-MfgInstallArgs $game
+    foreach ($k in @($mfgArgs.Keys)) { $installArgs[$k] = $mfgArgs[$k] }
     & (Join-Path $scripts 'dev-install.ps1') @installArgs
     $code = $LASTEXITCODE
     if ($code -eq 0) {

@@ -44,6 +44,13 @@
   LOCALAPPDATA also points into -FakeRoot, so that the uninstaller's
   %LOCALAPPDATA%\DlssgSm86 is a fake one too.
 
+  The MP cases do the same for MFG-Unlocker on RTX 40: the release zip is a
+  local stand-in under -FakeRoot (-MfgSourceDir) that holds a fake
+  MFGUnlocker.dll exporting MfgUnlockSingleModuleQuery, with its own pins
+  (-MfgPins); nothing of the real MFG-Unlocker is downloaded or run. The
+  runner refuses to start the package install.ps1 without -NoMfgUnlocker or
+  -MfgSourceDir. MFG-Unlocker's logs go to %TEMP%, which is the fake one.
+
   -Case runs only the named cases (their ids, such as SA1 or LA2; wildcards
   allowed); the fixtures are built as always.
 
@@ -164,6 +171,9 @@ function Assert-PackageArguments([string]$Script, [string[]]$Arguments) {
     $leaf = Split-Path -Leaf $Script
     if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoSpoof' -and $Arguments -notcontains '-SpoofSourceDir') {
         throw "refusing to run $Script without -NoSpoof or -SpoofSourceDir; it could download dlssg_for_sm86"
+    }
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoMfgUnlocker' -and $Arguments -notcontains '-MfgSourceDir') {
+        throw "refusing to run $Script without -NoMfgUnlocker or -MfgSourceDir; it could download MFG-Unlocker"
     }
     # Without -StreamlineDir the install gets Streamline with fetch-deps.ps1:
     # only with the stand-in for the download staged in <package>\files\deps.
@@ -1557,7 +1567,7 @@ Invoke-Case 'CF: the ac-dlssg.ini the install writes has the M3 keys with their 
     $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
     $lines = @([IO.File]::ReadAllLines($cfg))
     foreach ($kv in @('proxy_without_fg=0', 'tag_without_fg=0', 'fg_vram_headroom_mib=auto', 'fg_multiplier=2',
-            'camera_flip_handedness=0', 'camera_negate_side=0')) {
+            'camera_flip_handedness=0', 'camera_negate_side=0', 'mfg_unlocker=1')) {
         $i = [array]::IndexOf($lines, $kv)
         Check ($i -gt 0 -and $lines[$i - 1].StartsWith(';')) "config has $kv under a comment"
     }
@@ -1773,8 +1783,80 @@ function New-SpoofPinsFile([string]$Name, [hashtable]$Wrong = @{}) {
 }
 $spoofPins = New-SpoofPinsFile 'good'
 
+# MFG-Unlocker fixtures: a stand-in for the release asset (a zip that holds
+# a fake MFGUnlocker.dll exporting MfgUnlockSingleModuleQuery, never the
+# real one) and pins files for it, correct ones and ones that each get one
+# value wrong. The package install takes the zip from -MfgSourceDir.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$mfgDll = Join-Path $FakeRoot 'mfg\dll\MFGUnlocker.dll'
+New-FakePeDll $mfgDll @('MfgUnlockSingleModuleQuery', 'GetFileVersionInfoW', 'VerQueryValueW') -Salt '-mfg'
+$mfgAsset = 'MFGUnlocker-v1.5.0.zip'
+
+# A zip with these entries: name in the zip -> file to store.
+function New-MfgZip([string]$Zip, [hashtable]$Entries) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Zip) -Force | Out-Null
+    if (Test-Path -LiteralPath $Zip) { Remove-Item -LiteralPath $Zip -Force }
+    $archive = [System.IO.Compression.ZipFile]::Open($Zip, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($name in $Entries.Keys) {
+            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $Entries[$name], $name)
+        }
+    } finally {
+        $archive.Dispose()
+    }
+    return $Zip
+}
+
+$mfgSrc = Join-Path $FakeRoot 'mfg\src'
+$mfgZip = New-MfgZip (Join-Path $mfgSrc $mfgAsset) @{ 'MFGUnlocker.dll' = $mfgDll }
+
+function New-MfgPinsFile([string]$Name, [string]$Zip = $mfgZip, [hashtable]$Wrong = @{}) {
+    $pins = [ordered]@{ zipSize = (Get-Item -LiteralPath $Zip).Length; zipSha256 = (Get-Sha $Zip); dllSha256 = (Get-Sha $mfgDll) }
+    foreach ($k in $Wrong.Keys) { $pins[$k] = $Wrong[$k] }
+    $path = Join-Path $FakeRoot "mfg\pins-$Name.json"
+    Write-Text $path ($pins | ConvertTo-Json -Depth 3)
+    return $path
+}
+$mfgPins = New-MfgPinsFile 'good'
+
+function Get-MfgArgs([string]$Gpu, [string]$Pins = $mfgPins, [string]$Source = $mfgSrc) {
+    return @('-GpuDeviceIds', $Gpu, '-SpoofSourceDir', $spoofSrc, '-SpoofPins', $spoofPins, '-MfgSourceDir', $Source, '-MfgPins', $Pins)
+}
+
+function Get-MfgTarget([string]$Game) { return Join-Path $Game 'ac-dlssg\mfg\version.dll' }
+function Get-StagedMfgDir([string]$Pkg) { return Join-Path $Pkg 'files\deps\mfg-unlocker-1.5.0' }
+
+function Get-MfgRecord($Manifest) {
+    if (-not $Manifest.PSObject.Properties['mfgUnlocker'] -or -not $Manifest.mfgUnlocker) { return $null }
+    return $Manifest.mfgUnlocker
+}
+
+function Test-MfgInstalled([string]$Game) {
+    $t = Get-MfgTarget $Game
+    return (Test-Path -LiteralPath $t -PathType Leaf) -and (Get-Sha $t) -eq (Get-Sha $mfgDll)
+}
+
+# What MFG-Unlocker itself writes while the game runs (from its source,
+# tag v1.5.0): its settings next to acs.exe, its log in %TEMP% (here the
+# fake TEMP under -FakeRoot), named after acs.exe's path.
+function Add-MfgOwnFiles([string]$Game) {
+    $own = @()
+    foreach ($n in @('RTXMFG-Universal.json', 'RTXMFG-Universal.status.json', 'RTX40MFG-UI.ini', 'RTX40MFG-UI-layout.ini')) {
+        $own += Join-Path $Game $n
+    }
+    $stem = Get-MfgLogStem (Join-Path $Game 'acs.exe')
+    foreach ($suffix in @('.log', '.previous.log', '-intervals.csv')) { $own += Join-Path $env:TEMP "$stem$suffix" }
+    foreach ($f in $own) { Write-Text $f "written by the MFG-Unlocker stand-in`r`n" }
+    return $own
+}
+
+$mfgNoticePatterns = @('dashdogy', 'MIT', 'Intel XeSS', 'not an NVIDIA project', 'section 4\.d', 'NVIDIA RTX SDKs License',
+    'in memory', 'no file on disk', 'Backspace', 'Follow game', 'longer to load', 'install\.bat -NoMfgUnlocker',
+    'github\.com/dashdogy/MFG-Unlocker')
+
 function Get-SpoofArgs([string]$Gpu, [string]$Pins = $spoofPins) {
-    return @('-GpuDeviceIds', $Gpu, '-SpoofSourceDir', $spoofSrc, '-SpoofPins', $Pins)
+    return @('-GpuDeviceIds', $Gpu, '-SpoofSourceDir', $spoofSrc, '-SpoofPins', $Pins, '-MfgSourceDir', $mfgSrc, '-MfgPins', $mfgPins)
 }
 
 function Invoke-PackageInstall([string]$Pkg, [string]$Game, [string[]]$Extra) {
@@ -1921,7 +2003,7 @@ Invoke-Case 'PK: the friend test package' {
     $entries = @(Get-ZipEntryNames $zip | Where-Object { -not $_.EndsWith('/') })
     $zipDlls = @($entries | Where-Object { $_ -like '*.dll' })
     Check ($zipDlls.Count -eq 1 -and $zipDlls[0] -eq 'ac-dlssg-9.8.7/files/ac-dlssg.dll') 'the zip holds no DLL other than files\ac-dlssg.dll'
-    Check (@($entries | Where-Object { $_ -match '(?i)nvngx|dlssg_sm86|sl\.[a-z_]+\.dll|version\.dll' }).Count -eq 0) 'no NVIDIA or dlssg_for_sm86 file in the zip'
+    Check (@($entries | Where-Object { $_ -match '(?i)nvngx|dlssg_sm86|sl\.[a-z_]+\.dll|version\.dll|mfgunlocker|rtxmfg|rtx[34]0mfg|\.asi$' }).Count -eq 0) 'no NVIDIA, dlssg_for_sm86 or MFG-Unlocker file in the zip'
     Check ($entries.Count -eq $expected.Count) 'the zip holds the same files as the folder'
     Check ((Get-Sha (Join-Path $pkg 'files\ac-dlssg.dll')) -eq (Get-Sha $dllV1)) 'the package DLL is the given build'
     $readme = Read-Bytes (Join-Path $pkg 'docs\README-test.txt')
@@ -1937,7 +2019,9 @@ Invoke-Case 'PK: the friend test package' {
     Check ($readmeText -match 'RTX 30' -and $readmeText -match 'dlssg_for_sm86' -and $readmeText -match '(?i)ctrl\s*\+\s*f10' -and
         $readmeText -match 'apps\\lua\\AcDlssg') 'README-test.txt covers RTX 30, dlssg_for_sm86, Ctrl+F10 and the Lua app'
     $urls = @([regex]::Matches($readmeText, 'https?://[^\s)\u00bb"]+') | ForEach-Object { $_.Value.TrimEnd('.', ',') } | Sort-Object -Unique)
-    Check (($urls -join ' ') -eq 'https://github.com/sdli1995/dlssg_for_sm86') "the only link is the dlssg_for_sm86 repository, no binary and no Patreon ($($urls -join ', '))"
+    Check (($urls -join ' ') -eq 'https://github.com/dashdogy/MFG-Unlocker https://github.com/sdli1995/dlssg_for_sm86') "the only links are the dlssg_for_sm86 and MFG-Unlocker repositories, no binary and no Patreon ($($urls -join ', '))"
+    Check ($readmeText -match 'RTX 40' -and $readmeText -match 'MFG-Unlocker' -and $readmeText -match 'NoMfgUnlocker' -and
+        $readmeText -match 'ac-dlssg\\mfg') 'README-test.txt covers RTX 40, MFG-Unlocker, -NoMfgUnlocker and ac-dlssg\mfg'
     Check ($readmeText -notmatch '(?i)defender|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438|\u043e\u0442\u043a\u043b\u044e\u0447|smartscreen|smart app control') 'README-test.txt asks for no security feature to be turned off'
 
     # install.ps1 from the package layout, standalone, Streamline from
@@ -2019,7 +2103,7 @@ Invoke-Case 'PK: the friend test package' {
     $staged = Join-Path $tools '..\deps\streamline-2.14.1'
     Copy-Item -LiteralPath $staged -Destination (Join-Path $deps 'streamline-2.14.1') -Recurse
     Copy-Item -LiteralPath "$staged.sha256" -Destination (Join-Path $deps 'streamline-2.14.1.sha256')
-    $r = Invoke-Tool (Join-Path $pkg 'scripts\install.ps1') @('-GameDir', $game, '-NoSpoof', '-NoPause', '-NoElevate')
+    $r = Invoke-Tool (Join-Path $pkg 'scripts\install.ps1') @('-GameDir', $game, '-NoSpoof', '-NoMfgUnlocker', '-NoPause', '-NoElevate')
     Check ($r.Code -eq 0) 'install.ps1 without -StreamlineDir exits 0 with <package>\files\deps staged'
     Check ($r.Text -match 'present and verified' -and $r.Text -notmatch 'downloading') 'it verifies the staged Streamline and downloads nothing'
     Check ($r.Text -match 'nvngx_dlss\.license\.txt') 'it names the NVIDIA license files'
@@ -2174,9 +2258,9 @@ Invoke-Case 'SP1: RTX 30: dlssg_for_sm86 is fetched, verified, installed, record
         (Test-Path -LiteralPath (Join-Path $game 'acs.exe'))) 'the rest is gone too, acs.exe stays'
 }
 
-Invoke-Case 'SP2: RTX 40 and RTX 50 need no spoof' {
+Invoke-Case 'SP2: RTX 50 and a PC with an RTX 40 next to an RTX 30 need no spoof' {
     $pkg = New-PackageCopy 'SP2'
-    foreach ($gpu in @('10DE:2684', '8086:46A6,10DE:2B85', '10DE:2206,10DE:2684')) {
+    foreach ($gpu in @('8086:46A6,10DE:2B85', '10DE:2206,10DE:2684')) {
         $game = New-FakeGame "SP2-$($gpu.Replace(':', '').Replace(',', '-'))" -NoDxgi
         $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs $gpu)
         Check ($r.Code -eq 0) "$gpu`: install exits 0"
@@ -2184,6 +2268,7 @@ Invoke-Case 'SP2: RTX 40 and RTX 50 need no spoof' {
         Check (Test-NoSpoofFiles $game) "$gpu`: no spoof file installed"
         Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') "$gpu`: no notice and no download"
         Check ($null -eq (Get-SpoofRecord (Get-Manifest $game) 'version.dll')) "$gpu`: the manifest has no spoof record"
+        Check (-not (Test-Path -LiteralPath (Get-MfgTarget $game))) "$gpu`: no MFG-Unlocker either"
     }
     Check (-not (Test-Path -LiteralPath (Get-StagedSpoofDir $pkg))) 'nothing is staged'
     # -RemoveData leaves dlssg_for_sm86 data that the install did not put there.
@@ -2280,13 +2365,13 @@ Invoke-Case 'SP6: a foreign version.dll is left alone, with a warning' {
 Invoke-Case 'SP7: -NoSpoof, and the uninstall removes only what the install put there' {
     $pkg = New-PackageCopy 'SP7'
     $game = New-FakeGame 'SP7' -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2206', '-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2206', '-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -match 'skipped \(-NoSpoof\)') '-NoSpoof: install exits 0 and says so'
     Check ((Test-NoSpoofFiles $game) -and $r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') '-NoSpoof: no spoof, no notice, no download'
 
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:2206')
     Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'a later run without -NoSpoof installs it'
-    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2206', '-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2206', '-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'a -NoSpoof re-run leaves the installed spoof alone'
     Check ((Get-SpoofRecord (Get-Manifest $game) 'version.dll').origin -eq 'installed') 'and keeps its record'
     $ini = Join-Path $game 'dlssg_sm86.ini'
@@ -2324,7 +2409,7 @@ Invoke-Case 'SP9: without -NoPause, install.ps1 with redirected input ends witho
     $stderr = Join-Path $FakeRoot 'games\SP9\stderr.txt'
     Write-Text $stdin "`r`n"
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $pkg 'scripts\install.ps1')`"", '-GameDir', "`"$notGame`"", '-NoSpoof',
-        '-NoElevate')
+        '-NoMfgUnlocker', '-NoElevate')
     $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -RedirectStandardInput $stdin -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr -NoNewWindow -PassThru
     $ended = $proc.WaitForExit(60000)
@@ -2346,7 +2431,7 @@ function Set-Manifest([string]$Game, $Manifest) {
 Invoke-Case 'UP1: upgrade of an older package install: changed files are replaced, obsolete ones removed' {
     $pkg = New-PackageCopy 'UP1'
     $game = New-FakeGame 'UP1' -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the first install exits 0'
     # What an older package leaves: a schema 3 manifest without spoof, an
     # older bridge build it recorded, an app file that build changed after
@@ -2369,13 +2454,13 @@ Invoke-Case 'UP1: upgrade of an older package install: changed files are replace
     $changedApp = Get-Sha $appFile
     Set-Manifest $game $m
 
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -notmatch 'REFUSED') 'the upgrade exits 0 without refusing or asking'
     Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1)) 'the older bridge build is replaced'
     Check (Test-LuaMatches $game $luaReal) 'the Lua app is exactly the new one (the changed file replaced, the obsolete one and its folder gone)'
     Check (Test-SlMatches $game $slReal) 'ac-dlssg\sl is exactly the new Streamline (the obsolete file removed)'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 5 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 5 and records the new bridge'
+    Check ($m.schema -eq 6 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 6 and records the new bridge'
     Check (@($m.streamline.files | Where-Object { $_.path -like '*sl.old.dll' }).Count -eq 0 -and
         @($m.luaApp.files | Where-Object { $_.path -like '*old.lua' }).Count -eq 0) 'the manifest no longer records the obsolete files'
     $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Sha $_.FullName } | Sort-Object)
@@ -2390,7 +2475,7 @@ Invoke-Case 'UP2: upgrade of a schema 1 ReShade-mode install (no Streamline, no 
     $ini = Join-Path $game 'ReShade.ini'
     $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
     Write-Bytes $ini $original
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade') 'the first install exits 0 in ReShade mode'
     $afterFirst = Read-Bytes $ini
     $m = Get-Manifest $game
@@ -2399,12 +2484,12 @@ Invoke-Case 'UP2: upgrade of a schema 1 ReShade-mode install (no Streamline, no 
     Set-Manifest $game $m
     Remove-Item -LiteralPath (Get-SlDir $game) -Recurse -Force
     Remove-Item -LiteralPath (Join-Path $game 'apps') -Recurse -Force
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the upgrade exits 0'
     Check ((Test-SlMatches $game $slReal) -and (Test-LuaMatches $game $luaReal)) 'it adds Streamline and the Lua app'
     Check (Test-SameBytes (Read-Bytes $ini) $afterFirst) 'ReShade.ini is unchanged'
     $m = Get-Manifest $game
-    Check ($m.mode -eq 'reshade' -and $m.schema -eq 5) 'the manifest records ReShade mode, schema 5'
+    Check ($m.mode -eq 'reshade' -and $m.schema -eq 6) 'the manifest records ReShade mode, schema 6'
     $r = Invoke-PackageUninstall $pkg $game
     Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $ini) $original)) 'the uninstall restores a byte-identical ReShade.ini'
 }
@@ -2459,12 +2544,12 @@ Invoke-Case 'UP5: files that are clearly not ours still stop the package install
     $pkg = New-PackageCopy 'UP5'
     $game = New-FakeGame 'UP5' -NoDxgi
     Copy-Item -LiteralPath $fakeOther -Destination (Get-GameDxgi $game)
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ((Test-Refused $r) -and $r.Text -match 'Not ReShade') 'a foreign dxgi.dll is refused'
     Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $fakeOther) -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'and nothing changed'
     $game = New-FakeGame 'UP5b' -NoDxgi
     Write-Text (Join-Path (Get-LuaDir $game) 'AcDlssg.lua') "-- someone else's app`r`n"
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ((Test-Refused $r) -and $r.Text -match 'apps\\lua\\AcDlssg') 'a foreign apps\lua\AcDlssg is refused'
 }
 
@@ -2551,11 +2636,11 @@ Invoke-Case 'IT1: the uninstaller in the game folder works after the package is 
     $ini = Join-Path $game 'ReShade.ini'
     $original = Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary='
     Write-Bytes $ini $original
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade') 'install exits 0 in ReShade mode'
     Check (Test-ToolsInstalled $game) '<game>\ac-dlssg holds uninstall.bat, collect-logs.bat and the scripts they run in scripts\'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 5 -and (Test-ToolsRecorded $m $game)) 'the manifest (schema 5) records each of them with its hash'
+    Check ($m.schema -eq 6 -and (Test-ToolsRecorded $m $game)) 'the manifest (schema 6) records each of them with its hash'
     Check ($r.Text -match '(?i)can be deleted' -and $r.Text -match 'ac-dlssg\\uninstall\.bat' -and $r.Text -match 'ac-dlssg\\collect-logs\.bat' -and
         $r.Text -notmatch 'tools\\(uninstall|collect-logs)\.bat') 'the install says the unpacked folder can be deleted and names the uninstall.bat and collect-logs.bat in the game folder'
     $pkgRoot = Split-Path -Parent $pkg
@@ -2564,7 +2649,7 @@ Invoke-Case 'IT1: the uninstaller in the game folder works after the package is 
             ForEach-Object { $_.Name })
     Check ($mentions.Count -eq 0) "no installed file names the package folder ($($mentions -join ', '))"
     # The manifest names this Cyrillic folder; an upgrade must read it back.
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -match 'this run is an upgrade' -and (Test-ToolsInstalled $game)) 'an upgrade in this folder exits 0'
     Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
     Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake log`r`n"
@@ -2599,7 +2684,7 @@ Invoke-Case 'IT2: uninstall.bat -RemoveData in the game folder: a byte-identical
 Invoke-Case 'IT3: the installed collect-logs.bat works after the package is deleted and writes its zip into <game>\ac-dlssg' {
     $pkg = New-PackageCopy 'IT3'
     $game = New-FakeGame "IT3 $cyrName & co" -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'install exits 0'
     Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
     Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake bridge log`r`n"
@@ -2628,7 +2713,7 @@ Invoke-Case 'IT3: the installed collect-logs.bat works after the package is dele
 Invoke-Case 'IT4: an upgrade over a 1.0.0 install adds the tools, a later one replaces them; schema 4 manifests still work' {
     $pkg = New-PackageCopy 'IT4'
     $game = New-FakeGame 'IT4' -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the first install exits 0'
     # What 1.0.0 leaves: a schema 4 manifest without tools, and no tool files.
     $toOneZero = {
@@ -2640,11 +2725,11 @@ Invoke-Case 'IT4: an upgrade over a 1.0.0 install adds the tools, a later one re
         Remove-Item -LiteralPath (Join-Path $game 'ac-dlssg\scripts') -Recurse -Force -ErrorAction SilentlyContinue
     }
     & $toOneZero
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -notmatch 'REFUSED') 'the upgrade over a 1.0.0 install exits 0'
     Check (Test-ToolsInstalled $game) 'it adds the tools'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 5 -and (Test-ToolsRecorded $m $game)) 'the manifest becomes schema 5 and records them'
+    Check ($m.schema -eq 6 -and (Test-ToolsRecorded $m $game)) 'the manifest becomes schema 6 and records them'
 
     # An older build's tools: two files it recorded that differ from this
     # build's, and one that this build no longer ships.
@@ -2656,7 +2741,7 @@ Invoke-Case 'IT4: an upgrade over a 1.0.0 install adds the tools, a later one re
     foreach ($rec in @($m.tools.files)) { $rec.sha256 = Get-Sha (Join-Path $game ([string]$rec.path)) }
     $m.tools.files = @($m.tools.files) + @([pscustomobject]@{ path = 'ac-dlssg\scripts\old-helper.ps1'; sha256 = (Get-Sha $old) })
     Set-Manifest $game $m
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the next upgrade exits 0'
     Check (Test-ToolsInstalled $game) 'it replaces the older tools and removes the one this build no longer ships'
     Check (Test-ToolsRecorded (Get-Manifest $game) $game) 'the manifest records this build''s tools only'
@@ -2675,7 +2760,7 @@ Invoke-Case 'IT5: a failed install rolls the tools back with everything else' {
     Write-Bytes $ini (Get-Utf8Bytes $simpleIni)
     $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
-        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     } finally {
         $lock.Dispose()
     }
@@ -2683,7 +2768,7 @@ Invoke-Case 'IT5: a failed install rolls the tools back with everything else' {
     Check ($r.Text -match 'rolled back: removed .*ac-dlssg\\uninstall\.bat') 'the rollback reports the removed uninstall.bat'
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg'))) 'the tools are rolled back with the rest: no <game>\ac-dlssg'
 
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the install exits 0 once ReShade.ini is writable'
     $bat = Join-Path $game 'ac-dlssg\uninstall.bat'
     [IO.File]::AppendAllText($bat, "rem an older build`r`n")
@@ -2696,7 +2781,7 @@ Invoke-Case 'IT5: a failed install rolls the tools back with everything else' {
     $manifestBefore = Read-Bytes (Get-ManifestPath $game)
     $lock = [IO.File]::Open($ini, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
-        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     } finally {
         $lock.Dispose()
     }
@@ -2709,7 +2794,7 @@ Invoke-Case 'IT5: a failed install rolls the tools back with everything else' {
 Invoke-Case 'IT6: the installed uninstall.bat: a refusal keeps it, another -GameDir is refused, the elevated run removes it' {
     $pkg = New-PackageCopy 'IT6'
     $game = New-FakeGame "IT6 $cyrName" -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'install exits 0'
     Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
     $manifest = Get-ManifestPath $game
@@ -2750,14 +2835,14 @@ Invoke-Case 'IT7: an upgrade from a new package uses the installed Streamline an
     $pkg = New-PackageCopy 'IT7'
     [void](Add-PackageDeps $pkg)
     $game = New-FakeGame 'IT7' -NoDxgi
-    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -match 'fetch-deps:' -and (Test-SlMatches $game $slReal)) 'the first install gets Streamline with fetch-deps.ps1 (the stand-in in files\deps)'
     Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
     $pkg = New-PackageCopy 'IT7b'
     $deps = Add-PackageDeps $pkg
     $depsBefore = Get-TreeState $deps
     $slBefore = Get-TreeState (Get-SlDir $game)
-    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the upgrade exits 0'
     Check ($r.Text -match 'Streamline 2\.14\.1 is already installed and verified; not downloaded again') 'it says Streamline 2.14.1 is already installed and verified, not downloaded again'
     Check ($r.Text -notmatch 'fetch-deps:') 'fetch-deps.ps1 does not run: nothing is downloaded, and the stand-in is not used'
@@ -2770,7 +2855,7 @@ Invoke-Case 'IT7: an upgrade from a new package uses the installed Streamline an
     Check ($r.Text -match '(?i)means you accept') 'and says that installing means accepting them'
     $m = Get-Manifest $game
     Check (@($slRealFiles | Where-Object { (Get-SlRecordedHash $m $_) -eq (Get-Sha (Join-Path $slReal $_)) }).Count -eq $slRealFiles.Count) 'the manifest records the Streamline files as before'
-    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and $r.Text -match 'not downloaded again' -and $r.Text -notmatch 'fetch-deps:') 'a re-run from the same package folder does the same'
 }
 
@@ -2778,14 +2863,14 @@ Invoke-Case 'IT8: a changed or missing installed Streamline file means a downloa
     $pkg = New-PackageCopy 'IT8'
     [void](Add-PackageDeps $pkg)
     $game = New-FakeGame 'IT8' -NoDxgi
-    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and (Test-SlMatches $game $slReal)) 'the first install exits 0'
     $changes = @(
         @('changed', { $f = Join-Path (Get-SlDir $game) 'sl.common.dll'; $b = [IO.File]::ReadAllBytes($f); $b[0x1000] = $b[0x1000] -bxor 0xFF; [IO.File]::WriteAllBytes($f, $b) }),
         @('missing', { Remove-Item -LiteralPath (Join-Path (Get-SlDir $game) 'reflex.license.txt') }))
     foreach ($c in $changes) {
         & $c[1]
-        $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof')
+        $r = Invoke-PackageInstallFromDeps $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
         Check ($r.Code -eq 0) "$($c[0]): the install exits 0"
         Check ($r.Text -match 'cannot be used again' -and $r.Text -notmatch 'not downloaded again') "$($c[0]): it says the installed copy cannot be used again"
         Check ($r.Text -match 'fetch-deps:') "$($c[0]): fetch-deps.ps1 gets Streamline as before (the stand-in for the download)"
@@ -2832,7 +2917,7 @@ Invoke-Case 'IT9: dlssg_for_sm86 already installed: no download; a missing file 
 Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt, or whose install was undone otherwise, still removes itself' {
     $pkg = New-PackageCopy 'IT10'
     $game = New-FakeGame "IT10 $cyrName" -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0 -and (Test-ToolsInstalled $game)) 'install exits 0 with the tools'
     Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
     Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake log`r`n"
@@ -2865,7 +2950,7 @@ Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt,
     $pkg = New-PackageCopy 'IT10b'
     $game = New-FakeGame "IT10b $cyrName" -NoDxgi
     $before = Get-TreeState $game
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the second install exits 0'
     Check (Remove-PackageFolder $pkg) 'its unpacked package folder is deleted'
     $r = Invoke-Tool (Join-Path $game 'ac-dlssg\scripts\dev-uninstall.ps1') @('-GameDir', $game, '-Force', '-KeepTools', '-RemoveData')
@@ -2879,7 +2964,7 @@ Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt,
     # undoes the install and removes them by the list next to its scripts.
     $pkg = New-PackageCopy 'IT10c'
     $game = New-FakeGame "IT10c $cyrName" -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the third install exits 0'
     $m = Get-Manifest $game
     $m.schema = 4
@@ -2895,7 +2980,7 @@ Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt,
     # does not claim otherwise.
     $pkg = New-PackageCopy 'IT10d'
     $game = New-FakeGame 'IT10d' -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'the fourth install exits 0'
     $m = Get-Manifest $game
     [void]$m.PSObject.Properties.Remove('tools')
@@ -2904,6 +2989,329 @@ Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt,
     $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
     Check ($r.Code -eq 0 -and $r.Text -notmatch 'removed the uninstaller' -and $r.Text -match 'by hand') 'without a record of its files it removes none of them, and says to delete them by hand'
     Check (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\uninstall.bat')) 'uninstall.bat stays'
+}
+
+# ---------------------------------------------------------------------------
+# MFG-Unlocker (issue 2): on a PC whose NVIDIA GPUs are all RTX 40, the
+# package install downloads the pinned release from its author's GitHub and
+# puts its DLL into <game>\ac-dlssg\mfg\version.dll. The fixtures stand in
+# for the download; nothing here is the real MFG-Unlocker.
+
+Invoke-Case 'MP0: MFG-Unlocker pins, its file names and the package guard (static)' {
+    $pin = $script:AcdbMfgPin
+    Check ($pin.Version -eq '1.5.0' -and $pin.ZipSize -eq 3093588 -and
+        $pin.ZipSha256 -eq 'ce10401cea5d1d6b023b43188d9482114f12881011681be17c8f583382ac7f4e' -and
+        $pin.DllSha256 -eq '97c6b90cc443b3a5d2151fe992e57e37717071a11eaea6054f2474e883de75d7') 'the pin is release v1.5.0: zip size and SHA-256, and the SHA-256 of MFGUnlocker.dll from its SHA256SUMS.txt'
+    Check ((Get-MfgUrl) -eq 'https://github.com/dashdogy/MFG-Unlocker/releases/download/v1.5.0/MFGUnlocker-v1.5.0.zip') "the download is that release's asset ($(Get-MfgUrl))"
+    $cpp = [regex]::Match([IO.File]::ReadAllText((Join-Path $tools '..\src\mfg_loader.h')),
+        'constexpr MfgPin kMfgPin = \{"([0-9.]+)", "([0-9a-f]{64})"\};')
+    Check ($cpp.Success -and $cpp.Groups[1].Value -eq $pin.Version -and $cpp.Groups[2].Value -eq $pin.DllSha256) 'the bridge loads the DLL the installer pins (kMfgPin in src/mfg_loader.h: same version and SHA-256)'
+    Check ($script:AcdbMfgRel -eq 'ac-dlssg\mfg\version.dll') 'it is installed as ac-dlssg\mfg\version.dll'
+    Check ($script:AcdbMfgProxyNames -contains 'version.dll' -and $script:AcdbMfgProxyNames -contains 'winmm.dll' -and
+        $script:AcdbMfgProxyNames -contains 'xinputuap.dll' -and $script:AcdbMfgProxyNames.Count -eq 19) 'the 19 proxy names of MFG-Unlocker 1.5.0 (proxy_exports.txt)'
+    # MFG-Unlocker names its log after the exe: FNV-1a 64 of the path (A-Z
+    # lowered, / as \), values computed by hand from its diagnostic_paths.h.
+    Check ((Get-MfgLogStem 'C:\Games\Assetto Corsa\acs.exe') -eq 'RTXMFG-acs-9876EF71A766D7E9') "the log of C:\Games\Assetto Corsa\acs.exe is RTXMFG-acs-9876EF71A766D7E9.log ($(Get-MfgLogStem 'C:\Games\Assetto Corsa\acs.exe'))"
+    Check ((Get-MfgLogStem 'C:/GAMES/assetto corsa/ACS.exe') -eq 'RTXMFG-acs-9876EF71A766D7E9') 'case and slashes do not change it'
+    Check ((Get-MfgLogStem 'D:\x\My Game (v2).exe') -eq 'RTXMFG-my_game__v2_-8C9AA99EDB368510') 'other characters of the name become _'
+    # The package never re-hosts a third-party or NVIDIA file.
+    foreach ($bad in @('files\MFGUnlocker.dll', 'files\deps\MFGUnlocker-v1.5.0.zip', 'docs\RTXMFG-Universal.json', 'files\RTX40MFG.asi',
+            'files\RTXMFG.dll', 'files\ac-dlssg\mfg\version.dll', 'files\version.dll', 'files\nvngx_dlssg.dll', 'files\sl.interposer.dll',
+            'files\dlssg_sm86.ini', 'scripts\x.asi')) {
+        Check (Test-RehostedFile $bad) "the package guard refuses $bad"
+    }
+    foreach ($good in @('files\ac-dlssg.dll', 'files\apps\lua\AcDlssg\AcDlssg.lua', 'docs\README.md', 'scripts\fetch-deps.ps1')) {
+        Check (-not (Test-RehostedFile $good)) "the package guard lets $good through"
+    }
+}
+
+Invoke-Case 'MP1: RTX 40: MFG-Unlocker is fetched, verified, installed into ac-dlssg\mfg, recorded, and removed again' {
+    $pkg = New-PackageCopy 'MP1'
+    $game = New-FakeGame 'MP1' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0) 'install exits 0'
+    $missing = @($mfgNoticePatterns | Where-Object { $r.Text -notmatch $_ })
+    Check ($missing.Count -eq 0) "it prints the MFG-Unlocker notice (missing: $($missing -join ', '))"
+    $noticeAt = $r.Text.IndexOf('dashdogy')
+    $fetchAt = $r.Text.IndexOf('fetch-deps:')
+    Check ($noticeAt -ge 0 -and $fetchAt -gt $noticeAt) 'the notice comes before the download'
+    Check ($r.Text -match 'copying .*-MfgSourceDir' -and $r.Text -notmatch 'downloading https') 'the fixture stands in for the download'
+    Check ($r.Text -notmatch '(?i)type y|\(y/n\)') 'it asks nothing'
+    Check (Test-MfgInstalled $game) 'MFGUnlocker.dll is <game>\ac-dlssg\mfg\version.dll'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))) 'nothing is put next to acs.exe'
+    Check (Test-NoSpoofFiles $game) 'and no dlssg_for_sm86'
+    $staged = Get-StagedMfgDir $pkg
+    Check ((Get-Sha (Join-Path $staged 'MFGUnlocker.dll')) -eq (Get-Sha $mfgDll)) 'the DLL is staged in <package>\files\deps\mfg-unlocker-1.5.0'
+    Check (@(Get-ChildItem -LiteralPath (Join-Path $pkg 'files\deps') -Recurse -File -Filter '*.zip').Count -eq 0 -and
+        -not (Test-Path -LiteralPath (Join-Path $pkg 'files\deps\download'))) 'the zip is not kept'
+    $m = Get-Manifest $game
+    $rec = Get-MfgRecord $m
+    Check ($m.schema -eq 6 -and $rec) 'the manifest (schema 6) has an mfgUnlocker record'
+    if ($rec) {
+        Check ($rec.project -eq 'MFG-Unlocker' -and $rec.version -eq '1.5.0' -and $rec.repository -eq 'dashdogy/MFG-Unlocker' -and
+            $rec.tag -eq 'v1.5.0' -and $rec.asset -eq 'MFGUnlocker-v1.5.0.zip') 'it names the project, version, repository, tag and asset'
+        $files = @($rec.files)
+        Check ($files.Count -eq 1 -and $files[0].path -eq 'ac-dlssg\mfg\version.dll' -and $files[0].origin -eq 'installed' -and
+            $files[0].sha256 -eq (Get-Sha $mfgDll)) 'and records the file as installed, with its hash'
+    }
+    $cfg = [IO.File]::ReadAllText((Join-Path $game 'ac-dlssg\ac-dlssg.ini'))
+    Check ($cfg -match '(?m)^mfg_unlocker=1\r?$') 'ac-dlssg.ini has mfg_unlocker=1'
+    $mfgAt = $r.Text.IndexOf('copied ac-dlssg\mfg\version.dll')
+    Check ($mfgAt -gt $r.Text.LastIndexOf('copied ac-dlssg\sl\') -and $mfgAt -lt $r.Text.IndexOf('copied dxgi.dll')) 'spec 12 order: Streamline, MFG-Unlocker, ..., the bridge'
+
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and $r.Text -match 'already installed and verified') 're-run exits 0 and says MFG-Unlocker is already installed'
+    Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'dashdogy') 'the re-run downloads nothing and prints no notice'
+    Check ((Test-MfgInstalled $game) -and (@((Get-MfgRecord (Get-Manifest $game)).files)[0].origin -eq 'installed')) 'it stays installed and recorded as installed'
+
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0) 'uninstall exits 0'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\mfg'))) 'the uninstall removes ac-dlssg\mfg'
+}
+
+Invoke-Case 'MP2: only a PC whose NVIDIA GPUs are all RTX 40 gets MFG-Unlocker' {
+    $pkg = New-PackageCopy 'MP2'
+    foreach ($t in @(
+            @('8086:A7A0,10DE:2860', $true, 'an Intel iGPU and an RTX 4070 Laptop GPU'),
+            @('10DE:2684,10DE:2704', $true, 'two RTX 40'),
+            @('10DE:2B85', $false, 'an RTX 50'),
+            @('10DE:2684,10DE:2B85', $false, 'an RTX 40 next to an RTX 50'),
+            @('10DE:2206,10DE:2684', $false, 'an RTX 40 next to an RTX 30'),
+            @('10DE:2206', $false, 'an RTX 30'),
+            @('10DE:1E84', $false, 'an RTX 20'),
+            @('1002:73BF', $false, 'no NVIDIA GPU'))) {
+        $gpu = $t[0]
+        $game = New-FakeGame "MP2-$($gpu.Replace(':', '').Replace(',', '-'))" -NoDxgi
+        $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs $gpu)
+        Check ($r.Code -eq 0) "$($t[2]): install exits 0"
+        if ($t[1]) {
+            Check ((Test-MfgInstalled $game) -and (Get-MfgRecord (Get-Manifest $game))) "$($t[2]): MFG-Unlocker is installed and recorded"
+        } else {
+            Check (-not (Test-Path -LiteralPath (Get-MfgTarget $game)) -and -not (Get-MfgRecord (Get-Manifest $game))) "$($t[2]): no MFG-Unlocker"
+            Check ($r.Text -notmatch 'dashdogy') "$($t[2]): and no notice"
+            Check ($r.Text -match 'MFG-Unlocker') "$($t[2]): it says why ($(@($r.Text -split "`n" | Where-Object { $_ -match 'MFG-Unlocker' })[0]))"
+        }
+        $spoof = Test-SpoofInstalled $game
+        Check ($spoof -eq ($gpu -eq '10DE:2206')) "$($t[2]): dlssg_for_sm86 only on the RTX 30 alone"
+        Check (-not ($spoof -and (Test-Path -LiteralPath (Get-MfgTarget $game)))) "$($t[2]): never both"
+    }
+    $r = Invoke-PackageInstall $pkg (New-FakeGame 'MP2-rtx50' -NoDxgi) (Get-MfgArgs '10DE:2B85')
+    Check ($r.Text -match 'RTX 50' -and $r.Text -match 'not needed') 'on an RTX 50 it says MFG-Unlocker is not needed'
+}
+
+Invoke-Case 'MP3: a download that fails or does not match its pins skips MFG-Unlocker; everything else is installed' {
+    $pkg = New-PackageCopy 'MP3'
+    $emptySrc = Join-Path $FakeRoot 'mfg\src-none'
+    New-Item -ItemType Directory -Path $emptySrc -Force | Out-Null
+    $noDllZip = New-MfgZip (Join-Path $FakeRoot "mfg\src-nodll\$mfgAsset") @{ 'readme.txt' = (Join-Path $spoofSrc 'dlssg_sm86.ini') }
+    $twoDllZip = New-MfgZip (Join-Path $FakeRoot "mfg\src-two\$mfgAsset") @{ 'MFGUnlocker.dll' = $mfgDll; 'x\MFGUnlocker.dll' = $mfgDll }
+    $cases = @(
+        @('zip-sha256', (New-MfgPinsFile 'bad-zip' $mfgZip @{ zipSha256 = ('0' * 64) }), $mfgSrc, 'SHA-256'),
+        @('zip-size', (New-MfgPinsFile 'bad-size' $mfgZip @{ zipSize = 3093588 }), $mfgSrc, '\d+ bytes'),
+        @('dll-sha256', (New-MfgPinsFile 'bad-dll' $mfgZip @{ dllSha256 = ('1' * 64) }), $mfgSrc, 'MFGUnlocker\.dll has SHA-256'),
+        @('missing', $mfgPins, $emptySrc, 'has no MFGUnlocker-v1\.5\.0\.zip'),
+        @('no-dll', (New-MfgPinsFile 'no-dll' $noDllZip), (Split-Path -Parent $noDllZip), 'no MFGUnlocker\.dll'),
+        @('two-dlls', (New-MfgPinsFile 'two-dlls' $twoDllZip), (Split-Path -Parent $twoDllZip), '2 entries named MFGUnlocker\.dll'))
+    foreach ($c in $cases) {
+        $game = New-FakeGame "MP3-$($c[0])" -NoDxgi
+        $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684' $c[1] $c[2])
+        Check ($r.Code -eq 0) "$($c[0]): install exits 0"
+        Check ($r.Text -match 'WARNING: getting MFG-Unlocker' -and $r.Text -match $c[3]) "$($c[0]): it warns and names the problem"
+        Check ($r.Text -match '2X') "$($c[0]): it says frame generation stays at 2X"
+        Check ((Get-Sha (Get-GameDxgi $game)) -eq (Get-Sha $dllV1) -and (Test-SlMatches $game $slReal)) "$($c[0]): the bridge and Streamline are installed"
+        Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\mfg')) -and -not (Get-MfgRecord (Get-Manifest $game))) "$($c[0]): no MFG-Unlocker file and no record"
+        Check (@(Get-ChildItem -LiteralPath (Join-Path $pkg 'files\deps') -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0) "$($c[0]): the download is deleted"
+    }
+}
+
+Invoke-Case 'MP4: an MFG-Unlocker the user installed is left alone, and ours is not installed next to it' {
+    $pkg = New-PackageCopy 'MP4'
+    $userCopy = Join-Path $FakeRoot 'mfg\user\MFGUnlocker.dll'
+    New-FakePeDll $userCopy @('MfgUnlockSingleModuleQuery', 'mciSendStringW') -Salt '-user'
+    foreach ($t in @(@('winmm.dll', 'MP4a'), @('version.dll', 'MP4b'), @('plugins\RTX40MFG.asi', 'MP4c'), @('RTXMFG.dll', 'MP4d'))) {
+        $game = New-FakeGame $t[1] -NoDxgi
+        $path = Join-Path $game $t[0]
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        Copy-Item -LiteralPath $userCopy -Destination $path
+        $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+        Check ($r.Code -eq 0) "$($t[0]): install exits 0"
+        Check ($r.Text -match 'WARNING: .*MFG-Unlocker' -and $r.Text -match [regex]::Escape($path)) "$($t[0]): it warns and names $path"
+        Check ((Get-Sha $path) -eq (Get-Sha $userCopy)) "$($t[0]): the user's copy is untouched"
+        Check (-not (Test-Path -LiteralPath (Get-MfgTarget $game)) -and $r.Text -notmatch 'fetch-deps:') "$($t[0]): ours is not downloaded or installed"
+    }
+    # A copy the user adds after ours was installed: ours goes.
+    $game = New-FakeGame 'MP4e' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) 'first install: ours is installed'
+    Copy-Item -LiteralPath $userCopy -Destination (Join-Path $game 'dinput8.dll')
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-MfgTarget $game)) -and -not (Get-MfgRecord (Get-Manifest $game))) 'with the user''s dinput8.dll next to acs.exe, the next install removes ours'
+    Check ((Get-Sha (Join-Path $game 'dinput8.dll')) -eq (Get-Sha $userCopy)) 'and leaves the user''s copy alone'
+    # A version.dll next to acs.exe that is not MFG-Unlocker is not one.
+    $game = New-FakeGame 'MP4f' -NoDxgi
+    Write-Text (Join-Path $game 'winmm.dll') 'another mod'
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) 'a winmm.dll that is not MFG-Unlocker does not stop it'
+}
+
+Invoke-Case 'MP5: -NoMfgUnlocker installs without it and removes the copy an earlier install put there' {
+    $pkg = New-PackageCopy 'MP5'
+    $game = New-FakeGame 'MP5' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2684', '-NoSpoof', '-NoMfgUnlocker')
+    Check ($r.Code -eq 0 -and $r.Text -match 'MFG-Unlocker: skipped \(-NoMfgUnlocker\)') '-NoMfgUnlocker: install exits 0 and says so'
+    Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\mfg')) -and $r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'dashdogy') 'no MFG-Unlocker, no notice, no download'
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) 'a later run without it installs MFG-Unlocker'
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2684', '-NoSpoof', '-NoMfgUnlocker')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\mfg'))) 'a -NoMfgUnlocker run removes it, and ac-dlssg\mfg'
+    Check (-not (Get-MfgRecord (Get-Manifest $game))) 'and its record'
+    # A copy that was changed since the install stays.
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    [IO.File]::AppendAllText((Get-MfgTarget $game), 'changed')
+    $changed = Get-Sha (Get-MfgTarget $game)
+    $r = Invoke-PackageInstall $pkg $game @('-GpuDeviceIds', '10DE:2684', '-NoSpoof', '-NoMfgUnlocker')
+    Check ($r.Code -eq 0 -and (Get-Sha (Get-MfgTarget $game)) -eq $changed -and $r.Text -match 'WARNING: .*ac-dlssg\\mfg\\version\.dll') 'a changed copy stays, with a warning'
+}
+
+Invoke-Case 'MP6: a file in ac-dlssg\mfg that no install put there is left alone' {
+    $pkg = New-PackageCopy 'MP6'
+    $game = New-FakeGame 'MP6' -NoDxgi
+    Write-Text (Get-MfgTarget $game) 'put there by hand'
+    $sha = Get-Sha (Get-MfgTarget $game)
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0) 'install exits 0'
+    Check ((Get-Sha (Get-MfgTarget $game)) -eq $sha -and $r.Text -match 'WARNING: .*ac-dlssg\\mfg\\version\.dll') 'it stays as it is, with a warning'
+    Check (-not (Get-MfgRecord (Get-Manifest $game)) -and $r.Text -notmatch 'fetch-deps:') 'nothing is downloaded or recorded'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and (Get-Sha (Get-MfgTarget $game)) -eq $sha) 'the uninstall leaves it too'
+}
+
+Invoke-Case 'MP7: ReShade mode with MFG-Unlocker: uninstall -RemoveData is a byte-identical round trip, its own files included' {
+    $pkg = New-PackageCopy 'MP7'
+    $game = New-FakeGame 'MP7'
+    Write-Bytes (Join-Path $game 'ReShade.ini') (Get-RealisticIni 'EnableProxyLibrary=0' 'ProxyLibrary=')
+    $before = Get-TreeState $game
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade' -and (Test-MfgInstalled $game)) 'install exits 0 in ReShade mode with MFG-Unlocker'
+    $own = @(Add-MfgOwnFiles $game)
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\mfg'))) 'uninstall without -RemoveData removes MFG-Unlocker'
+    Check (@($own | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $own.Count) 'and keeps its settings and logs'
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0) 'uninstall -RemoveData exits 0'
+    Check (@($own | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0) "-RemoveData removes MFG-Unlocker's settings next to acs.exe and its logs in %TEMP%"
+    Check ((Get-TreeState $game) -eq $before) 'the game folder is exactly as before, ReShade.ini byte for byte'
+}
+
+Invoke-Case 'MP8: -RemoveData keeps the settings of an MFG-Unlocker the install did not put there' {
+    $pkg = New-PackageCopy 'MP8'
+    $game = New-FakeGame 'MP8' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
+    $own = @(Add-MfgOwnFiles $game)
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and @($own | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $own.Count) 'without our MFG-Unlocker, its files stay'
+    foreach ($f in $own) { Remove-Item -LiteralPath $f -Force }
+}
+
+Invoke-Case 'MP9: upgrades: a schema 5 install gets MFG-Unlocker; a pin bump replaces only an unchanged copy' {
+    $pkg = New-PackageCopy 'MP9'
+    $game = New-FakeGame 'MP9' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
+    $m = Get-Manifest $game
+    $m.schema = 5
+    [void]$m.PSObject.Properties.Remove('mfgUnlocker')
+    Set-Manifest $game $m
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and (Get-Manifest $game).schema -eq 6) 'over a schema 5 manifest: MFG-Unlocker is installed, the manifest becomes schema 6'
+    # An earlier pin: the recorded hash is the file's, so the new pin replaces it.
+    $old = Join-Path $FakeRoot 'mfg\old\MFGUnlocker.dll'
+    New-FakePeDll $old @('MfgUnlockSingleModuleQuery') -Salt '-old'
+    Copy-Item -LiteralPath $old -Destination (Get-MfgTarget $game) -Force
+    $m = Get-Manifest $game
+    @($m.mfgUnlocker.files)[0].sha256 = Get-Sha $old
+    $m.mfgUnlocker.version = '1.4.9'
+    Set-Manifest $game $m
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and (Get-MfgRecord (Get-Manifest $game)).version -eq '1.5.0') 'the older pinned copy is replaced by the new pin'
+    # Changed since: it stays, and is no longer recorded as ours.
+    [IO.File]::AppendAllText((Get-MfgTarget $game), 'changed')
+    $changed = Get-Sha (Get-MfgTarget $game)
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Get-Sha (Get-MfgTarget $game)) -eq $changed -and $r.Text -match 'WARNING: .*ac-dlssg\\mfg\\version\.dll') 'a changed copy is not replaced, with a warning'
+    Check ($r.Text -notmatch 'fetch-deps:') 'and nothing is downloaded'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and (Get-Sha (Get-MfgTarget $game)) -eq $changed) 'the uninstall leaves the changed copy'
+}
+
+Invoke-Case 'MP10: the uninstaller in the game folder removes MFG-Unlocker; collect-logs.bat collects its logs' {
+    $pkg = New-PackageCopy 'MP10'
+    $game = New-FakeGame "MP10 $cyrName" -NoDxgi
+    $before = Get-TreeState $game
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) 'install exits 0 with MFG-Unlocker'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package folder is deleted'
+    $own = @(Add-MfgOwnFiles $game)
+    $r = Invoke-Bat (Join-Path $game 'ac-dlssg\collect-logs.bat') @('-AcDocsDir', (Join-Path $FakeRoot 'documents\none'), '-SkipSysinfo', '-NoPause')
+    $zips = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg') -Filter 'ac-dlssg-logs-*.zip' -File)
+    Check ($r.Code -eq 0 -and $zips.Count -eq 1) 'collect-logs.bat exits 0 and writes one zip'
+    if ($zips.Count -eq 1) {
+        $names = @(Get-ZipEntryNames $zips[0].FullName)
+        $stem = Get-MfgLogStem (Join-Path $game 'acs.exe')
+        foreach ($n in @("mfg-unlocker/$stem.log", "mfg-unlocker/$stem.previous.log", 'mfg-unlocker/RTXMFG-Universal.json',
+                'mfg-unlocker/RTXMFG-Universal.status.json', 'mfg-unlocker/RTX40MFG-UI.ini')) {
+            Check ($names -contains $n) "the log zip holds $n"
+        }
+        $listing = ''
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zips[0].FullName)
+        try {
+            $entry = $archive.Entries | Where-Object { $_.FullName -eq 'game-files.txt' } | Select-Object -First 1
+            if ($entry) { $reader = New-Object System.IO.StreamReader($entry.Open()); try { $listing = $reader.ReadToEnd() } finally { $reader.Dispose() } }
+        } finally {
+            $archive.Dispose()
+        }
+        Check ($listing -match '(?m)^ac-dlssg\\mfg\\' -and $listing -match (Get-Sha $mfgDll)) 'game-files.txt lists ac-dlssg\mfg with the SHA-256 of version.dll'
+        Remove-Item -LiteralPath $zips[0].FullName
+    }
+    $r = Invoke-InstalledUninstall $game @('-RemoveData', '-NoPause', '-NoElevate')
+    Check ($r.Code -eq 0 -and $r.StdErr.Trim().Length -eq 0) "the installed uninstall.bat -RemoveData exits 0 ($($r.StdErr.Trim()))"
+    Check (@($own | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0) "MFG-Unlocker's settings and logs are gone"
+    Check ((Get-TreeState $game) -eq $before) 'the game folder is byte-identical to before the install'
+}
+
+Invoke-Case 'MP12: an existing ac-dlssg.ini gets mfg_unlocker=1 when MFG-Unlocker is installed; a value there stays' {
+    $pkg = New-PackageCopy 'MP12'
+    $game = New-FakeGame 'MP12' -NoDxgi
+    $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    $original = "[bridge]`r`nenabled=1`r`n`r`n[other]`r`nx=1`r`n"
+    Write-Text $cfg $original
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
+    Check ($r.Code -eq 0 -and [IO.File]::ReadAllText($cfg) -eq $original) 'without MFG-Unlocker the ini stays byte for byte'
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    $text = [IO.File]::ReadAllText($cfg)
+    $lines = @($text -split "`r`n")
+    $key = [array]::IndexOf($lines, 'mfg_unlocker=1')
+    $other = [array]::IndexOf($lines, '[other]')
+    Check ($r.Code -eq 0 -and $key -gt 1 -and $key -lt $other -and $lines[$key - 1].StartsWith(';') -and $lines[1] -eq 'enabled=1') "with it, mfg_unlocker=1 goes into [bridge] under a comment ($($text -replace "`r`n", '|'))"
+    Check ($text.EndsWith("`r`n`r`n[other]`r`nx=1`r`n") -and $text.Replace("`r`n", '').IndexOf("`n") -lt 0) 'the rest stays, with CRLF line ends'
+    Check ($r.Text -match 'added mfg_unlocker=1') 'the install says so'
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and [IO.File]::ReadAllText($cfg) -eq $text) 'a re-run adds nothing'
+    $game = New-FakeGame 'MP12b' -NoDxgi
+    $cfg = Join-Path $game 'ac-dlssg\ac-dlssg.ini'
+    Write-Text $cfg "[bridge]`nmfg_unlocker=0"
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and [IO.File]::ReadAllText($cfg) -eq "[bridge]`nmfg_unlocker=0" -and (Test-MfgInstalled $game)) 'the user''s mfg_unlocker=0 stays (MFG-Unlocker is installed but not loaded)'
+}
+
+Invoke-Case 'MP11: dlssg_for_sm86 next to acs.exe on a PC that now has an RTX 40 keeps MFG-Unlocker out' {
+    $pkg = New-PackageCopy 'MP11'
+    $game = New-FakeGame 'MP11' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2206')
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'RTX 30: the spoof is installed'
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-MfgTarget $game))) 'after a GPU change to RTX 40, MFG-Unlocker is not installed next to it'
+    Check ($r.Text -match 'WARNING: .*dlssg_for_sm86' -and $r.Text -match 'only one of the two') 'it says why and what to do'
 }
 
 # ---------------------------------------------------------------------------
@@ -2931,7 +3339,7 @@ Invoke-Case 'EL1: arguments passed on to the elevated run keep spaces, trailing 
 Invoke-Case 'EL2: a game folder this account may not write into: install and uninstall refuse with -NoElevate' {
     $pkg = New-PackageCopy 'EL2'
     $game = New-FakeGame 'EL2' -NoDxgi
-    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
     Check ($r.Code -eq 0) 'install exits 0 while the folder is writable'
     $before = Get-TreeState $game
     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -2941,7 +3349,7 @@ Invoke-Case 'EL2: a game folder this account may not write into: install and uni
     $acl.AddAccessRule($rule)
     Set-Acl -LiteralPath $game -AclObject $acl
     try {
-        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof')
+        $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker')
         Check ((Test-Refused $r) -and $r.Text -match 'may not write into' -and $r.Text -match 'NoElevate') 'install refuses and names -NoElevate instead of asking for administrator rights'
         $r = Invoke-PackageUninstall $pkg $game
         Check ((Test-Refused $r) -and $r.Text -match 'may not change' -and $r.Text -match 'NoElevate') 'uninstall does the same'
@@ -2970,7 +3378,7 @@ Invoke-Case 'BAT: install.bat, uninstall.bat and collect-logs.bat from a folder 
     Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath (Join-Path $dest 'tools') -Filter 'ac-dlssg-logs-*.zip').Count -eq 1) 'collect-logs.bat writes its zip into tools\'
     $r = Invoke-Bat (Join-Path $dest 'tools\uninstall.bat') @('-GameDir', $game, '-RemoveData', '-NoPause', '-NoElevate')
     Check ($r.Code -eq 0 -and @(Get-ChildItem -LiteralPath $game -Force).Count -eq 1) 'uninstall.bat leaves only acs.exe'
-    $r = Invoke-Bat (Join-Path $dest 'install.bat') @('-GameDir', (Join-Path $FakeRoot 'games\BAT none'), '-StreamlineDir', $slReal, '-NoSpoof', '-NoPause', '-NoElevate')
+    $r = Invoke-Bat (Join-Path $dest 'install.bat') @('-GameDir', (Join-Path $FakeRoot 'games\BAT none'), '-StreamlineDir', $slReal, '-NoSpoof', '-NoMfgUnlocker', '-NoPause', '-NoElevate')
     Check ($r.Code -ne 0 -and $r.Text -match 'REFUSED') 'install.bat passes the exit code of a refusal on'
 }
 

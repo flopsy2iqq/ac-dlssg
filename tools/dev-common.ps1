@@ -901,6 +901,148 @@ function Get-SpoofFileProblem([string]$Path, $Pin) {
 }
 
 # ---------------------------------------------------------------------------
+# MFG-Unlocker (github.com/dashdogy/MFG-Unlocker, by dashdogy; MIT code plus
+# Intel XeSS-derived data under Intel's terms). NVIDIA allows DLSS-G 2X only
+# on RTX 40 and enables 3X/4X on RTX 50; MFG-Unlocker lifts that by patching
+# NVIDIA's DLSS-G code in memory. On a PC whose NVIDIA GPUs are all RTX 40,
+# the package install downloads the pinned release asset from its author's
+# GitHub (never re-hosted), checks the zip's size and SHA-256 and the
+# SHA-256 of MFGUnlocker.dll inside it, and puts that DLL into
+# <game>\ac-dlssg\mfg\version.dll, where the bridge loads it by full path
+# (src/mfg_loader.h). A failed download or a mismatch skips it, and the rest
+# is installed (2X stays).
+#
+# The pin: release v1.5.0, the zip from the release's API digest and the DLL
+# from its SHA256SUMS.txt. src/mfg_loader.h (kMfgPin) holds the same version
+# and DLL hash; tools\test-dev-scripts.ps1 (MP0) checks that both agree, so a
+# later release is this line and kMfgPin.
+$script:AcdbMfgPin = [pscustomobject]@{ Version = '1.5.0'; ZipSize = [long]3093588; ZipSha256 = 'ce10401cea5d1d6b023b43188d9482114f12881011681be17c8f583382ac7f4e'; DllSha256 = '97c6b90cc443b3a5d2151fe992e57e37717071a11eaea6054f2474e883de75d7' }
+$script:AcdbMfgProject = 'MFG-Unlocker'
+$script:AcdbMfgRepository = 'dashdogy/MFG-Unlocker'
+# The DLL in the release zip, and where the install puts it: version.dll is
+# one of MFG-Unlocker's proxy names (it takes its exports from its file name),
+# in a folder where nothing binds it by name.
+$script:AcdbMfgZipDll = 'MFGUnlocker.dll'
+$script:AcdbMfgDirName = 'mfg'
+$script:AcdbMfgFileName = 'version.dll'
+$script:AcdbMfgRel = "$($script:AcdbDataDirName)\$($script:AcdbMfgDirName)\$($script:AcdbMfgFileName)"
+# MFG-Unlocker's proxy names in 1.5.0 (source/native/proxy_exports.txt), and
+# the names of its earlier and split builds; a copy the user installed next
+# to acs.exe (or in an ASI loader's folder) has one of them.
+$script:AcdbMfgProxyNames = @('version.dll', 'dinput8.dll', 'winmm.dll', 'd3d9.dll', 'd3d10.dll', 'd3d11.dll', 'd3d12.dll', 'dxgi.dll',
+    'dsound.dll', 'wininet.dll', 'winhttp.dll', 'binkw64.dll', 'bink2w64.dll', 'xinput1_1.dll', 'xinput1_2.dll', 'xinput1_3.dll',
+    'xinput1_4.dll', 'xinput9_1_0.dll', 'xinputuap.dll')
+$script:AcdbMfgLegacyNames = @('MFGUnlocker.dll', 'RTXMFG.dll', 'RTXMFGCore.dll', 'RTX40MFG.asi', 'RTX40MFGCore.dll', 'RTX40MFG-Universal.asi',
+    'RTX30MFG.asi', 'RTX30MFGCore.dll', 'RTX30FGCore.dll', 'RTX30FG3xCore.dll')
+$script:AcdbMfgQueryExport = 'MfgUnlockSingleModuleQuery'
+# What MFG-Unlocker itself writes (its source at tag v1.5.0): settings and
+# status next to the game's exe (unified_control_paths.h, overlay_platform.cpp)
+# and its log in %TEMP% (diagnostic_paths.h, patcher.cpp), named by Get-MfgLogStem.
+$script:AcdbMfgGameFiles = @('RTXMFG-Universal.json', 'RTXMFG-Universal.status.json', 'RTX40MFG-UI.ini', 'RTX40MFG-UI-layout.ini')
+$script:AcdbMfgTempSuffixes = @('.log', '.previous.log', '-intervals.csv')
+
+function Get-MfgTag { return "v$($script:AcdbMfgPin.Version)" }
+function Get-MfgAsset { return "MFGUnlocker-v$($script:AcdbMfgPin.Version).zip" }
+function Get-MfgUrl { return "https://github.com/$($script:AcdbMfgRepository)/releases/download/$(Get-MfgTag)/$(Get-MfgAsset)" }
+# The folder under deps\ that fetch-deps.ps1 stages MFGUnlocker.dll in.
+function Get-MfgStageDirName { return "mfg-unlocker-$($script:AcdbMfgPin.Version)" }
+
+# { ZipSize, ZipSha256, DllSha256 }: the pin, or for tests only the pins of a
+# local fixture zip from $PinsFile, JSON {"zipSize": 1, "zipSha256": "...", "dllSha256": "..."}.
+function Get-MfgPins([string]$PinsFile) {
+    if (-not $PinsFile) {
+        return [pscustomobject]@{ ZipSize = $script:AcdbMfgPin.ZipSize; ZipSha256 = $script:AcdbMfgPin.ZipSha256; DllSha256 = $script:AcdbMfgPin.DllSha256 }
+    }
+    if (-not (Test-Path -LiteralPath $PinsFile -PathType Leaf)) { Stop-Refused "-MfgPins file not found: $PinsFile" }
+    $json = [System.IO.File]::ReadAllText($PinsFile) | ConvertFrom-Json
+    foreach ($k in @('zipSize', 'zipSha256', 'dllSha256')) {
+        if (-not $json.PSObject.Properties[$k] -or $null -eq $json.$k) { Stop-Refused "-MfgPins $PinsFile has no $k." }
+    }
+    return [pscustomobject]@{ ZipSize = [long]$json.zipSize; ZipSha256 = ([string]$json.zipSha256).ToLowerInvariant(); DllSha256 = ([string]$json.dllSha256).ToLowerInvariant() }
+}
+
+# MFG-Unlocker's log name for an exe, without the suffix: "RTXMFG-", the exe's
+# file name without extension (lower case, at most 40 characters, anything
+# but a-z, 0-9, - and _ as _), "-" and 16 hex digits of the FNV-1a 64 hash of
+# the exe's full path, UTF-16 units with A-Z lowered and / as \.
+function Get-MfgLogStem([string]$ExePath) {
+    Add-Type -AssemblyName System.Numerics
+    $mask = [System.Numerics.BigInteger]::Pow(2, 64)
+    $hash = [System.Numerics.BigInteger]::Parse('14695981039346656037')
+    $prime = [System.Numerics.BigInteger]::Parse('1099511628211')
+    foreach ($ch in $ExePath.ToCharArray()) {
+        $c = [int]$ch
+        if ($c -eq 0x2F) { $c = 0x5C }
+        if ($c -ge 0x41 -and $c -le 0x5A) { $c += 0x20 }
+        $hash = [System.Numerics.BigInteger]::op_ExclusiveOr($hash, [System.Numerics.BigInteger]$c)
+        $hash = [System.Numerics.BigInteger]::Remainder([System.Numerics.BigInteger]::Multiply($hash, $prime), $mask)
+    }
+    $leaf = ($ExePath -split '[\\/]')[-1]
+    $dot = $leaf.LastIndexOf('.')
+    $stem = if ($dot -gt 0) { $leaf.Substring(0, $dot) } else { $leaf }
+    if ($stem.Length -gt 40) { $stem = $stem.Substring(0, 40) }
+    $clean = -join @($stem.ToCharArray() | ForEach-Object {
+            $c = [int]$_
+            if ($c -ge 0x41 -and $c -le 0x5A) { $c += 0x20 }
+            $ch = [char]$c
+            if (($c -ge 0x61 -and $c -le 0x7A) -or ($c -ge 0x30 -and $c -le 0x39) -or $ch -eq '-' -or $ch -eq '_') { $ch } else { '_' }
+        })
+    return 'RTXMFG-{0}-{1}' -f $clean, $hash.ToString('X16').TrimStart('0').PadLeft(16, '0')
+}
+
+# MFG-Unlocker's own files for the game in $GameDir: its settings next to
+# acs.exe and its logs in $TempDir (default: this process's %TEMP%); existing
+# or not.
+function Get-MfgOwnFiles([string]$GameDir, [string]$TempDir) {
+    if (-not $TempDir) { $TempDir = [System.IO.Path]::GetTempPath() }
+    $files = @($script:AcdbMfgGameFiles | ForEach-Object { Join-Path $GameDir $_ })
+    $stem = Get-MfgLogStem (Join-Path $GameDir $script:AcdbGameExe)
+    $files += @($script:AcdbMfgTempSuffixes | ForEach-Object { Join-Path $TempDir "$stem$_" })
+    return $files
+}
+
+# True when the PE file exports MfgUnlockSingleModuleQuery; false for a file
+# that is not a readable PE file.
+function Test-MfgExport([string]$Path) {
+    try {
+        return @((Get-PeInfo $Path).Exports) -contains $script:AcdbMfgQueryExport
+    } catch {
+        return $false
+    }
+}
+
+# The copies of MFG-Unlocker the user installed for this game: a proxy name
+# next to acs.exe that exports MfgUnlockSingleModuleQuery, and the names of
+# its builds next to acs.exe and in the folders ASI loaders read (plugins,
+# scripts, asi). Ours in <game>\ac-dlssg\mfg is not one of them.
+function Find-UserMfgCopies([string]$GameDir) {
+    $found = @()
+    foreach ($name in $script:AcdbMfgProxyNames) {
+        $path = Join-Path $GameDir $name
+        if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Test-MfgExport $path)) { $found += $path }
+    }
+    foreach ($dir in @('', 'plugins', 'scripts', 'asi')) {
+        foreach ($name in $script:AcdbMfgLegacyNames) {
+            $path = if ($dir) { Join-Path (Join-Path $GameDir $dir) $name } else { Join-Path $GameDir $name }
+            if (Test-Path -LiteralPath $path -PathType Leaf) { $found += $path }
+        }
+    }
+    return $found
+}
+
+# ---------------------------------------------------------------------------
+# The package's re-host guard (spec 13): make-test-package.ps1 refuses a
+# package with any of these. $Rel is a path in the package; the only DLL is
+# files\ac-dlssg.dll, and nothing of NVIDIA, dlssg_for_sm86 or MFG-Unlocker
+# is ever in it (the install downloads them from their authors).
+function Test-RehostedFile([string]$Rel) {
+    $leaf = ($Rel -split '[\\/]')[-1]
+    if ($leaf -match '(?i)\.dll$' -and $Rel -ine 'files\ac-dlssg.dll') { return $true }
+    if ($leaf -match '(?i)\.asi$') { return $true }
+    return $leaf -match '(?i)^(nvngx|sl\.|dlssg_sm86|mfgunlocker|rtxmfg|rtx[34]0mfg|rtx30fg)'
+}
+
+# ---------------------------------------------------------------------------
 # Elevation for the test package's install.ps1 and uninstall.ps1: a game under
 # C:\Program Files (x86) can be changed only with administrator rights.
 

@@ -40,6 +40,15 @@
   and %LOCALAPPDATA%\DlssgSm86, but only when the install put
   dlssg_for_sm86 there and no version.dll is left in the game folder.
 
+  The MFG-Unlocker copy in <game>\ac-dlssg\mfg that the manifest records as
+  installed (mfgUnlocker, schema 6) is deleted only while it is the version
+  installed, then ac-dlssg\mfg when it is empty. With -RemoveData it also
+  deletes MFG-Unlocker's own files: RTXMFG-Universal.json,
+  RTXMFG-Universal.status.json, RTX40MFG-UI.ini and RTX40MFG-UI-layout.ini
+  next to acs.exe, and its logs RTXMFG-acs-<id>.log, .previous.log and
+  -intervals.csv in %TEMP%, but only when the install put MFG-Unlocker there
+  and no other copy of it is left in the game folder.
+
   Last come the uninstaller and the log collector that the package install
   put into <game>\ac-dlssg (the manifest's tools: uninstall.bat,
   collect-logs.bat and scripts\), each only if it is the version installed,
@@ -51,7 +60,8 @@
 
 .PARAMETER RemoveData
   Also delete <game>\ac-dlssg, including logs and the config, and the data
-  of a dlssg_for_sm86 that the install put there (see above).
+  of a dlssg_for_sm86 or an MFG-Unlocker that the install put there (see
+  above).
 
 .PARAMETER Force
   Standalone mode: uninstall even when <game>\dxgi.dll is not the recorded
@@ -292,6 +302,36 @@ try {
         }
     }
 
+    # 4e. MFG-Unlocker in <game>\ac-dlssg\mfg: the file the install put
+    #     there, only while it is the version installed; then the folder
+    #     when it is empty.
+    $mfgOurs = $false
+    if ($manifest.PSObject.Properties['mfgUnlocker'] -and $manifest.mfgUnlocker) {
+        $mfgDir = Join-Path $dataDir $script:AcdbMfgDirName
+        foreach ($f in @($manifest.mfgUnlocker.files)) {
+            $rel = [string]$f.path
+            if ($rel -ine $script:AcdbMfgRel) {
+                Step "WARNING: the manifest names $rel as an MFG-Unlocker file, which it is not; left alone"
+                continue
+            }
+            if ([string]$f.origin -ne 'installed') { continue }
+            $mfgOurs = $true
+            $path = Join-Path $game $rel
+            if (Test-Path -LiteralPath "$path.new") { Remove-Item -LiteralPath "$path.new" -Force }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Step "$path is already gone"; continue }
+            $hash = Get-Sha256OfFile $path
+            if ($hash -eq [string]$f.sha256) {
+                Remove-Item -LiteralPath $path -Force
+                Step "deleted $path"
+            } else {
+                Step "WARNING: $path is not the file dev-install.ps1 copied (SHA-256 $hash); left in place. Delete it by hand if you no longer use it."
+            }
+        }
+        if ((Test-Path -LiteralPath $mfgDir -PathType Container) -and @(Get-ChildItem -LiteralPath $mfgDir -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $mfgDir -Force
+        }
+    }
+
     # 4d. The uninstaller and the log collector in <game>\ac-dlssg, each only
     #     while it is the version installed, then scripts\ when it is empty;
     #     with -KeepTools they stay (the running copy removes them at its end).
@@ -339,6 +379,24 @@ try {
                 Step "kept $d, the data of dlssg_for_sm86: a version.dll is still in the game folder"
             } else {
                 Step "kept $d, the data of dlssg_for_sm86, which the install did not put there"
+            }
+        }
+    }
+    # MFG-Unlocker's own settings next to acs.exe and its logs in %TEMP%:
+    # only when the install put it there and no other copy is left.
+    if ($RemoveData) {
+        $mfgFiles = @(Get-MfgOwnFiles $game | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+        if ($mfgFiles.Count -gt 0) {
+            $others = @(Find-UserMfgCopies $game)
+            if (-not $mfgOurs) {
+                Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')), which the install did not put there"
+            } elseif ($others.Count -gt 0) {
+                Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')): another copy of it is still in the game folder ($($others -join ', '))"
+            } else {
+                foreach ($f in $mfgFiles) {
+                    Remove-Item -LiteralPath $f -Force
+                    Step "deleted $f (-RemoveData)"
+                }
             }
         }
     }

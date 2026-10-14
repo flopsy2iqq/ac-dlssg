@@ -17,13 +17,16 @@
   <game>\dxgi.dll (only if it is the bridge that was installed; any other
   dxgi.dll, such as ReShade installed over it, stays and the rest is removed),
   the Streamline files in <game>\ac-dlssg\sl, the CSP Lua app in
-  <game>\apps\lua\AcDlssg, and the dlssg_for_sm86 files (version.dll,
-  dlssg_sm86.ini) that install.ps1 put next to acs.exe, each only while it is
-  the file installed. dlssg_for_sm86 files that were there before the install
-  stay. The logs and ac-dlssg.ini stay in <game>\ac-dlssg unless -RemoveData
-  is given; -RemoveData also deletes dlssg_for_sm86's data (<game>\dlssg_sm86
-  and %LOCALAPPDATA%\DlssgSm86) when install.ps1 installed it and no
-  version.dll is left. The uninstaller and the log collector in
+  <game>\apps\lua\AcDlssg, the dlssg_for_sm86 files (version.dll,
+  dlssg_sm86.ini) that install.ps1 put next to acs.exe, and the MFG-Unlocker
+  copy it put into <game>\ac-dlssg\mfg, each only while it is the file
+  installed. dlssg_for_sm86 files that were there before the install stay,
+  and so does an MFG-Unlocker the user installed. The logs and ac-dlssg.ini
+  stay in <game>\ac-dlssg unless -RemoveData is given; -RemoveData also
+  deletes dlssg_for_sm86's data (<game>\dlssg_sm86 and
+  %LOCALAPPDATA%\DlssgSm86) when install.ps1 installed it and no version.dll
+  is left, and MFG-Unlocker's settings next to acs.exe and its logs in %TEMP%
+  when install.ps1 installed it and no other copy of it is left. The uninstaller and the log collector in
   <game>\ac-dlssg go too (see below). It refuses while acs.exe is running.
 
   The copy in the game folder (-InstalledCopy) works on the game folder it
