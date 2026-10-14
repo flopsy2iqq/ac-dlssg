@@ -145,6 +145,9 @@ The mod adapts to the card by itself. When memory is tight, the window tells you
 In fast motion, CSP app windows and on-screen UI can smear a little, because the whole frame is generated. The road and the cars stay clean.
 If moving things leave a ghost trail and you use DLAA, turn off MSAA and FXAA (Content Manager: Settings, Assetto Corsa, Video: MSAA Off, untick FXAA).
 
+[b]Stutter with G-Sync or FreeSync?[/b]
+If the frames on screen go above your monitor's refresh rate with VSync off, frame pacing suffers. In the NVIDIA Control Panel, Manage 3D settings, Program settings, Assetto Corsa: set Vertical sync to On and keep G-Sync on. Reflex then caps the output just below the refresh rate.
+
 [b]RTX 20, GTX, AMD?[/b]
 No, it needs an RTX 30, 40 or 50.
 
