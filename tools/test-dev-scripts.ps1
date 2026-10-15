@@ -3341,6 +3341,30 @@ Invoke-Case 'MP13: the documents name every file MFG-Unlocker writes (static)' {
     Check ($missing.Count -eq 0) "collect-logs.ps1's help names the MFG-Unlocker files it collects (missing: $($missing -join ', '))"
 }
 
+# The Nexus page texts are kept only on the maintainer's PC (git-ignored), so a
+# clone without them skips this case. The installer downloads MFG-Unlocker on
+# RTX 40: the File credits name its author, and the permissions text names it
+# among the files the zip does not contain and the downloads, and links the
+# license and source of this version.
+Invoke-Case 'MP14: the Nexus page credits MFG-Unlocker and names its download in the permissions (static, where the file exists)' {
+    $repoRoot = Split-Path -Parent $tools
+    $page = Join-Path $repoRoot 'docs\nexus\nexus-page.txt'
+    if (-not (Test-Path -LiteralPath $page -PathType Leaf)) {
+        Write-Host '    skip  no docs\nexus\nexus-page.txt in this clone'
+        return
+    }
+    $text = [IO.File]::ReadAllText($page, $utf8)
+    $credits = [regex]::Match($text, '(?s)=== BEGIN: Credits ===(.*?)=== END: Credits ===').Groups[1].Value
+    $perm = [regex]::Match($text, '(?s)=== BEGIN: Permissions ===(.*?)=== END: Permissions ===').Groups[1].Value
+    Check ($credits -match '(?m)^dashdogy: MFG-Unlocker') 'the Credits block names dashdogy for MFG-Unlocker'
+    Check ($perm -match 'no [^.]*MFG-Unlocker files' -and $perm -match 'installer downloads [^\r\n]*MFG-Unlocker')'the Permissions block names MFG-Unlocker among the files not in the zip and among the downloads'
+    $version = [regex]::Match([IO.File]::ReadAllText((Join-Path $repoRoot 'CMakeLists.txt')), 'project\s*\(\s*\S+\s+VERSION\s+([0-9][0-9.]*)').Groups[1].Value
+    $links = @([regex]::Matches($perm, 'github\.com/flopsy2iqq/ac-dlssg/(?:blob|tree)/v([0-9][0-9.]*[0-9])') | ForEach-Object { $_.Groups[1].Value })
+    Check ($links.Count -eq 3 -and @($links | Where-Object { $_ -ne $version }).Count -eq 0) "its license, exceptions and source links name v$version ($($links -join ', '))"
+    $missing = @($script:AcdbMfgGameFiles | Where-Object { -not $text.Contains($_) })
+    Check ($missing.Count -eq 0) "the page names $($script:AcdbMfgGameFiles -join ', ') (missing: $($missing -join ', '))"
+}
+
 # ---------------------------------------------------------------------------
 # Administrator rights and the .bat launchers.
 
