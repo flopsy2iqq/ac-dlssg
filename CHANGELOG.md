@@ -20,7 +20,7 @@ section of a version as its GitHub release notes.
 
 ### Documentation
 
-- The READMEs, the install guides, the Steam guide, the Nexus and OverTake page texts and `THIRD_PARTY_NOTICES.txt` describe NVIDIA's 2X limit on RTX 40 and MFG-Unlocker, what it downloads and changes in the game folder, and how to leave it out or remove it. The earlier texts said that 3X and 4X run only on RTX 50 and on RTX 30.
+- The READMEs, the install guides, the test package's `README-test.txt` and `THIRD_PARTY_NOTICES.txt` describe NVIDIA's 2X limit on RTX 40 and MFG-Unlocker, what it downloads and changes in the game folder, and how to leave it out or remove it. The earlier texts said that 3X and 4X run only on RTX 50 and on RTX 30.
 
 ## [1.1.1] - 2026-10-13
 
