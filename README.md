@@ -145,8 +145,6 @@ Whether to use it is your decision: `install.bat -NoSpoof` installs without it, 
 - CSP's DLSS evaluate call is hooked. Its depth and motion vectors are copied into shared textures and tagged for DLSS-G.
 - The CSP Lua app `AcDlssg` writes the camera into shared memory. The bridge builds Streamline's camera constants from it.
 
-The full design is in [docs/superpowers/specs](docs/superpowers/specs), and the milestone records are in [docs/superpowers/plans](docs/superpowers/plans).
-
 ## Building from source
 
 Requirements: Visual Studio 2022 Build Tools (MSVC 14.44), Windows SDK 10.0.22621 and CMake.

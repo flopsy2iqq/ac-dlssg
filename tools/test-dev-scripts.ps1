@@ -2532,12 +2532,17 @@ Invoke-Case 'DOC: the guides say to run collect-logs.bat before uninstall.bat wh
         }
         Check $ok "$doc`: the item for a game that does not start says collect-logs.bat, then uninstall ($($lines -join ' / '))"
     }
-    $guide = @([IO.File]::ReadAllLines((Join-Path $repoRoot 'docs\steam-guide\steam-guide.en.txt'), $utf8))
-    $i = [array]::IndexOf($guide, '[b]How do I uninstall it?[/b]')
-    $answer = ''
-    if ($i -ge 0 -and $i + 1 -lt $guide.Count) { $answer = $guide[$i + 1] }
-    $logs = $answer.IndexOf('collect-logs.bat')
-    Check ($logs -ge 0 -and $logs -lt $answer.IndexOf('uninstall.bat')) "steam-guide.en.txt: the uninstall answer says to collect the logs first ($answer)"
+    # The Steam guide is kept only on the maintainer's PC (git-ignored), so a
+    # clone without it skips this check.
+    $guidePath = Join-Path $repoRoot 'docs\steam-guide\steam-guide.en.txt'
+    if (Test-Path -LiteralPath $guidePath) {
+        $guide = @([IO.File]::ReadAllLines($guidePath, $utf8))
+        $i = [array]::IndexOf($guide, '[b]How do I uninstall it?[/b]')
+        $answer = ''
+        if ($i -ge 0 -and $i + 1 -lt $guide.Count) { $answer = $guide[$i + 1] }
+        $logs = $answer.IndexOf('collect-logs.bat')
+        Check ($logs -ge 0 -and $logs -lt $answer.IndexOf('uninstall.bat')) "steam-guide.en.txt: the uninstall answer says to collect the logs first ($answer)"
+    }
 }
 
 Invoke-Case 'IT1: the uninstaller in the game folder works after the package is deleted' {

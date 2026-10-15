@@ -145,8 +145,6 @@ NVIDIA разрешает DLSS-G только на RTX 40 и новее. Сто�
 - Вызов DLSS в CSP перехватывается. Его глубина и векторы движения копируются в общие текстуры и помечаются для DLSS-G.
 - Lua-приложение CSP `AcDlssg` пишет камеру в общую память. Мост собирает из неё константы камеры для Streamline.
 
-Полное описание устройства в [docs/superpowers/specs](docs/superpowers/specs), записи по этапам в [docs/superpowers/plans](docs/superpowers/plans).
-
 ## Сборка из исходников
 
 Нужны Visual Studio 2022 Build Tools (MSVC 14.44), Windows SDK 10.0.22621 и CMake.

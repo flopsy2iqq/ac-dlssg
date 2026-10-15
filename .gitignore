@@ -442,3 +442,10 @@ tools/ac-dlssg-sysinfo/
 
 # Output of tools/collect-logs.ps1
 tools/ac-dlssg-logs-*
+
+# Publishing notes (Nexus, OverTake, Steam texts) and design records, kept on the
+# maintainer's PC only.
+docs/nexus/
+docs/overtake/
+docs/steam-guide/
+docs/superpowers/
