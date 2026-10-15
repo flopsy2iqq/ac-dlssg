@@ -141,8 +141,9 @@ ac-dlssg {VERSION} для Assetto Corsa
   (Lua-приложение для CSP). На RTX 30 ещё version.dll и dlssg_sm86.ini
   (dlssg_for_sm86) и его папка с логами dlssg_sm86. На RTX 40 ещё
   ac-dlssg\mfg\version.dll (MFG-Unlocker) и, после первого запуска игры, его
-  настройки RTXMFG-Universal.json, RTXMFG-Universal.status.json и
-  RTX40MFG-UI.ini рядом с acs.exe. Больше ничего не трогается.
+  настройки RTXMFG-Universal.json, RTXMFG-Universal.status.json,
+  RTX40MFG-UI.ini и RTX40MFG-UI-layout.ini рядом с acs.exe. Больше ничего
+  не трогается.
   Если в папке игры уже есть ReShade (dxgi.dll), мост встанет рядом с ним
   через ReShade; если там какой-то другой dxgi.dll или чужая папка
   apps\lua\AcDlssg, установка откажется и ничего не изменит.

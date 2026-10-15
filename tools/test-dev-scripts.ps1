@@ -3326,6 +3326,21 @@ Invoke-Case 'MP11: dlssg_for_sm86 next to acs.exe on a PC that now has an RTX 40
     Check ($r.Text -match 'WARNING: .*dlssg_for_sm86' -and $r.Text -match 'only one of the two') 'it says why and what to do'
 }
 
+# The documents that list what changes in the game folder name every file
+# MFG-Unlocker writes next to acs.exe, and collect-logs.ps1's help names what
+# it collects of MFG-Unlocker.
+Invoke-Case 'MP13: the documents name every file MFG-Unlocker writes (static)' {
+    $repoRoot = Split-Path -Parent $tools
+    foreach ($doc in @('README.md', 'README.ru.md', 'tools\package\README-test.txt')) {
+        $text = [IO.File]::ReadAllText((Join-Path $repoRoot $doc), $utf8)
+        $missing = @($script:AcdbMfgGameFiles | Where-Object { -not $text.Contains($_) })
+        Check ($missing.Count -eq 0) "$doc names $($script:AcdbMfgGameFiles -join ', ') (missing: $($missing -join ', '))"
+    }
+    $help = [regex]::Match([IO.File]::ReadAllText((Join-Path $tools 'collect-logs.ps1'), $utf8), '(?s)^<#.*?#>').Value
+    $missing = @(@($script:AcdbMfgGameFiles) + @($script:AcdbMfgTempSuffixes) | Where-Object { -not $help.Contains($_) })
+    Check ($missing.Count -eq 0) "collect-logs.ps1's help names the MFG-Unlocker files it collects (missing: $($missing -join ', '))"
+}
+
 # ---------------------------------------------------------------------------
 # Administrator rights and the .bat launchers.
 

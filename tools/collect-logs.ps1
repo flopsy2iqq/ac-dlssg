@@ -23,8 +23,9 @@
                              is installed
     mfg-unlocker\...         MFG-Unlocker's settings and status next to acs.exe
                              (RTXMFG-Universal.json, RTXMFG-Universal.status.json,
-                             RTX40MFG-UI.ini) and its logs in %TEMP%
-                             (RTXMFG-acs-<id>.log and .previous.log), when it ran
+                             RTX40MFG-UI.ini, RTX40MFG-UI-layout.ini) and its logs
+                             in %TEMP% (RTXMFG-acs-<id>.log, .previous.log and
+                             -intervals.csv), when it ran
     documents\...            Assetto Corsa's log.txt and CSP's
                              custom_shaders_patch.log of the last run, and
                              acdlssg-lua-app.txt: the lines of that CSP log from or
