@@ -150,6 +150,7 @@ NVIDIA allows DLSS Frame Generation 2X on RTX 40 and enables 3X and 4X (multi fr
 - It goes into `<game>\ac-dlssg\mfg\version.dll`, not next to `acs.exe`. The bridge loads it from there by full path when it starts, before Streamline: only on an RTX 40, only the pinned file, never next to dlssg_for_sm86, and not with `mfg_unlocker=0` or `enabled=0` in `ac-dlssg.ini`. `bridge.log` says how long the load took.
 - If the download fails or a hash does not match, the installer says so and installs everything else; frame generation then stays at 2X.
 - An MFG-Unlocker you installed yourself next to `acs.exe` is left alone, and the installer then does not add its own copy.
+- Another mod's `version.dll` next to `acs.exe` is left alone too. When Windows loads it with the game (Windows 10 does), the bridge treats it like a dlssg_for_sm86 build and does not load MFG-Unlocker next to it; the installer warns about that, and `bridge.log` says so.
 - Its code is under the MIT license. It also contains data derived from Intel XeSS, which stays under Intel's terms. It is not an NVIDIA project.
 - It patches NVIDIA's DLSS-G code (`sl.dlss_g.dll`, `nvngx_dlssg.dll`) in memory; no file on disk is changed. Lifting NVIDIA's RTX 50-only restriction circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids for that license's licensees.
 - It has its own menu (Backspace). Leave its frame generation setting on "Follow game", so that the 2X/3X/4X buttons of the AC DLSS-G window decide; they stop at 4X and keep the video memory check.

@@ -3152,6 +3152,18 @@ Invoke-Case 'MP4: an MFG-Unlocker the user installed is left alone, and ours is 
     Write-Text (Join-Path $game 'winmm.dll') 'another mod'
     $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
     Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) 'a winmm.dll that is not MFG-Unlocker does not stop it'
+    # Another mod's version.dll next to acs.exe: Windows 10 loads it, and the
+    # bridge then takes it for a spoof and keeps MFG-Unlocker out. Ours is
+    # installed (Windows 11 25H2 does not load that file), with a warning.
+    $game = New-FakeGame 'MP4g' -NoDxgi
+    $foreign = Join-Path $game 'version.dll'
+    Write-Text $foreign 'another mod'
+    $sha = Get-Sha $foreign
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) 'another mod''s version.dll next to acs.exe: ours is installed'
+    Check ((Get-Sha $foreign) -eq $sha) 'and that version.dll is untouched'
+    Check ($r.Text -match "WARNING: $([regex]::Escape($foreign)) is another mod's version\.dll" -and $r.Text -match 'does not load MFG-Unlocker next to it') "it warns that the bridge does not load MFG-Unlocker next to it ($(@($r.Text -split "`n" | Where-Object { $_ -match 'another mod' })[0]))"
+    Check ($r.Text -notmatch 'WARNING: .*version\.dll is dlssg_for_sm86') 'it is not called dlssg_for_sm86'
 }
 
 Invoke-Case 'MP5: -NoMfgUnlocker installs without it and removes the copy an earlier install put there' {

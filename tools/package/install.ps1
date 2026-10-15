@@ -53,7 +53,7 @@
          the spoof is not installed (the earlier record stays). A download
          that fails its checks is deleted and stops the install with nothing
          changed.
-       - RTX 40 and RTX 50: nothing is needed.
+       - RTX 40 and RTX 50: no spoof is needed (RTX 40 only: see 3b).
        - RTX 20: frame generation is not supported there; no spoof.
      3b. MFG-Unlocker, unless -NoMfgUnlocker is given, only when every NVIDIA
      adapter is an RTX 40 (Ada; no RTX 30 and no RTX 50 next to it). NVIDIA
@@ -70,9 +70,12 @@
      to dlssg_for_sm86's version.dll, next to an MFG-Unlocker the user
      installed (a proxy name next to acs.exe that exports
      MfgUnlockSingleModuleQuery, or the file names of its builds), or over a
-     file in ac-dlssg\mfg that no install put there. On any other PC, with
-     -NoMfgUnlocker, or next to a user's copy, a copy an earlier install put
-     into ac-dlssg\mfg is removed (only while it is the file installed).
+     file in ac-dlssg\mfg that no install put there. Next to another mod's
+     version.dll it is installed with a warning: when Windows loads that
+     file (Windows 10 does), the bridge does not load MFG-Unlocker. On any
+     other PC, with -NoMfgUnlocker, or next to a user's copy, a copy an
+     earlier install put into ac-dlssg\mfg is removed (only while it is the
+     file installed).
   4. Runs scripts\dev-install.ps1 -AutoUpgrade with files\ac-dlssg.dll, the
      CSP Lua app files\apps\lua\AcDlssg and, as -Tools, files\ac-dlssg: the
      uninstaller and the log collector go into <game>\ac-dlssg
@@ -402,6 +405,16 @@ function Get-MfgInstallArgs([string]$Game) {
         Say ("WARNING: MFG-Unlocker is already in the game folder outside ac-dlssg ($($user -join ', ')). It was left untouched, " +
             "and ac-dlssg does not install its own copy next to it: only one copy may run.$removed")
         return $ours
+    }
+    # Another mod's version.dll (neither dlssg_for_sm86 nor MFG-Unlocker):
+    # Windows 10 loads it with acs.exe, and the bridge then takes it for a
+    # spoof and never loads MFG-Unlocker next to it. Windows 11 25H2 binds
+    # System32's version.dll instead, so ours is installed anyway.
+    if (Test-Path -LiteralPath $rootVersion -PathType Leaf) {
+        Say ("WARNING: $rootVersion is another mod's version.dll (SHA-256 $(Get-Sha256OfFile $rootVersion)); it is left " +
+            'untouched. When Windows loads it with the game (Windows 10 does), the bridge takes it for a dlssg_for_sm86 ' +
+            'build and does not load MFG-Unlocker next to it, so frame generation stays at 2X; bridge.log says so. Remove ' +
+            'that version.dll if you do not need it.')
     }
     $what = "$($script:AcdbMfgProject) $($script:AcdbMfgPin.Version)"
     $pins = Get-MfgPins $MfgPins
