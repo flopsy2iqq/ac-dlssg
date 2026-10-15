@@ -9,11 +9,12 @@ It takes about 5 minutes.
 - An **NVIDIA RTX 30, 40 or 50** graphics card. Laptops work too.
 - **Assetto Corsa** with a **Custom Shaders Patch (CSP) preview build** (0.3.0-preview or newer). You get it from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
 - An internet connection. The installer downloads NVIDIA's files by itself.
+- **RTX 40:** NVIDIA allows only 2X there. On a PC with RTX 40 GPUs only, the installer also downloads the third-party MFG-Unlocker for 3X and 4X (unofficial); the README's section "RTX 40 and MFG-Unlocker" explains it. `install.bat -NoMfgUnlocker` installs without it.
 
 ## Install
 
 1. **Close the game.**
-2. **Download** `ac-dlssg-1.1.1.zip` from the [latest release](https://github.com/flopsy2iqq/ac-dlssg/releases/latest).
+2. **Download** `ac-dlssg-1.2.0.zip` from the [latest release](https://github.com/flopsy2iqq/ac-dlssg/releases/latest).
 3. **Unpack it.** Right-click the zip and choose **Extract All**.
 4. **Double-click `install.bat`.**
    - If Windows asks "Do you want to allow this app to make changes?", click **Yes**.
