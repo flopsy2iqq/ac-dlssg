@@ -389,7 +389,7 @@ try {
         if ($mfgFiles.Count -gt 0) {
             $others = @(Find-UserMfgCopies $game)
             if (-not $mfgOurs) {
-                Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')), which the install did not put there"
+                Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')): the install record names no MFG-Unlocker of its own now; delete them by hand if you no longer use MFG-Unlocker"
             } elseif ($others.Count -gt 0) {
                 Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')): another copy of it is still in the game folder ($($others -join ', '))"
             } else {
