@@ -44,6 +44,8 @@ TEST(Spoof_Sha256OfAKnownFile) {
     CHECK_EQ(hex, std::string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     CHECK(!Sha256File(path + L".missing", &hex, &err));
     CHECK(!err.empty());
+    DeleteFileW(path.c_str());
+    RemoveDirectoryW(TempDir(L"acdb_spoof_sha").c_str());
 }
 
 TEST(Spoof_AlreadyLoadedFromTheGameFolder) {
@@ -116,6 +118,8 @@ TEST(Spoof_LoadsASecondVersionDllByFullPath) {
     CHECK(LoadSpoofModule(dir + L"\\missing.dll", &err) == nullptr);
     CHECK(!err.empty());
     FreeLibrary(loaded);
+    DeleteFileW(path.c_str());
+    RemoveDirectoryW(dir.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -228,4 +232,6 @@ TEST(Spoof_TheExportProbeReadsAFileWithoutRunningIt) {
     err.clear();
     CHECK(!FileExportsName(text, "MfgUnlockSingleModuleQuery", &err));
     CHECK(!err.empty());
+    DeleteFileW(text.c_str());
+    RemoveDirectoryW(TempDir(L"acdb_spoof_probe").c_str());
 }
