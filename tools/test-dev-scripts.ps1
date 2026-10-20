@@ -2149,6 +2149,39 @@ Invoke-Case 'SP0: GPU table, dlssg_for_sm86 pins, and install.ps1 asks nothing (
     }
     $two = @(Get-GpuAdapters @('8086:9A49,10DE:25A0'))
     Check ($two.Count -eq 2 -and $two[1].Id -eq '10DE:25A0' -and $two[1].Sm86) '-GpuDeviceIds "a,b" is two adapters'
+    $named = @(Get-GpuAdapters @('8086:9A49=Intel(R) UHD Graphics,10DE:1F12=NVIDIA GeForce RTX 2060 with Max-Q Design'))
+    Check ($named.Count -eq 2 -and $named[0].Name -eq 'Intel(R) UHD Graphics' -and $named[1].Name -eq 'NVIDIA GeForce RTX 2060 with Max-Q Design' -and
+        $named[1].SpoofGpu -eq 'TuringRtx') '-GpuDeviceIds "VVVV:DDDD=name" gives the adapter that name'
+
+    # RTX 20 (experimental) next to RTX 30 and the RTX 2050 for
+    # dlssg_for_sm86: the same rule as IsTuringRtx and SpoofGpuOf in
+    # src/gpu_info.cpp (a TU102..TU106 ID and "RTX" in the name), and the
+    # same answers for every adapter of tests/gpu_cases.txt, which
+    # tests/test_gpu_info.cpp checks against the bridge.
+    Check ($script:AcdbTensorTuringFirst -eq $consts['kTensorTuringFirst'] -and $script:AcdbTensorTuringLast -eq $consts['kTensorTuringLast'] -and
+        $script:AcdbTensorTuringFirst -eq 0x1E02 -and $script:AcdbTensorTuringLast -eq 0x1F76) 'the Turing range with tensor cores (TU102..TU106, 1E02-1F76) matches src/gpu_info.cpp'
+    $token = [regex]::Match($cpp, 'constexpr char kRtxNameToken\[\] = "([^"]+)";')
+    Check ($token.Success -and $token.Groups[1].Value -eq $script:AcdbRtxNameToken -and $script:AcdbRtxNameToken -eq 'RTX') 'the name rule is "RTX" on both sides'
+    $caseLines = @([IO.File]::ReadAllLines((Join-Path $tools '..\tests\gpu_cases.txt')) | Where-Object { $_ -and -not $_.StartsWith('#') })
+    $bad = @()
+    foreach ($line in $caseLines) {
+        $f = $line.Split('|')
+        $a = @(Get-GpuAdapters @("$($f[0])=$($f[1])"))
+        if ($a.Count -ne 1 -or $a[0].Name -ne $f[1] -or $a[0].Arch -ne $f[2] -or $a[0].SpoofGpu -ne $f[3] -or $a[0].Sm86 -ne ($f[3] -eq 'AmpereSm86')) {
+            $bad += "$line (got $($a[0].Arch) $($a[0].SpoofGpu))"
+        }
+    }
+    Check ($caseLines.Count -ge 45 -and $bad.Count -eq 0) "the $($caseLines.Count) adapters of tests/gpu_cases.txt get the bridge's classes ($($bad -join '; '))"
+    Check ((@(Get-GpuAdapters @('10DE:1E84'))[0].SpoofGpu) -eq 'None') 'an RTX 20 ID without a name is not taken for RTX 20'
+    foreach ($t in @(
+            @('10DE:2206=NVIDIA GeForce RTX 3080', 'RTX 30 or RTX 2050 \(Ampere SM86\)'),
+            @('10DE:25A9=NVIDIA GeForce RTX 2050 Laptop GPU', 'RTX 30 or RTX 2050 \(Ampere SM86\)'),
+            @('10DE:1E84=NVIDIA GeForce RTX 2070 SUPER', 'RTX 20, Turing'),
+            @('10DE:1F09=NVIDIA GeForce GTX 1660 SUPER', 'GTX 16, MX or T-series'),
+            @('10DE:1F97=NVIDIA GeForce MX450', 'GTX 16, MX or T-series'))) {
+        $text = Get-GpuArchText @(Get-GpuAdapters @($t[0]))[0]
+        Check ($text -match $t[1]) "$($t[0]) is named as $text"
+    }
     $pnp = ConvertFrom-PnpDeviceId 'PCI\VEN_10DE&DEV_2206&SUBSYS_38971462&REV_A1\4&2B5B5B5B&0&0008'
     Check ($pnp -and $pnp.VendorId -eq 0x10DE -and $pnp.DeviceId -eq 0x2206) 'a Win32_VideoController PNPDeviceID gives vendor 10DE, device 2206'
     Check ($null -eq (ConvertFrom-PnpDeviceId 'ROOT\BASICDISPLAY\0000')) 'a PNPDeviceID without VEN_ and DEV_ gives nothing'
@@ -2260,8 +2293,8 @@ Invoke-Case 'SP1: RTX 30: dlssg_for_sm86 is fetched, verified, installed, record
 
 Invoke-Case 'SP2: RTX 50 and a PC with an RTX 40 next to an RTX 30 need no spoof' {
     $pkg = New-PackageCopy 'SP2'
-    foreach ($gpu in @('8086:46A6,10DE:2B85', '10DE:2206,10DE:2684')) {
-        $game = New-FakeGame "SP2-$($gpu.Replace(':', '').Replace(',', '-'))" -NoDxgi
+    foreach ($gpu in @('8086:46A6,10DE:2B85', '10DE:2206,10DE:2684', '10DE:1E84=NVIDIA GeForce RTX 2070 SUPER,10DE:2684')) {
+        $game = New-FakeGame "SP2-$(($gpu -replace '=[^,]*', '').Replace(':', '').Replace(',', '-'))" -NoDxgi
         $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs $gpu)
         Check ($r.Code -eq 0) "$gpu`: install exits 0"
         Check ($r.Text -match 'RTX 40 or newer' -and $r.Text -match 'not needed') "$gpu`: it says dlssg_for_sm86 is not needed"
@@ -2281,14 +2314,44 @@ Invoke-Case 'SP2: RTX 50 and a PC with an RTX 40 next to an RTX 30 need no spoof
     Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'DlssgSm86') -Recurse -Force
 }
 
-Invoke-Case 'SP3: RTX 20 is not supported, and gets no spoof' {
+Invoke-Case 'SP3: RTX 20 gets dlssg_for_sm86 (experimental); GTX 16, MX and T-series get none' {
     $pkg = New-PackageCopy 'SP3'
-    $game = New-FakeGame 'SP3' -NoDxgi
+    # dlssg_for_sm86 0.3.1 and newer run on RTX 20 with the same two files.
+    foreach ($gpu in @('10DE:1E84=NVIDIA GeForce RTX 2070 SUPER', '8086:9A49=Intel(R) UHD Graphics,10DE:1F12=NVIDIA GeForce RTX 2060 with Max-Q Design',
+            '10DE:1E07=NVIDIA GeForce RTX 2080 Ti', '10DE:1E02=NVIDIA TITAN RTX')) {
+        $id = ($gpu -split ',')[-1].Substring(5, 4)
+        $game = New-FakeGame "SP3-$id" -NoDxgi
+        $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs $gpu)
+        Check ($r.Code -eq 0) "$gpu`: install exits 0"
+        Check ($r.Text -match 'RTX 20 via dlssg_for_sm86 \(experimental\)') "$gpu`: it says RTX 20 via dlssg_for_sm86 (experimental)"
+        $missing = @($spoofNoticePatterns | Where-Object { $r.Text -notmatch $_ })
+        Check ($missing.Count -eq 0 -and $r.Text -match 'This PC has an RTX 20 GPU') "$gpu`: it prints the dlssg_for_sm86 notice for RTX 20 (missing: $($missing -join ', '))"
+        Check ($r.Text -match 'github\.com/flopsy2iqq/ac-dlssg/issues') "$gpu`: it asks for a report"
+        Check (Test-SpoofInstalled $game) "$gpu`: version.dll and dlssg_sm86.ini are installed"
+        Check ((Get-SpoofRecord (Get-Manifest $game) 'version.dll').origin -eq 'installed') "$gpu`: and recorded"
+        Check (-not (Test-Path -LiteralPath (Get-MfgTarget $game))) "$gpu`: no MFG-Unlocker"
+    }
+    # No tensor cores, no DLSS: GTX 16 (also on TU106, where the name
+    # decides), MX and T-series; and an RTX 20 ID whose name Windows did not
+    # give (the name rule needs it).
+    foreach ($gpu in @('10DE:1F09=NVIDIA GeForce GTX 1660 SUPER', '10DE:1F0A=NVIDIA GeForce GTX 1650', '10DE:1F82=NVIDIA GeForce GTX 1650',
+            '10DE:21C4=NVIDIA GeForce GTX 1660 SUPER', '10DE:1F97=NVIDIA GeForce MX450', '10DE:1FF0=NVIDIA T1000 8GB')) {
+        $id = $gpu.Substring(5, 4)
+        $game = New-FakeGame "SP3-gtx-$id" -NoDxgi
+        $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs $gpu)
+        Check ($r.Code -eq 0) "$gpu`: install exits 0 (the bridge is installed)"
+        Check ($r.Text -match 'GTX 16, MX and T-series' -and $r.Text -match 'no tensor cores' -and $r.Text -match 'not supported') "$gpu`: it says that GPU has no DLSS and is not supported"
+        Check (Test-NoSpoofFiles $game) "$gpu`: no spoof file installed"
+        Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') "$gpu`: no notice and no download"
+    }
+    $game = New-FakeGame 'SP3-noname' -NoDxgi
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:1E84')
-    Check ($r.Code -eq 0) 'install exits 0 (the bridge is installed)'
-    Check ($r.Text -match 'RTX 20' -and $r.Text -match 'not supported') 'it says frame generation is not supported on RTX 20'
-    Check (Test-NoSpoofFiles $game) 'no spoof file installed'
-    Check ($r.Text -notmatch 'fetch-deps:' -and $r.Text -notmatch 'Coldwood1026') 'no notice and no download'
+    Check ($r.Code -eq 0 -and (Test-NoSpoofFiles $game) -and $r.Text -notmatch 'fetch-deps:') 'an RTX 20 ID without RTX in its name gets no spoof'
+    # The RTX 2050 is Ampere (GA107, SM86) despite its name.
+    $game = New-FakeGame 'SP3-2050' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '8086:46A6=Intel(R) Iris(R) Xe Graphics,10DE:25A9=NVIDIA GeForce RTX 2050 Laptop GPU')
+    Check ($r.Code -eq 0 -and (Test-SpoofInstalled $game)) 'an RTX 2050 laptop gets dlssg_for_sm86'
+    Check ($r.Text -match 'RTX 30 or RTX 2050 \(Ampere SM86\)' -and $r.Text -notmatch 'RTX 20 via') 'as Ampere SM86, not as an experimental RTX 20'
     $game = New-FakeGame 'SP3b' -NoDxgi
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '8086:9A49')
     Check ($r.Code -eq 0 -and $r.Text -match 'no NVIDIA GPU' -and (Test-NoSpoofFiles $game)) 'no NVIDIA GPU: install exits 0 without the spoof'
@@ -3083,10 +3146,11 @@ Invoke-Case 'MP2: only a PC whose NVIDIA GPUs are all RTX 40 gets MFG-Unlocker' 
             @('10DE:2684,10DE:2B85', $false, 'an RTX 40 next to an RTX 50'),
             @('10DE:2206,10DE:2684', $false, 'an RTX 40 next to an RTX 30'),
             @('10DE:2206', $false, 'an RTX 30'),
-            @('10DE:1E84', $false, 'an RTX 20'),
+            @('10DE:1E84=NVIDIA GeForce RTX 2070 SUPER', $false, 'an RTX 20'),
+            @('10DE:1F09=NVIDIA GeForce GTX 1660 SUPER', $false, 'a GTX 16'),
             @('1002:73BF', $false, 'no NVIDIA GPU'))) {
         $gpu = $t[0]
-        $game = New-FakeGame "MP2-$($gpu.Replace(':', '').Replace(',', '-'))" -NoDxgi
+        $game = New-FakeGame "MP2-$(($gpu -replace '=[^,]*', '').Replace(':', '').Replace(',', '-'))" -NoDxgi
         $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs $gpu)
         Check ($r.Code -eq 0) "$($t[2]): install exits 0"
         if ($t[1]) {
@@ -3097,7 +3161,7 @@ Invoke-Case 'MP2: only a PC whose NVIDIA GPUs are all RTX 40 gets MFG-Unlocker' 
             Check ($r.Text -match 'MFG-Unlocker') "$($t[2]): it says why ($(@($r.Text -split "`n" | Where-Object { $_ -match 'MFG-Unlocker' })[0]))"
         }
         $spoof = Test-SpoofInstalled $game
-        Check ($spoof -eq ($gpu -eq '10DE:2206')) "$($t[2]): dlssg_for_sm86 only on the RTX 30 alone"
+        Check ($spoof -eq ($gpu -eq '10DE:2206' -or $gpu -like '10DE:1E84=*')) "$($t[2]): dlssg_for_sm86 only on the RTX 30 or the RTX 20 alone"
         Check (-not ($spoof -and (Test-Path -LiteralPath (Get-MfgTarget $game)))) "$($t[2]): never both"
     }
     $r = Invoke-PackageInstall $pkg (New-FakeGame 'MP2-rtx50' -NoDxgi) (Get-MfgArgs '10DE:2B85')

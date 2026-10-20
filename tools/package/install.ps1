@@ -37,9 +37,12 @@
      SHA-256 and NVIDIA signatures verified. It prints where NVIDIA's license
      files are; installing means accepting them.
   3. dlssg_for_sm86 (spec 10), unless -NoSpoof is given. It reads every
-     display adapter (the PNPDeviceID of each Win32_VideoController) and
+     display adapter (the PNPDeviceID and name of each Win32_VideoController) and
      looks only at the NVIDIA ones:
-       - RTX 30 (Ampere SM86, desktop or laptop): it prints what
+       - RTX 30 or RTX 2050 (Ampere SM86, desktop or laptop; the RTX 2050
+         is a GA107), and RTX 20 (experimental: a TU102, TU104 or TU106 chip
+         whose name says RTX, as GeForce RTX 20, TITAN RTX and Quadro RTX;
+         dlssg_for_sm86 0.3.1 and newer run there with the same files): it prints what
          dlssg_for_sm86 is, then gets dlssg_for_sm86 0.3.5 (version.dll and
          dlssg_sm86.ini of commit 9621db5 of github.com/sdli1995/dlssg_for_sm86)
          with scripts\fetch-deps.ps1 into files\deps\, checks their git blob SHA-1
@@ -53,8 +56,10 @@
          the spoof is not installed (the earlier record stays). A download
          that fails its checks is deleted and stops the install with nothing
          changed.
-       - RTX 40 and RTX 50: no spoof is needed (RTX 40 only: see 3b).
-       - RTX 20: frame generation is not supported there; no spoof.
+       - RTX 40 and RTX 50, also next to one of the GPUs above: no spoof is
+         needed (RTX 40 only: see 3b).
+       - GTX 16, MX and T-series (Turing without tensor cores, no DLSS):
+         frame generation is not supported there; no spoof.
      3b. MFG-Unlocker, unless -NoMfgUnlocker is given, only when every NVIDIA
      adapter is an RTX 40 (Ada; no RTX 30 and no RTX 50 next to it). NVIDIA
      allows 2X there and 3X/4X only on RTX 50; MFG-Unlocker lifts that. It
@@ -119,7 +124,8 @@
 .PARAMETER GpuDeviceIds
   For tests: the display adapters as PCI vendor:device IDs in hex (such as
   10DE:2206, or "8086:9A49,10DE:25A0" for two) instead of the ones Windows
-  reports.
+  reports, each optionally with the name Windows would report
+  ("10DE:1E84=NVIDIA GeForce RTX 2070 SUPER"); RTX 20 needs "RTX" in it.
 
 .PARAMETER SpoofSourceDir
   For tests: a folder whose version.dll and dlssg_sm86.ini stand in for the
@@ -208,21 +214,11 @@ function Copy-InstalledStreamline([string]$Game, [string]$To) {
     return [pscustomobject]@{ Dir = $To; From = $from; Problem = '' }
 }
 
-function Get-GpuArchText($Adapter) {
-    switch ($Adapter.Arch) {
-        'Ampere' { if ($Adapter.Sm86) { return 'RTX 30, Ampere SM86' } else { return 'Ampere SM80 (A100)' } }
-        'Ada' { return 'RTX 40, Ada' }
-        'Blackwell' { return 'RTX 50, Blackwell' }
-        'Turing' { return 'RTX 20 or GTX 16, Turing' }
-        'OlderNvidia' { return 'older than RTX 20' }
-    }
-    return 'not in this installer''s GPU table'
-}
-
 # Printed before the download, from spec 10; the install goes on without a question.
-function Write-SpoofNotice([string]$Game) {
+# $Class: 'RTX 30 or RTX 2050 (Ampere SM86)' or 'RTX 20'.
+function Write-SpoofNotice([string]$Game, [string]$Class) {
     $v = $script:AcdbSpoofVersion
-    Say ('This PC has an RTX 30 GPU. NVIDIA allows DLSS Frame Generation only on RTX 40 and newer; on RTX 30 it runs ' +
+    Say ("This PC has an $Class GPU. NVIDIA allows DLSS Frame Generation only on RTX 40 and newer; on that GPU it runs " +
         "through dlssg_for_sm86, which the installer now downloads and puts next to acs.exe:")
     Write-Host "  - What: dlssg_for_sm86 $v, the files version.dll and dlssg_sm86.ini of commit $($script:AcdbSpoofCommit)"
     Write-Host "    (tag $v) of https://github.com/$($script:AcdbSpoofRepository), checked against their pinned hashes"
@@ -231,9 +227,9 @@ function Write-SpoofNotice([string]$Game) {
     Write-Host '    ac-dlssg and not NVIDIA software.'
     Write-Host '  - License: the repository has no LICENSE file; its README says the project source is GPLv3, but no source'
     Write-Host '    is published.'
-    Write-Host '  - NVIDIA: the binary embeds NVIDIA''s nvngx_dlssg.dll, which is not relicensed. Running it on RTX 30'
-    Write-Host '    circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and you'
-    Write-Host '    are that license''s licensee.'
+    Write-Host '  - NVIDIA: the binary embeds NVIDIA''s nvngx_dlssg.dll, which is not relicensed. Running it on RTX 30 or'
+    Write-Host '    RTX 20 circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids, and'
+    Write-Host '    you are that license''s licensee.'
     Write-Host '  - Risk: it runs inside the game and changes the GPU architecture that NVIDIA''s driver interface reports'
     Write-Host "    to it (CSP sees that too). If the game misbehaves, $(Get-InstalledTool $Game 'uninstall.bat') removes it again."
     Write-Host '  - To install without it: install.bat -NoSpoof.'
@@ -252,7 +248,7 @@ function Get-SpoofInstallArgs([string]$Game) {
         $adapters = @(Get-GpuAdapters $GpuDeviceIds)
     } catch {
         if (Test-IsRefusal $_) { throw }
-        Say "WARNING: the GPUs could not be read ($($_.Exception.Message)), so dlssg_for_sm86 is not installed. On an RTX 30, run install.bat again."
+        Say "WARNING: the GPUs could not be read ($($_.Exception.Message)), so dlssg_for_sm86 is not installed. On an RTX 30 or RTX 20, run install.bat again."
         return $none
     }
     $nvidia = @($adapters | Where-Object { $_.VendorId -eq $script:AcdbNvidiaVendorId })
@@ -265,14 +261,28 @@ function Get-SpoofInstallArgs([string]$Game) {
         Say 'RTX 40 or newer: DLSS Frame Generation runs on it natively; dlssg_for_sm86 is not needed and not installed.'
         return $none
     }
-    if (@($nvidia | Where-Object { $_.Sm86 }).Count -eq 0) {
+    $sm86 = @($nvidia | Where-Object { $_.SpoofGpu -eq 'AmpereSm86' })
+    $rtx20 = @($nvidia | Where-Object { $_.SpoofGpu -eq 'TuringRtx' })
+    if ($sm86.Count -eq 0 -and $rtx20.Count -eq 0) {
         if (@($nvidia | Where-Object { $_.Arch -eq 'Turing' }).Count -gt 0) {
-            Say ('RTX 20 is not supported: frame generation does not run on it, and dlssg_for_sm86 is not installed. ' +
-                'The bridge is installed anyway; without frame generation the game runs as it does without it.')
+            Say ('GTX 16, MX and T-series GPUs are not supported: these Turing chips have no tensor cores and no DLSS, so ' +
+                'frame generation does not run on them, and dlssg_for_sm86 is not installed. The bridge is installed anyway; ' +
+                'without frame generation the game runs as it does without it.')
         } else {
-            Say 'no RTX 30 (Ampere SM86) GPU: dlssg_for_sm86 is not installed.'
+            Say 'no RTX 30, RTX 2050 (Ampere SM86) or RTX 20 GPU: dlssg_for_sm86 is not installed.'
         }
         return $none
+    }
+    # dlssg_for_sm86 0.3.1 and newer run on RTX 20 with the same two files
+    # (its README; its author tested an RTX 2080 Ti); with ac-dlssg that is
+    # still experimental.
+    $class = 'RTX 30 or RTX 2050 (Ampere SM86)'
+    if ($sm86.Count -eq 0) {
+        $class = 'RTX 20'
+        Say ('RTX 20 via dlssg_for_sm86 (experimental): dlssg_for_sm86 0.3.1 and newer run DLSS Frame Generation on RTX 20 ' +
+            'with the same files as on RTX 30, and its author tested it on an RTX 2080 Ti. With ac-dlssg, RTX 20 is still ' +
+            'experimental: please report how it runs at https://github.com/flopsy2iqq/ac-dlssg/issues and attach the zip ' +
+            "that $(Get-InstalledTool $Game 'collect-logs.bat') makes.")
     }
 
     $what = "$($script:AcdbSpoofProject) $($script:AcdbSpoofVersion)"
@@ -288,7 +298,7 @@ function Get-SpoofInstallArgs([string]$Game) {
     if ($state['version.dll'] -eq 'other') {
         Say ("WARNING: $versionDll is not $what (SHA-256 $(Get-Sha256OfFile $versionDll)); it is another mod's " +
             'version.dll or another dlssg_for_sm86 version. It was left untouched, and dlssg_for_sm86 was not installed. ' +
-            'Frame generation runs on this RTX 30 only if that file is a dlssg_for_sm86 that supports it. To get ' +
+            "Frame generation runs on this $class GPU only if that file is a dlssg_for_sm86 that supports it. To get " +
             "$what instead, remove version.dll and dlssg_sm86.ini from the game folder yourself and run install.bat again.")
         return $none
     }
@@ -303,7 +313,7 @@ function Get-SpoofInstallArgs([string]$Game) {
     }
     $fetch = @($script:AcdbSpoofNames | Where-Object { $state[$_] -eq 'absent' })
     if ($fetch.Count -gt 0) {
-        Write-SpoofNotice $Game
+        Write-SpoofNotice $Game $class
         $deps = $depsDir
         $fetchArgs = @{ Only = 'Spoof'; SpoofFiles = $fetch; DepsDir = $deps }
         if ($SpoofSourceDir) { $fetchArgs.SpoofSourceDir = $SpoofSourceDir }
@@ -397,8 +407,8 @@ function Get-MfgInstallArgs([string]$Game) {
     # Never next to dlssg_for_sm86 (a PC whose RTX 30 was swapped for an RTX 40).
     $rootVersion = Join-Path $Game 'version.dll'
     if ((Test-Path -LiteralPath $rootVersion -PathType Leaf) -and -not (Get-SpoofFileProblem $rootVersion (Get-SpoofPins $SpoofPins)['version.dll'])) {
-        Say ("WARNING: $rootVersion is dlssg_for_sm86, which is for RTX 30, and only one of the two may run, so MFG-Unlocker " +
-            'is not installed. If this PC has no RTX 30 any more, remove version.dll and dlssg_sm86.ini from the game folder ' +
+        Say ("WARNING: $rootVersion is dlssg_for_sm86, which is for RTX 30 and RTX 20, and only one of the two may run, so MFG-Unlocker " +
+            'is not installed. If this PC has no RTX 30 or RTX 20 any more, remove version.dll and dlssg_sm86.ini from the game folder ' +
             "(the uninstaller removes them when this installer put them there), then run install.bat again.$removed")
         return $ours
     }

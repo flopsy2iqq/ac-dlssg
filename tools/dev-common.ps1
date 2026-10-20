@@ -781,11 +781,40 @@ function Get-GpuArch([int]$VendorId, [int]$DeviceId) {
     return 'Unknown'
 }
 
-# An SM86 Ampere chip (GA102 to GA107, desktop and laptop): the GPUs
-# dlssg_for_sm86 is for.
+# An SM86 Ampere chip (GA102 to GA107, desktop and laptop, the RTX 2050
+# included, which is a GA107): the GPUs dlssg_for_sm86 is for.
 function Test-AmpereSm86([int]$VendorId, [int]$DeviceId) {
     return (Get-GpuArch $VendorId $DeviceId) -eq 'Ampere' -and
         ($DeviceId -lt $script:AcdbGa100First -or $DeviceId -gt $script:AcdbGa100Last)
+}
+
+# TU102, TU104 and TU106, the Turing dies with tensor cores (TITAN RTX
+# 0x1E02 to the last TU106 ID 0x1F76; TU117 starts at 0x1F81, TU116 at
+# 0x2182), and the name rule: as kTensorTuringFirst, kTensorTuringLast and
+# kRtxNameToken in src/gpu_info.cpp.
+$script:AcdbTensorTuringFirst = 0x1E02
+$script:AcdbTensorTuringLast = 0x1F76
+$script:AcdbRtxNameToken = 'RTX'
+
+# An RTX-class Turing chip (GeForce RTX 20, TITAN RTX, Quadro RTX, desktop
+# and laptop): a TU102..TU106 device ID AND "RTX" in the adapter name (any
+# case). That keeps out TU116 and TU117 (GTX 16, MX, T-series) by the ID and
+# the GTX cards on TU106 (GTX 1660 SUPER 10DE:1F09, GTX 1650 10DE:1F0A) by
+# the name; none of them has tensor cores or DLSS.
+function Test-TuringRtx([int]$VendorId, [int]$DeviceId, [string]$Name) {
+    if ((Get-GpuArch $VendorId $DeviceId) -ne 'Turing') { return $false }
+    if ($DeviceId -lt $script:AcdbTensorTuringFirst -or $DeviceId -gt $script:AcdbTensorTuringLast) { return $false }
+    return "$Name".ToUpperInvariant().Contains($script:AcdbRtxNameToken)
+}
+
+# What the GPU is for dlssg_for_sm86, as SpoofGpuOf in src/gpu_info.cpp:
+# AmpereSm86 (RTX 30, RTX 2050), TuringRtx (RTX 20, experimental: the
+# spoof's README says 0.3.1 and newer run there with the same dlssg_sm86.ini)
+# or None. tests/gpu_cases.txt holds the cases both sides check.
+function Get-SpoofGpu([int]$VendorId, [int]$DeviceId, [string]$Name) {
+    if (Test-AmpereSm86 $VendorId $DeviceId) { return 'AmpereSm86' }
+    if (Test-TuringRtx $VendorId $DeviceId $Name) { return 'TuringRtx' }
+    return 'None'
 }
 
 # The vendor and device ID in a PNPDeviceID such as
@@ -807,21 +836,40 @@ function New-GpuAdapter([int]$VendorId, [int]$DeviceId, [string]$Name) {
         Name     = $Name
         Arch     = Get-GpuArch $VendorId $DeviceId
         Sm86     = [bool](Test-AmpereSm86 $VendorId $DeviceId)
+        SpoofGpu = Get-SpoofGpu $VendorId $DeviceId $Name
     }
 }
 
-# Every display adapter, from the PNPDeviceID of each Win32_VideoController.
-# $DeviceIds ('VVVV:DDDD' PCI IDs in hex, one per adapter; "a,b" counts as
-# two) replaces that query, for tests on a PC whose own GPU does not matter.
+# How the installer names an adapter's GPU class.
+function Get-GpuArchText($Adapter) {
+    switch ($Adapter.Arch) {
+        'Ampere' { if ($Adapter.Sm86) { return 'RTX 30 or RTX 2050 (Ampere SM86)' } else { return 'Ampere SM80 (A100)' } }
+        'Ada' { return 'RTX 40, Ada' }
+        'Blackwell' { return 'RTX 50, Blackwell' }
+        'Turing' {
+            if ($Adapter.SpoofGpu -eq 'TuringRtx') { return 'RTX 20, Turing with tensor cores' }
+            return 'GTX 16, MX or T-series, Turing without tensor cores'
+        }
+        'OlderNvidia' { return 'older than RTX 20' }
+    }
+    return 'not in this installer''s GPU table'
+}
+
+# Every display adapter, from the PNPDeviceID and the name of each
+# Win32_VideoController. $DeviceIds ('VVVV:DDDD' PCI IDs in hex, one per
+# adapter, or 'VVVV:DDDD=name' with the name Windows would report; "a,b"
+# counts as two) replaces that query, for tests on a PC whose own GPU does
+# not matter.
 function Get-GpuAdapters([string[]]$DeviceIds) {
     $adapters = @()
     $ids = @($DeviceIds | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ($ids.Count -gt 0) {
         foreach ($id in $ids) {
-            if ($id -notmatch '^([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})$') {
-                Stop-Refused "-GpuDeviceIds '$id' is not a PCI vendor:device ID such as 10DE:2206."
+            if ($id -notmatch '^([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})(?:=(.+))?$') {
+                Stop-Refused "-GpuDeviceIds '$id' is not a PCI vendor:device ID such as 10DE:2206 (or 10DE:2206=its name)."
             }
-            $adapters += New-GpuAdapter ([Convert]::ToInt32($Matches[1], 16)) ([Convert]::ToInt32($Matches[2], 16)) 'an adapter from -GpuDeviceIds'
+            $name = if ($Matches[3]) { $Matches[3].Trim() } else { 'an adapter from -GpuDeviceIds' }
+            $adapters += New-GpuAdapter ([Convert]::ToInt32($Matches[1], 16)) ([Convert]::ToInt32($Matches[2], 16)) $name
         }
         return $adapters
     }
