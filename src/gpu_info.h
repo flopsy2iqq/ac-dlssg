@@ -37,9 +37,6 @@ bool IsTuringRtx(uint32_t vendorId, uint32_t deviceId, const std::string& adapte
 enum class SpoofGpu { None = 0, AmpereSm86 = 1, TuringRtx = 2 };
 SpoofGpu SpoofGpuOf(uint32_t vendorId, uint32_t deviceId, const std::string& adapterName);
 
-// "RTX 30 or RTX 2050 (Ampere SM86)", "RTX 20 (experimental)", or "" for None.
-const char* SpoofGpuLabel(SpoofGpu gpu);
-
 // What bridge.log's adapter line adds: " (SM86)", " (RTX 20 class, SM75:
 // dlssg_for_sm86 is experimental there)", or "" for None.
 const char* SpoofGpuLogTag(SpoofGpu gpu);

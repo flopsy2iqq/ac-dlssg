@@ -90,15 +90,6 @@ SpoofGpu SpoofGpuOf(uint32_t vendorId, uint32_t deviceId, const std::string& ada
     return SpoofGpu::None;
 }
 
-const char* SpoofGpuLabel(SpoofGpu gpu) {
-    switch (gpu) {
-        case SpoofGpu::AmpereSm86: return "RTX 30 or RTX 2050 (Ampere SM86)";
-        case SpoofGpu::TuringRtx: return "RTX 20 (experimental)";
-        case SpoofGpu::None: break;
-    }
-    return "";
-}
-
 const char* SpoofGpuLogTag(SpoofGpu gpu) {
     switch (gpu) {
         case SpoofGpu::AmpereSm86: return " (SM86)";

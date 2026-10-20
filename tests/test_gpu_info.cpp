@@ -121,16 +121,13 @@ TEST(GpuInfo_TuringRtxNeedsTheIdAndTheName) {
     CHECK(!IsTuringRtx(kNv, 0x2684, "NVIDIA GeForce RTX 4090"));
 }
 
-TEST(GpuInfo_SpoofGpuClassesAndLabels) {
+TEST(GpuInfo_SpoofGpuClassesAndLogTags) {
     CHECK(SpoofGpuOf(kNv, 0x2206, "NVIDIA GeForce RTX 3080") == SpoofGpu::AmpereSm86);
     CHECK(SpoofGpuOf(kNv, 0x2206, "") == SpoofGpu::AmpereSm86);  // no name rule for Ampere
     CHECK(SpoofGpuOf(kNv, 0x1E84, "NVIDIA GeForce RTX 2070 SUPER") == SpoofGpu::TuringRtx);
     CHECK(SpoofGpuOf(kNv, 0x1F09, "NVIDIA GeForce GTX 1660 SUPER") == SpoofGpu::None);
     CHECK(SpoofGpuOf(kNv, 0x2684, "NVIDIA GeForce RTX 4090") == SpoofGpu::None);
     CHECK(SpoofGpuOf(kNv, 0x20B0, "NVIDIA A100") == SpoofGpu::None);
-    CHECK_EQ(std::string(SpoofGpuLabel(SpoofGpu::AmpereSm86)), "RTX 30 or RTX 2050 (Ampere SM86)");
-    CHECK_EQ(std::string(SpoofGpuLabel(SpoofGpu::TuringRtx)), "RTX 20 (experimental)");
-    CHECK_EQ(std::string(SpoofGpuLabel(SpoofGpu::None)), "");
     // bridge.log's adapter lines.
     CHECK_EQ(std::string(SpoofGpuLogTag(SpoofGpu::AmpereSm86)), " (SM86)");
     CHECK_EQ(std::string(SpoofGpuLogTag(SpoofGpu::TuringRtx)), " (RTX 20 class, SM75: dlssg_for_sm86 is experimental there)");
