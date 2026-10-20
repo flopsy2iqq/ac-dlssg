@@ -828,6 +828,17 @@ function ConvertFrom-PnpDeviceId([string]$PnpDeviceId) {
     }
 }
 
+# Only for the installer's text: a TU102, TU104 or TU106 device ID whose name
+# says neither RTX nor GTX or CMP (the TU106 cards without tensor cores). That
+# is most likely an RTX 20 that Windows does not name yet ("Microsoft Basic
+# Display Adapter" before the NVIDIA driver is installed), or a Tesla T4. It
+# still gets no dlssg_for_sm86 (Get-SpoofGpu decides that).
+function Test-TuringTensorIdWithoutRtxName($Adapter) {
+    if ($Adapter.Arch -ne 'Turing' -or $Adapter.SpoofGpu -eq 'TuringRtx') { return $false }
+    if ($Adapter.DeviceId -lt $script:AcdbTensorTuringFirst -or $Adapter.DeviceId -gt $script:AcdbTensorTuringLast) { return $false }
+    return "$($Adapter.Name)" -notmatch '(?i)GTX|CMP'
+}
+
 function New-GpuAdapter([int]$VendorId, [int]$DeviceId, [string]$Name) {
     return [pscustomobject]@{
         VendorId = $VendorId
@@ -848,6 +859,7 @@ function Get-GpuArchText($Adapter) {
         'Blackwell' { return 'RTX 50, Blackwell' }
         'Turing' {
             if ($Adapter.SpoofGpu -eq 'TuringRtx') { return 'RTX 20, Turing with tensor cores' }
+            if (Test-TuringTensorIdWithoutRtxName $Adapter) { return 'Turing TU102, TU104 or TU106 whose name does not say RTX' }
             return 'GTX 16, MX or T-series, Turing without tensor cores'
         }
         'OlderNvidia' { return 'older than RTX 20' }

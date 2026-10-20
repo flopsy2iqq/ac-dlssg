@@ -55,6 +55,9 @@ ac-dlssg {VERSION} для Assetto Corsa
     всё работает (какие из 2X, 3X и 4X включаются, FPS, задержка, артефакты),
     и приложите zip из ac-dlssg\collect-logs.bat:
         https://github.com/flopsy2iqq/ac-dlssg/issues
+    Запускайте install.bat с установленным драйвером NVIDIA: без него
+    Windows называет карту "Microsoft Basic Display Adapter", и установщик
+    dlssg_for_sm86 не ставит (он так и напишет).
   - GTX 16, MX и T-серия не поддерживаются: у этих чипов Turing нет
     тензорных ядер и нет DLSS. Установщик так и напишет. Мост поставится,
     но генерации кадров не будет.

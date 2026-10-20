@@ -60,6 +60,10 @@
          needed (RTX 40 only: see 3b).
        - GTX 16, MX and T-series (Turing without tensor cores, no DLSS):
          frame generation is not supported there; no spoof.
+       - A TU102, TU104 or TU106 ID whose name does not say RTX (an RTX 20
+         before the NVIDIA driver is installed names itself "Microsoft Basic
+         Display Adapter"): no spoof; it says to install the driver and run
+         install.bat again.
      3b. MFG-Unlocker, unless -NoMfgUnlocker is given, only when every NVIDIA
      adapter is an RTX 40 (Ada; no RTX 30 and no RTX 50 next to it). NVIDIA
      allows 2X there and 3X/4X only on RTX 50; MFG-Unlocker lifts that. It
@@ -264,7 +268,13 @@ function Get-SpoofInstallArgs([string]$Game) {
     $sm86 = @($nvidia | Where-Object { $_.SpoofGpu -eq 'AmpereSm86' })
     $rtx20 = @($nvidia | Where-Object { $_.SpoofGpu -eq 'TuringRtx' })
     if ($sm86.Count -eq 0 -and $rtx20.Count -eq 0) {
-        if (@($nvidia | Where-Object { $_.Arch -eq 'Turing' }).Count -gt 0) {
+        $unnamed = @($nvidia | Where-Object { Test-TuringTensorIdWithoutRtxName $_ })
+        if ($unnamed.Count -gt 0) {
+            Say ("$($unnamed[0].Name) (PCI $($unnamed[0].Id)) has the device ID of a Turing chip with tensor cores, but its " +
+                'name does not say RTX, so dlssg_for_sm86 is not installed. If it is an RTX 20, install the NVIDIA driver ' +
+                '(R580 or newer; Windows then names the card, for example NVIDIA GeForce RTX 2070 SUPER) and run install.bat ' +
+                'again. The bridge is installed anyway.')
+        } elseif (@($nvidia | Where-Object { $_.Arch -eq 'Turing' }).Count -gt 0) {
             Say ('GTX 16, MX and T-series GPUs are not supported: these Turing chips have no tensor cores and no DLSS, so ' +
                 'frame generation does not run on them, and dlssg_for_sm86 is not installed. The bridge is installed anyway; ' +
                 'without frame generation the game runs as it does without it.')

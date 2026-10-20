@@ -2179,9 +2179,19 @@ Invoke-Case 'SP0: GPU table, dlssg_for_sm86 pins, and install.ps1 asks nothing (
             @('10DE:25A9=NVIDIA GeForce RTX 2050 Laptop GPU', 'RTX 30 or RTX 2050 \(Ampere SM86\)'),
             @('10DE:1E84=NVIDIA GeForce RTX 2070 SUPER', 'RTX 20, Turing'),
             @('10DE:1F09=NVIDIA GeForce GTX 1660 SUPER', 'GTX 16, MX or T-series'),
-            @('10DE:1F97=NVIDIA GeForce MX450', 'GTX 16, MX or T-series'))) {
+            @('10DE:1F97=NVIDIA GeForce MX450', 'GTX 16, MX or T-series'),
+            @('10DE:1F0B=NVIDIA CMP 40HX', 'GTX 16, MX or T-series'))) {
         $text = Get-GpuArchText @(Get-GpuAdapters @($t[0]))[0]
         Check ($text -match $t[1]) "$($t[0]) is named as $text"
+    }
+    # A TU102..TU106 ID whose name says neither RTX nor GTX or CMP: an RTX 20
+    # before the NVIDIA driver is installed, or a Tesla T4 (which has tensor
+    # cores). Still no spoof, but the text does not claim it has no tensor cores.
+    foreach ($id in @('10DE:1E84=Microsoft Basic Display Adapter', '10DE:1EB8=NVIDIA Tesla T4')) {
+        $a = @(Get-GpuAdapters @($id))[0]
+        $text = Get-GpuArchText $a
+        Check ($a.SpoofGpu -eq 'None' -and $text -match 'TU102, TU104 or TU106' -and $text -match 'name does not say RTX' -and
+            $text -notmatch 'tensor cores' -and $text -notmatch 'GTX 16') "$id is named as $text"
     }
     $pnp = ConvertFrom-PnpDeviceId 'PCI\VEN_10DE&DEV_2206&SUBSYS_38971462&REV_A1\4&2B5B5B5B&0&0008'
     Check ($pnp -and $pnp.VendorId -eq 0x10DE -and $pnp.DeviceId -eq 0x2206) 'a Win32_VideoController PNPDeviceID gives vendor 10DE, device 2206'
@@ -2348,6 +2358,15 @@ Invoke-Case 'SP3: RTX 20 gets dlssg_for_sm86 (experimental); GTX 16, MX and T-se
     $game = New-FakeGame 'SP3-noname' -NoDxgi
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:1E84')
     Check ($r.Code -eq 0 -and (Test-NoSpoofFiles $game) -and $r.Text -notmatch 'fetch-deps:') 'an RTX 20 ID without RTX in its name gets no spoof'
+    # Before the NVIDIA driver is installed (after DDU, for example), Windows
+    # names an RTX 2070 SUPER "Microsoft Basic Display Adapter": no spoof, but
+    # no "not supported" either; it says to install the driver and run
+    # install.bat again.
+    $game = New-FakeGame 'SP3-nodriver' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '10DE:1E84=Microsoft Basic Display Adapter')
+    Check ($r.Code -eq 0 -and (Test-NoSpoofFiles $game) -and $r.Text -notmatch 'fetch-deps:') 'an RTX 20 ID named Microsoft Basic Display Adapter gets no spoof'
+    Check ($r.Text -match 'name does not say RTX' -and $r.Text -match 'install the NVIDIA driver' -and $r.Text -match 'run install\.bat again') 'it says to install the NVIDIA driver and run install.bat again'
+    Check ($r.Text -notmatch 'no tensor cores' -and $r.Text -notmatch 'not supported') 'it does not call that GPU unsupported or without tensor cores'
     # The RTX 2050 is Ampere (GA107, SM86) despite its name.
     $game = New-FakeGame 'SP3-2050' -NoDxgi
     $r = Invoke-PackageInstall $pkg $game (Get-SpoofArgs '8086:46A6=Intel(R) Iris(R) Xe Graphics,10DE:25A9=NVIDIA GeForce RTX 2050 Laptop GPU')
