@@ -1791,7 +1791,7 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $mfgDll = Join-Path $FakeRoot 'mfg\dll\MFGUnlocker.dll'
 New-FakePeDll $mfgDll @('MfgUnlockSingleModuleQuery', 'GetFileVersionInfoW', 'VerQueryValueW') -Salt '-mfg'
-$mfgAsset = 'MFGUnlocker-v1.5.0.zip'
+$mfgAsset = Get-MfgAsset
 
 # A zip with these entries: name in the zip -> file to store.
 function New-MfgZip([string]$Zip, [hashtable]$Entries) {
@@ -1825,7 +1825,7 @@ function Get-MfgArgs([string]$Gpu, [string]$Pins = $mfgPins, [string]$Source = $
 }
 
 function Get-MfgTarget([string]$Game) { return Join-Path $Game 'ac-dlssg\mfg\version.dll' }
-function Get-StagedMfgDir([string]$Pkg) { return Join-Path $Pkg 'files\deps\mfg-unlocker-1.5.0' }
+function Get-StagedMfgDir([string]$Pkg) { return Join-Path $Pkg "files\deps\$(Get-MfgStageDirName)" }
 
 function Get-MfgRecord($Manifest) {
     if (-not $Manifest.PSObject.Properties['mfgUnlocker'] -or -not $Manifest.mfgUnlocker) { return $null }
@@ -2999,12 +2999,16 @@ Invoke-Case 'IT10: an uninstall.bat whose window was closed at the Enter prompt,
 
 Invoke-Case 'MP0: MFG-Unlocker pins, its file names and the package guard (static)' {
     $pin = $script:AcdbMfgPin
-    Check ($pin.Version -eq '1.5.0' -and $pin.ZipSize -eq 3093588 -and
-        $pin.ZipSha256 -eq 'ce10401cea5d1d6b023b43188d9482114f12881011681be17c8f583382ac7f4e' -and
-        $pin.DllSha256 -eq '97c6b90cc443b3a5d2151fe992e57e37717071a11eaea6054f2474e883de75d7') 'the pin is release v1.5.0: zip size and SHA-256, and the SHA-256 of MFGUnlocker.dll from its SHA256SUMS.txt'
-    Check ((Get-MfgUrl) -eq 'https://github.com/dashdogy/MFG-Unlocker/releases/download/v1.5.0/MFGUnlocker-v1.5.0.zip') "the download is that release's asset ($(Get-MfgUrl))"
+    # v1.5.0-hotfix.1: release 1.5.0 plus only the fix for the video memory
+    # leak (upstream PR #80); zip size and SHA-256 from the release, the DLL's
+    # SHA-256 from its SHA256SUMS.txt.
+    Check ($pin.Version -eq '1.5.0-hotfix.1' -and $pin.ZipSize -eq 3093604 -and
+        $pin.ZipSha256 -eq '7498a5363bc6f3dca9ad9bdb22fe3c9948831ca213a483deb78ee18015c5f2f8' -and
+        $pin.DllSha256 -eq '4ac118f5cbb13a556c84979c2a2d2210a756dce172a9425ff62d870694747a2e') 'the pin is release v1.5.0-hotfix.1: zip size and SHA-256, and the SHA-256 of MFGUnlocker.dll from its SHA256SUMS.txt'
+    Check ((Get-MfgUrl) -eq 'https://github.com/dashdogy/MFG-Unlocker/releases/download/v1.5.0-hotfix.1/MFGUnlocker-v1.5.0-hotfix.1.zip') "the download is that release's asset ($(Get-MfgUrl))"
+    Check ((Get-MfgStageDirName) -eq 'mfg-unlocker-1.5.0-hotfix.1') "fetch-deps stages it in deps\$(Get-MfgStageDirName)"
     $cpp = [regex]::Match([IO.File]::ReadAllText((Join-Path $tools '..\src\mfg_loader.h')),
-        'constexpr MfgPin kMfgPin = \{"([0-9.]+)", "([0-9a-f]{64})"\};')
+        'constexpr MfgPin kMfgPin = \{"([0-9A-Za-z.-]+)", "([0-9a-f]{64})"\};')
     Check ($cpp.Success -and $cpp.Groups[1].Value -eq $pin.Version -and $cpp.Groups[2].Value -eq $pin.DllSha256) 'the bridge loads the DLL the installer pins (kMfgPin in src/mfg_loader.h: same version and SHA-256)'
     Check ($script:AcdbMfgRel -eq 'ac-dlssg\mfg\version.dll') 'it is installed as ac-dlssg\mfg\version.dll'
     Check ($script:AcdbMfgProxyNames -contains 'version.dll' -and $script:AcdbMfgProxyNames -contains 'winmm.dll' -and
@@ -3041,15 +3045,16 @@ Invoke-Case 'MP1: RTX 40: MFG-Unlocker is fetched, verified, installed into ac-d
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))) 'nothing is put next to acs.exe'
     Check (Test-NoSpoofFiles $game) 'and no dlssg_for_sm86'
     $staged = Get-StagedMfgDir $pkg
-    Check ((Get-Sha (Join-Path $staged 'MFGUnlocker.dll')) -eq (Get-Sha $mfgDll)) 'the DLL is staged in <package>\files\deps\mfg-unlocker-1.5.0'
+    Check ((Get-Sha (Join-Path $staged 'MFGUnlocker.dll')) -eq (Get-Sha $mfgDll)) 'the DLL is staged in <package>\files\deps\mfg-unlocker-1.5.0-hotfix.1'
     Check (@(Get-ChildItem -LiteralPath (Join-Path $pkg 'files\deps') -Recurse -File -Filter '*.zip').Count -eq 0 -and
         -not (Test-Path -LiteralPath (Join-Path $pkg 'files\deps\download'))) 'the zip is not kept'
     $m = Get-Manifest $game
     $rec = Get-MfgRecord $m
     Check ($m.schema -eq 6 -and $rec) 'the manifest (schema 6) has an mfgUnlocker record'
     if ($rec) {
-        Check ($rec.project -eq 'MFG-Unlocker' -and $rec.version -eq '1.5.0' -and $rec.repository -eq 'dashdogy/MFG-Unlocker' -and
-            $rec.tag -eq 'v1.5.0' -and $rec.asset -eq 'MFGUnlocker-v1.5.0.zip') 'it names the project, version, repository, tag and asset'
+        Check ($rec.project -eq 'MFG-Unlocker' -and $rec.version -eq '1.5.0-hotfix.1' -and $rec.repository -eq 'dashdogy/MFG-Unlocker' -and
+            $rec.tag -eq 'v1.5.0-hotfix.1' -and $rec.asset -eq 'MFGUnlocker-v1.5.0-hotfix.1.zip' -and
+            $rec.assetSha256 -eq '7498a5363bc6f3dca9ad9bdb22fe3c9948831ca213a483deb78ee18015c5f2f8') 'it names the project, version, repository, tag, asset and its SHA-256'
         $files = @($rec.files)
         Check ($files.Count -eq 1 -and $files[0].path -eq 'ac-dlssg\mfg\version.dll' -and $files[0].origin -eq 'installed' -and
             $files[0].sha256 -eq (Get-Sha $mfgDll)) 'and records the file as installed, with its hash'
@@ -3109,7 +3114,7 @@ Invoke-Case 'MP3: a download that fails or does not match its pins skips MFG-Unl
         @('zip-sha256', (New-MfgPinsFile 'bad-zip' $mfgZip @{ zipSha256 = ('0' * 64) }), $mfgSrc, 'SHA-256'),
         @('zip-size', (New-MfgPinsFile 'bad-size' $mfgZip @{ zipSize = 3093588 }), $mfgSrc, '\d+ bytes'),
         @('dll-sha256', (New-MfgPinsFile 'bad-dll' $mfgZip @{ dllSha256 = ('1' * 64) }), $mfgSrc, 'MFGUnlocker\.dll has SHA-256'),
-        @('missing', $mfgPins, $emptySrc, 'has no MFGUnlocker-v1\.5\.0\.zip'),
+        @('missing', $mfgPins, $emptySrc, "has no $([regex]::Escape($mfgAsset))"),
         @('no-dll', (New-MfgPinsFile 'no-dll' $noDllZip), (Split-Path -Parent $noDllZip), 'no MFGUnlocker\.dll'),
         @('two-dlls', (New-MfgPinsFile 'two-dlls' $twoDllZip), (Split-Path -Parent $twoDllZip), '2 entries named MFGUnlocker\.dll'))
     foreach ($c in $cases) {
@@ -3236,16 +3241,23 @@ Invoke-Case 'MP9: upgrades: a schema 5 install gets MFG-Unlocker; a pin bump rep
     Set-Manifest $game $m
     $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
     Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and (Get-Manifest $game).schema -eq 6) 'over a schema 5 manifest: MFG-Unlocker is installed, the manifest becomes schema 6'
-    # An earlier pin: the recorded hash is the file's, so the new pin replaces it.
+    # The earlier pin, v1.5.0, as the 1.2.0 test build installed it: the
+    # recorded hash is the file's, so the new pin (v1.5.0-hotfix.1) replaces it.
     $old = Join-Path $FakeRoot 'mfg\old\MFGUnlocker.dll'
     New-FakePeDll $old @('MfgUnlockSingleModuleQuery') -Salt '-old'
     Copy-Item -LiteralPath $old -Destination (Get-MfgTarget $game) -Force
     $m = Get-Manifest $game
     @($m.mfgUnlocker.files)[0].sha256 = Get-Sha $old
-    $m.mfgUnlocker.version = '1.4.9'
+    $m.mfgUnlocker.version = '1.5.0'
+    $m.mfgUnlocker.tag = 'v1.5.0'
+    $m.mfgUnlocker.asset = 'MFGUnlocker-v1.5.0.zip'
+    $m.mfgUnlocker.assetSha256 = 'ce10401cea5d1d6b023b43188d9482114f12881011681be17c8f583382ac7f4e'
     Set-Manifest $game $m
     $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
-    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and (Get-MfgRecord (Get-Manifest $game)).version -eq '1.5.0') 'the older pinned copy is replaced by the new pin'
+    $rec = Get-MfgRecord (Get-Manifest $game)
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and $rec.version -eq '1.5.0-hotfix.1' -and $rec.tag -eq 'v1.5.0-hotfix.1' -and
+        @($rec.files)[0].sha256 -eq (Get-Sha $mfgDll)) 'an installed v1.5.0 copy of ours is replaced by the new pin, v1.5.0-hotfix.1'
+    Check ($r.Text -match 'fetch-deps:' -and $r.Text -notmatch 'WARNING: .*ac-dlssg\\mfg\\version\.dll') 'it gets the new pin, without a warning'
     # Changed since: it stays, and is no longer recorded as ours.
     [IO.File]::AppendAllText((Get-MfgTarget $game), 'changed')
     $changed = Get-Sha (Get-MfgTarget $game)

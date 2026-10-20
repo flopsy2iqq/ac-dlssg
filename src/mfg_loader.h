@@ -44,14 +44,15 @@ struct PredictedAdapter {
 // NVIDIA only). Not known without a hardware adapter.
 PredictedAdapter PredictRenderAdapter(const std::vector<AdapterId>& adapters);
 
-// The release the installer pins. tools\dev-common.ps1 ($script:AcdbMfgPin)
-// holds the same version and DLL hash; tools\test-dev-scripts.ps1 (MP0)
-// checks that both agree.
+// The release the installer pins: v1.5.0-hotfix.1, release 1.5.0 plus only
+// the fix for the video memory leak (upstream PR #80).
+// tools\dev-common.ps1 ($script:AcdbMfgPin) holds the same version and DLL
+// hash; tools\test-dev-scripts.ps1 (MP0) checks that both agree.
 struct MfgPin {
     const char* version;
     const char* dllSha256;  // MFGUnlocker.dll from the release zip, lower-case hex
 };
-constexpr MfgPin kMfgPin = {"1.5.0", "97c6b90cc443b3a5d2151fe992e57e37717071a11eaea6054f2474e883de75d7"};
+constexpr MfgPin kMfgPin = {"1.5.0-hotfix.1", "4ac118f5cbb13a556c84979c2a2d2210a756dce172a9425ff62d870694747a2e"};
 
 // <dataDir>\mfg\version.dll.
 std::wstring MfgPath(const std::wstring& dataDir);

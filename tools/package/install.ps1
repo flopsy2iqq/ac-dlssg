@@ -59,7 +59,9 @@
      adapter is an RTX 40 (Ada; no RTX 30 and no RTX 50 next to it). NVIDIA
      allows 2X there and 3X/4X only on RTX 50; MFG-Unlocker lifts that. It
      prints what MFG-Unlocker is, then gets the pinned release (the asset
-     MFGUnlocker-v1.5.0.zip of tag v1.5.0 of github.com/dashdogy/MFG-Unlocker)
+     MFGUnlocker-v1.5.0-hotfix.1.zip of tag v1.5.0-hotfix.1 of
+     github.com/dashdogy/MFG-Unlocker, release 1.5.0 plus the fix for its video
+     memory leak)
      with scripts\fetch-deps.ps1 into files\deps\, checks the zip's size and
      SHA-256 and the SHA-256 of MFGUnlocker.dll in it, and has dev-install.ps1
      put that DLL into <game>\ac-dlssg\mfg\version.dll (never next to
@@ -128,7 +130,7 @@
   Get-SpoofPins in scripts\dev-common.ps1).
 
 .PARAMETER MfgSourceDir
-  For tests: a folder whose MFGUnlocker-v1.5.0.zip stands in for the
+  For tests: a folder whose MFGUnlocker-v1.5.0-hotfix.1.zip stands in for the
   download; it goes through the same checks.
 
 .PARAMETER MfgPins

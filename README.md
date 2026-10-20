@@ -146,7 +146,7 @@ Whether to use it is your decision: `install.bat -NoSpoof` installs without it, 
 
 NVIDIA allows DLSS Frame Generation 2X on RTX 40 and enables 3X and 4X (multi frame generation) only on RTX 50. [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker) by dashdogy lifts that limit on RTX 40 ([issue 2](https://github.com/flopsy2iqq/ac-dlssg/issues/2)).
 
-- ac-dlssg does not contain or modify it. On a PC whose NVIDIA GPUs are all RTX 40 (no RTX 30 or RTX 50 next to them), the installer downloads the release asset `MFGUnlocker-v1.5.0.zip` of release 1.5.0 from the author's GitHub on your PC, checks the zip's size and SHA-256 and the SHA-256 of `MFGUnlocker.dll` in it before it installs anything, and prints this notice first.
+- ac-dlssg does not contain or modify it. On a PC whose NVIDIA GPUs are all RTX 40 (no RTX 30 or RTX 50 next to them), the installer downloads the release asset `MFGUnlocker-v1.5.0-hotfix.1.zip` of release 1.5.0-hotfix.1 from the author's GitHub on your PC, checks the zip's size and SHA-256 and the SHA-256 of `MFGUnlocker.dll` in it before it installs anything, and prints this notice first.
 - It goes into `<game>\ac-dlssg\mfg\version.dll`, not next to `acs.exe`. The bridge loads it from there by full path when it starts, before Streamline: only on an RTX 40, only the pinned file, never next to dlssg_for_sm86, and not with `mfg_unlocker=0` or `enabled=0` in `ac-dlssg.ini`. `bridge.log` says how long the load took.
 - If the download fails or a hash does not match, the installer says so and installs everything else; frame generation then stays at 2X.
 - An MFG-Unlocker you installed yourself next to `acs.exe` is left alone, and the installer then does not add its own copy.
@@ -155,7 +155,7 @@ NVIDIA allows DLSS Frame Generation 2X on RTX 40 and enables 3X and 4X (multi fr
 - It patches NVIDIA's DLSS-G code (`sl.dlss_g.dll`, `nvngx_dlssg.dll`) in memory; no file on disk is changed. Lifting NVIDIA's RTX 50-only restriction circumvents a technical limitation, which section 4.d of the NVIDIA RTX SDKs License forbids for that license's licensees.
 - It has its own menu (Backspace). Leave its frame generation setting on "Follow game", so that the 2X/3X/4X buttons of the AC DLSS-G window decide; they stop at 4X and keep the video memory check.
 - The game may take longer to load with it.
-- Upstream reports (issues 76 and 84 of MFG-Unlocker) describe video memory that is lost each time frame generation is set up again; the fix was merged after release 1.5.0.
+- Upstream reports (issues 76 and 84 of MFG-Unlocker) describe video memory that was lost each time frame generation was set up again. Release 1.5.0-hotfix.1 is 1.5.0 plus only that fix (upstream pull request 80), and it is the version the installer pins. An earlier install's 1.5.0 copy is replaced the next time you run `install.bat`.
 
 Whether to use it is your decision: `install.bat -NoMfgUnlocker` installs without it (and removes it again), `mfg_unlocker=0` in `<game>\ac-dlssg\ac-dlssg.ini` keeps it from loading, and `<game>\ac-dlssg\uninstall.bat` removes it.
 

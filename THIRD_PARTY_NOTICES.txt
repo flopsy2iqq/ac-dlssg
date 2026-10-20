@@ -112,8 +112,9 @@ SOFTWARE.
 6. MFG-Unlocker by dashdogy
    https://github.com/dashdogy/MFG-Unlocker
    Not included. On a PC whose NVIDIA GPUs are all RTX 40, the installer
-   downloads the release asset MFGUnlocker-v1.5.0.zip of tag v1.5.0 from the
-   author's GitHub, checks the zip's size and SHA-256 and the SHA-256 of
+   downloads the release asset MFGUnlocker-v1.5.0-hotfix.1.zip of tag
+   v1.5.0-hotfix.1 (release 1.5.0 plus its fix for a video memory leak) from
+   the author's GitHub, checks the zip's size and SHA-256 and the SHA-256 of
    MFGUnlocker.dll in it, and puts that DLL into <game>\ac-dlssg\mfg as
    version.dll, where the bridge loads it. Its code is under the MIT license
    ("Copyright (c) 2026 Michael Robles"); its NOTICE.md says that the Intel

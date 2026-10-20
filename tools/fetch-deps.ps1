@@ -36,11 +36,11 @@
   archive and nothing under alternatives/ (spec 10).
 
   Mfg (only with -Only Mfg; the test package's install.ps1 asks for it on a
-  PC whose NVIDIA GPUs are all RTX 40): downloads MFGUnlocker-v1.5.0.zip, the
-  release asset of tag v1.5.0 of github.com/dashdogy/MFG-Unlocker (pins in
+  PC whose NVIDIA GPUs are all RTX 40): downloads MFGUnlocker-v1.5.0-hotfix.1.zip,
+  the release asset of tag v1.5.0-hotfix.1 of github.com/dashdogy/MFG-Unlocker (pins in
   dev-common.ps1), into <DepsDir>\download, checks its size and SHA-256 and
   that it holds exactly one MFGUnlocker.dll, extracts that one file, checks
-  its SHA-256, and moves it into <DepsDir>\mfg-unlocker-1.5.0. The zip is
+  its SHA-256, and moves it into <DepsDir>\mfg-unlocker-1.5.0-hotfix.1. The zip is
   always deleted, and on any mismatch the extracted file too; nothing of it
   is ever re-hosted.
 

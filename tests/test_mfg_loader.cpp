@@ -47,6 +47,22 @@ TEST(Mfg_ThePinnedCopyIsLoadedForAnRtx40) {
     CHECK(d.reason.find(kMfgPin.version) != std::string::npos);
 }
 
+// v1.5.0-hotfix.1 is release 1.5.0 plus only the fix for the video memory
+// leak (upstream PR #80); the DLL hash is the one of its SHA256SUMS.txt.
+TEST(Mfg_ThePinIsV150Hotfix1) {
+    CHECK_EQ(std::string(kMfgPin.version), "1.5.0-hotfix.1");
+    CHECK_EQ(std::string(kMfgPin.dllSha256), "4ac118f5cbb13a556c84979c2a2d2210a756dce172a9425ff62d870694747a2e");
+    const MfgDecision d = DecideMfg(Ready());
+    CHECK(d.reason.find("MFG-Unlocker 1.5.0-hotfix.1") != std::string::npos);
+    // A copy of the earlier pin (1.5.0) is not loaded: install.bat replaces it.
+    MfgInputs in = Ready();
+    in.file_sha256 = "97c6b90cc443b3a5d2151fe992e57e37717071a11eaea6054f2474e883de75d7";
+    const MfgDecision old = DecideMfg(in);
+    CHECK(old.action == MfgAction::Skip);
+    CHECK(old.warn);
+    CHECK(old.reason.find("install.bat") != std::string::npos);
+}
+
 TEST(Mfg_NothingHappensWithoutTheFile) {
     MfgInputs in = Ready();
     in.file_exists = false;

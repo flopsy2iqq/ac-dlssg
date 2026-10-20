@@ -25,7 +25,7 @@
                          when the game folder needs them, gets Streamline with
                          fetch-deps.ps1 into files\deps unless -StreamlineDir is
                          given, on an RTX 30 also dlssg_for_sm86 0.3.5 (unless
-                         -NoSpoof), on RTX 40 GPUs only MFG-Unlocker 1.5.0
+                         -NoSpoof), on RTX 40 GPUs only MFG-Unlocker 1.5.0-hotfix.1
                          (unless -NoMfgUnlocker), runs dev-install.ps1 -AutoUpgrade (default
                          -Mode Auto); it asks nothing
     scripts\uninstall.ps1

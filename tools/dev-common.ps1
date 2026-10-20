@@ -912,11 +912,14 @@ function Get-SpoofFileProblem([string]$Path, $Pin) {
 # (src/mfg_loader.h). A failed download or a mismatch skips it, and the rest
 # is installed (2X stays).
 #
-# The pin: release v1.5.0, the zip from the release's API digest and the DLL
-# from its SHA256SUMS.txt. src/mfg_loader.h (kMfgPin) holds the same version
-# and DLL hash; tools\test-dev-scripts.ps1 (MP0) checks that both agree, so a
-# later release is this line and kMfgPin.
-$script:AcdbMfgPin = [pscustomobject]@{ Version = '1.5.0'; ZipSize = [long]3093588; ZipSha256 = 'ce10401cea5d1d6b023b43188d9482114f12881011681be17c8f583382ac7f4e'; DllSha256 = '97c6b90cc443b3a5d2151fe992e57e37717071a11eaea6054f2474e883de75d7' }
+# The pin: release v1.5.0-hotfix.1, which is release 1.5.0 plus only the fix
+# for the video memory that was lost each time frame generation was set up
+# again (upstream PR #80); the zip from the release and the DLL from its
+# SHA256SUMS.txt. src/mfg_loader.h (kMfgPin) holds the same version and DLL
+# hash; tools\test-dev-scripts.ps1 (MP0) checks that both agree, so a later
+# release is this line and kMfgPin. An installed copy of an earlier pin that
+# the manifest records as ours is replaced on the next install.
+$script:AcdbMfgPin = [pscustomobject]@{ Version = '1.5.0-hotfix.1'; ZipSize = [long]3093604; ZipSha256 = '7498a5363bc6f3dca9ad9bdb22fe3c9948831ca213a483deb78ee18015c5f2f8'; DllSha256 = '4ac118f5cbb13a556c84979c2a2d2210a756dce172a9425ff62d870694747a2e' }
 $script:AcdbMfgProject = 'MFG-Unlocker'
 $script:AcdbMfgRepository = 'dashdogy/MFG-Unlocker'
 # The DLL in the release zip, and where the install puts it: version.dll is
@@ -926,7 +929,7 @@ $script:AcdbMfgZipDll = 'MFGUnlocker.dll'
 $script:AcdbMfgDirName = 'mfg'
 $script:AcdbMfgFileName = 'version.dll'
 $script:AcdbMfgRel = "$($script:AcdbDataDirName)\$($script:AcdbMfgDirName)\$($script:AcdbMfgFileName)"
-# MFG-Unlocker's proxy names in 1.5.0 (source/native/proxy_exports.txt), and
+# MFG-Unlocker's proxy names in 1.5.0 and its hotfix (source/native/proxy_exports.txt), and
 # the names of its earlier and split builds; a copy the user installed next
 # to acs.exe (or in an ASI loader's folder) has one of them.
 $script:AcdbMfgProxyNames = @('version.dll', 'dinput8.dll', 'winmm.dll', 'd3d9.dll', 'd3d10.dll', 'd3d11.dll', 'd3d12.dll', 'dxgi.dll',
