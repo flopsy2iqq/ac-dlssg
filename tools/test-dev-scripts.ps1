@@ -2019,7 +2019,8 @@ Invoke-Case 'PK: the friend test package' {
     Check ($readmeText -match 'RTX 30' -and $readmeText -match 'dlssg_for_sm86' -and $readmeText -match '(?i)ctrl\s*\+\s*f10' -and
         $readmeText -match 'apps\\lua\\AcDlssg') 'README-test.txt covers RTX 30, dlssg_for_sm86, Ctrl+F10 and the Lua app'
     $urls = @([regex]::Matches($readmeText, 'https?://[^\s)\u00bb"]+') | ForEach-Object { $_.Value.TrimEnd('.', ',') } | Sort-Object -Unique)
-    Check (($urls -join ' ') -eq 'https://github.com/dashdogy/MFG-Unlocker https://github.com/sdli1995/dlssg_for_sm86') "the only links are the dlssg_for_sm86 and MFG-Unlocker repositories, no binary and no Patreon ($($urls -join ', '))"
+    # The RTX 20 testers report through the project's own issues page.
+    Check (($urls -join ' ') -eq 'https://github.com/dashdogy/MFG-Unlocker https://github.com/flopsy2iqq/ac-dlssg/issues https://github.com/sdli1995/dlssg_for_sm86') "the only links are the dlssg_for_sm86 and MFG-Unlocker repositories and this project's issues, no binary and no Patreon ($($urls -join ', '))"
     Check ($readmeText -match 'RTX 40' -and $readmeText -match 'MFG-Unlocker' -and $readmeText -match 'NoMfgUnlocker' -and
         $readmeText -match 'ac-dlssg\\mfg') 'README-test.txt covers RTX 40, MFG-Unlocker, -NoMfgUnlocker and ac-dlssg\mfg'
     Check ($readmeText -notmatch '(?i)defender|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0438\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438|\u043e\u0442\u043a\u043b\u044e\u0447|smartscreen|smart app control') 'README-test.txt asks for no security feature to be turned off'
