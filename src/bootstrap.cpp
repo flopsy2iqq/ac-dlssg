@@ -164,7 +164,7 @@ std::vector<AdapterId> LogAdapters() {
              i, ToUtf8(d.Description).c_str(), d.VendorId, d.DeviceId, d.SubSysId, d.Revision,
              static_cast<unsigned long>(d.AdapterLuid.HighPart), static_cast<unsigned long>(d.AdapterLuid.LowPart),
              ArchName(ArchFromIds(d.VendorId, d.DeviceId)),
-             IsAmpereSm86(d.VendorId, d.DeviceId) ? " (SM86)" : "",
+             SpoofGpuLogTag(SpoofGpuOf(d.VendorId, d.DeviceId, ToUtf8(d.Description))),
              (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? ", software" : "",
              static_cast<unsigned long long>(d.DedicatedVideoMemory / (1024 * 1024)), driver.c_str());
         // Hybrid (Optimus) diagnostics, for the log only: decisions use the

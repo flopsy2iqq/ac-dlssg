@@ -356,9 +356,20 @@ bool ReasonThrottle::ShouldLog(const std::string& reason, uint64_t nowMs) {
     return true;
 }
 
-std::string DlssgUnsupportedMessage(const std::string& why, bool sm86, bool spoofLoaded) {
+std::string DlssgUnsupportedMessage(const std::string& why, SpoofGpu gpu, bool spoofLoaded) {
     std::string text = "DLSS-G is not supported on this adapter (" + why + ")";
-    if (sm86 && !spoofLoaded) text += "; RTX 30 needs dlssg_for_sm86 (version.dll) in the game folder";
+    switch (gpu) {
+        case SpoofGpu::AmpereSm86:
+            if (!spoofLoaded) text += "; RTX 30 or RTX 2050 (Ampere SM86) needs dlssg_for_sm86 (version.dll) in the game folder";
+            break;
+        case SpoofGpu::TuringRtx:
+            text += spoofLoaded ? "; dlssg_for_sm86 is loaded, but RTX 20 support is experimental: please report this with "
+                                  "ac-dlssg\\collect-logs.bat"
+                                : "; RTX 20 needs dlssg_for_sm86 (version.dll) in the game folder (experimental on RTX 20)";
+            break;
+        case SpoofGpu::None:
+            break;
+    }
     return text;
 }
 

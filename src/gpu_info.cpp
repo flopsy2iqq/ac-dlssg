@@ -1,5 +1,6 @@
 #include "gpu_info.h"
 
+#include <cctype>
 #include <cstdio>
 
 namespace acdb {
@@ -34,6 +35,14 @@ constexpr IdRange kRanges[] = {
 // The lowest Turing ID (TU102, TITAN RTX). NVIDIA IDs below it are older chips.
 constexpr uint32_t kFirstTuringId = 0x1E02;
 
+// TU102, TU104 and TU106, the Turing dies with tensor cores: from TITAN RTX
+// (0x1E02) to the highest TU106 ID (0x1F76, Quadro RTX 3000 Mobile Refresh);
+// TU117 starts at 0x1F81 and TU116 at 0x2182.
+constexpr uint32_t kTensorTuringFirst = 0x1E02;
+constexpr uint32_t kTensorTuringLast = 0x1F76;
+// IsTuringRtx's name rule: the adapter name contains this, in any case.
+constexpr char kRtxNameToken[] = "RTX";
+
 constexpr uint32_t kNvidia = 0x10DE;
 
 // Driver thresholds, as NvidiaDriverVersion values.
@@ -65,6 +74,38 @@ const char* ArchName(GpuArch arch) {
 
 bool IsAmpereSm86(uint32_t vendorId, uint32_t deviceId) {
     return ArchFromIds(vendorId, deviceId) == GpuArch::Ampere && (deviceId < kGa100First || deviceId > kGa100Last);
+}
+
+bool IsTuringRtx(uint32_t vendorId, uint32_t deviceId, const std::string& adapterName) {
+    if (ArchFromIds(vendorId, deviceId) != GpuArch::Turing) return false;
+    if (deviceId < kTensorTuringFirst || deviceId > kTensorTuringLast) return false;
+    std::string upper = adapterName;
+    for (char& ch : upper) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    return upper.find(kRtxNameToken) != std::string::npos;
+}
+
+SpoofGpu SpoofGpuOf(uint32_t vendorId, uint32_t deviceId, const std::string& adapterName) {
+    if (IsAmpereSm86(vendorId, deviceId)) return SpoofGpu::AmpereSm86;
+    if (IsTuringRtx(vendorId, deviceId, adapterName)) return SpoofGpu::TuringRtx;
+    return SpoofGpu::None;
+}
+
+const char* SpoofGpuLabel(SpoofGpu gpu) {
+    switch (gpu) {
+        case SpoofGpu::AmpereSm86: return "RTX 30 or RTX 2050 (Ampere SM86)";
+        case SpoofGpu::TuringRtx: return "RTX 20 (experimental)";
+        case SpoofGpu::None: break;
+    }
+    return "";
+}
+
+const char* SpoofGpuLogTag(SpoofGpu gpu) {
+    switch (gpu) {
+        case SpoofGpu::AmpereSm86: return " (SM86)";
+        case SpoofGpu::TuringRtx: return " (RTX 20 class, SM75: dlssg_for_sm86 is experimental there)";
+        case SpoofGpu::None: break;
+    }
+    return "";
 }
 
 std::string DriverVersionText(uint32_t vendorId, int64_t umdVersion) {

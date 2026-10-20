@@ -1,0 +1,66 @@
+# GPU classification cases that both sides check: tests/test_gpu_info.cpp
+# (SpoofGpuOf in src/gpu_info.cpp) and tools/test-dev-scripts.ps1 SP0
+# (New-GpuAdapter in tools/dev-common.ps1). One adapter per line:
+#   vendor:device|adapter name as Windows reports it|architecture|class
+# class is what dlssg_for_sm86 is installed and loaded for: AmpereSm86 (RTX 30,
+# RTX 2050 and the other GA102..GA107 IDs), TuringRtx (an RTX-class Turing chip,
+# RTX 20 via dlssg_for_sm86, experimental) or None.
+# Device IDs from the PCI ID Repository (pci-ids.ucw.cz, vendor 10de).
+
+# RTX 20, desktop (TU102, TU104, TU106)
+10DE:1F08|NVIDIA GeForce RTX 2060|Turing|TuringRtx
+10DE:1E89|NVIDIA GeForce RTX 2060|Turing|TuringRtx
+10DE:1F06|NVIDIA GeForce RTX 2060 SUPER|Turing|TuringRtx
+10DE:1F02|NVIDIA GeForce RTX 2070|Turing|TuringRtx
+10DE:1E84|NVIDIA GeForce RTX 2070 SUPER|Turing|TuringRtx
+10DE:1EC7|NVIDIA GeForce RTX 2070 SUPER|Turing|TuringRtx
+10DE:1E82|NVIDIA GeForce RTX 2080|Turing|TuringRtx
+10DE:1E81|NVIDIA GeForce RTX 2080 SUPER|Turing|TuringRtx
+10DE:1E04|NVIDIA GeForce RTX 2080 Ti|Turing|TuringRtx
+10DE:1E07|NVIDIA GeForce RTX 2080 Ti|Turing|TuringRtx
+# RTX 20, laptop (TU104M/BM, TU106M/BM)
+10DE:1F11|NVIDIA GeForce RTX 2060|Turing|TuringRtx
+10DE:1F12|NVIDIA GeForce RTX 2060 with Max-Q Design|Turing|TuringRtx
+10DE:1F15|NVIDIA GeForce RTX 2060|Turing|TuringRtx
+10DE:1F10|NVIDIA GeForce RTX 2070|Turing|TuringRtx
+10DE:1E91|NVIDIA GeForce RTX 2070 Super with Max-Q Design|Turing|TuringRtx
+10DE:1ED1|NVIDIA GeForce RTX 2070 Super|Turing|TuringRtx
+10DE:1E90|NVIDIA GeForce RTX 2080|Turing|TuringRtx
+10DE:1ED3|NVIDIA GeForce RTX 2080 Super with Max-Q Design|Turing|TuringRtx
+# TITAN RTX and Quadro RTX (TU102, TU104, TU106)
+10DE:1E02|NVIDIA TITAN RTX|Turing|TuringRtx
+10DE:1E30|Quadro RTX 6000|Turing|TuringRtx
+10DE:1EB1|NVIDIA Quadro RTX 4000|Turing|TuringRtx
+10DE:1F36|Quadro RTX 3000 with Max-Q Design|Turing|TuringRtx
+# Turing without tensor cores, no DLSS: GTX 16 also on TU106 (the name
+# decides), TU116, TU117, MX and T-series (the ID decides), CMP
+10DE:1F09|NVIDIA GeForce GTX 1660 SUPER|Turing|None
+10DE:21C4|NVIDIA GeForce GTX 1660 SUPER|Turing|None
+10DE:2182|NVIDIA GeForce GTX 1660 Ti|Turing|None
+10DE:1F0A|NVIDIA GeForce GTX 1650|Turing|None
+10DE:1F82|NVIDIA GeForce GTX 1650|Turing|None
+10DE:2188|NVIDIA GeForce GTX 1650|Turing|None
+10DE:1F95|NVIDIA GeForce GTX 1650 Ti|Turing|None
+10DE:1F97|NVIDIA GeForce MX450|Turing|None
+10DE:1F9F|NVIDIA GeForce MX550|Turing|None
+10DE:1FF0|NVIDIA T1000 8GB|Turing|None
+10DE:1FB9|Quadro T1000|Turing|None
+10DE:1F0B|NVIDIA CMP 40HX|Turing|None
+# Both rules are needed: an RTX ID without RTX in the name, and a TU117 ID
+# with RTX in it (no such card exists; the ID rule keeps it out).
+10DE:1E84|NVIDIA GeForce|Turing|None
+10DE:1F82|NVIDIA GeForce RTX 2050|Turing|None
+# Ampere SM86: RTX 30 and the RTX 2050 (GA107), whatever the name says
+10DE:2206|NVIDIA GeForce RTX 3080|Ampere|AmpereSm86
+10DE:25A0|NVIDIA GeForce RTX 3050 Ti Laptop GPU|Ampere|AmpereSm86
+10DE:25A9|NVIDIA GeForce RTX 2050 Laptop GPU|Ampere|AmpereSm86
+10DE:25AD|NVIDIA GeForce RTX 2050|Ampere|AmpereSm86
+10DE:25ED|NVIDIA GeForce RTX 2050|Ampere|AmpereSm86
+10DE:2230|NVIDIA RTX A6000|Ampere|AmpereSm86
+10DE:2206|an adapter from -GpuDeviceIds|Ampere|AmpereSm86
+# Neither: GA100 (SM80), RTX 40 and RTX 50 (DLSS-G natively), older and other vendors
+10DE:20B0|NVIDIA A100-PCIE-40GB|Ampere|None
+10DE:2684|NVIDIA GeForce RTX 4090|Ada|None
+10DE:2B85|NVIDIA GeForce RTX 5090|Blackwell|None
+10DE:1B80|NVIDIA GeForce GTX 1080|OlderNvidia|None
+1002:2206|AMD Radeon RTX|NonNvidia|None

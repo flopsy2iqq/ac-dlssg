@@ -811,7 +811,11 @@ TEST(FactoryHook_PublishesAPassThroughToThePanel) {
     char name[128] = {};
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
     CHECK(TextOf(s.gpuName) == std::string(name).substr(0, sizeof(s.gpuName) - 1));
-    CHECK_EQ(s.rtx30, IsAmpereSm86(ad.VendorId, ad.DeviceId) ? 1u : 0u);
+    CHECK_EQ(s.rtx30, PanelSpoofGpu(SpoofGpuOf(ad.VendorId, ad.DeviceId, name)));
+    CHECK_EQ(s.rtx30, IsAmpereSm86(ad.VendorId, ad.DeviceId) ? static_cast<uint32_t>(kPanelSpoofGpuAmpere)
+                      : SpoofGpuOf(ad.VendorId, ad.DeviceId, name) == SpoofGpu::TuringRtx
+                          ? static_cast<uint32_t>(kPanelSpoofGpuTuring)
+                          : static_cast<uint32_t>(kPanelSpoofGpuNone));
     CHECK_EQ(s.rtx40, ArchFromIds(ad.VendorId, ad.DeviceId) == GpuArch::Ada ? 1u : 0u);
 }
 

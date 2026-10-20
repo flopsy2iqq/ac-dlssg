@@ -1072,9 +1072,15 @@ TEST(Child_SlPresenter_WithoutDlssgIsNotCreatedByDefault) {
         CHECK(err.find("DLSS-G is not supported on this adapter (") == 0);
         CHECK(err.find("eErrorNoSupportedAdapterFound") != std::string::npos ||
               err.find("eError") != std::string::npos);
-        // No spoof in the test process: an SM86 GPU gets the hint.
-        const bool sm86 = IsAmpereSm86(ad.VendorId, ad.DeviceId);
-        CHECK_EQ(err.find("RTX 30 needs dlssg_for_sm86 (version.dll) in the game folder") != std::string::npos, sm86);
+        // No spoof in the test process: an SM86 GPU (and an RTX 20) gets the hint.
+        char name[128] = {};
+        WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
+        const SpoofGpu gpu = SpoofGpuOf(ad.VendorId, ad.DeviceId, name);
+        CHECK_EQ(err.find(gpu == SpoofGpu::TuringRtx
+                              ? "RTX 20 needs dlssg_for_sm86 (version.dll) in the game folder"
+                              : "RTX 30 or RTX 2050 (Ampere SM86) needs dlssg_for_sm86 (version.dll) in the game folder") !=
+                     std::string::npos,
+                 gpu != SpoofGpu::None);
     }
     CHECK(rt.IsShutDown());
     const auto lines = log.Lines();

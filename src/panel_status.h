@@ -26,6 +26,8 @@
 #include <mutex>
 #include <string>
 
+#include "gpu_info.h"
+
 namespace acdb {
 
 constexpr uint32_t kStatusMagic = 0x54534C44;   // 'DLST' little-endian
@@ -56,6 +58,24 @@ enum PanelSpoofCode : uint32_t {
     kPanelSpoofUnidentified = 2,  // a game-folder version.dll that is neither the pin nor MFG-Unlocker
 };
 
+// StatusLayout::rtx30 (PanelSpoofGpu): what the render GPU is for
+// dlssg_for_sm86. The field keeps its name and offset; a window of an
+// earlier build reads every value but 0 as RTX 30.
+enum PanelSpoofGpuCode : uint32_t {
+    kPanelSpoofGpuNone = 0,
+    kPanelSpoofGpuAmpere = 1,  // an SM86 Ampere chip: RTX 30 or the RTX 2050
+    kPanelSpoofGpuTuring = 2,  // an RTX-class Turing chip: RTX 20 (experimental)
+};
+
+inline uint32_t PanelSpoofGpu(SpoofGpu gpu) {
+    switch (gpu) {
+        case SpoofGpu::AmpereSm86: return kPanelSpoofGpuAmpere;
+        case SpoofGpu::TuringRtx: return kPanelSpoofGpuTuring;
+        case SpoofGpu::None: break;
+    }
+    return kPanelSpoofGpuNone;
+}
+
 constexpr size_t kPanelReasonChars = 160;
 constexpr size_t kPanelStateReasonChars = 256;  // pass-through and unsupported-adapter reasons are long
 // A fix whose ac-dlssg.ini could not be saved names the file's path.
@@ -74,7 +94,7 @@ struct StatusLayout {
     uint32_t fgPaused;    // fgOn, but Streamline generated no frame in the last statistics second
                           // (it pauses DLSS-G while the game window is not focused): FgPausedInSecond
     uint32_t spoofLoaded; // a game-folder version.dll is loaded as the spoof: PanelSpoofCode
-    uint32_t rtx30;       // the render GPU is an SM86 Ampere chip (RTX 30)
+    uint32_t rtx30;       // the render GPU for dlssg_for_sm86: PanelSpoofGpuCode (RTX 30 and RTX 2050, or RTX 20)
     uint32_t vsyncNote;   // VSync was asked for but is not available with DLSS-G here
     uint32_t driverWarning;  // a driver profile setting changes DLSS-G (warning holds the text)
     uint32_t cameraFlipHandedness;  // the current camera switches (spec 6.7)

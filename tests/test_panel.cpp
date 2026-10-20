@@ -3,6 +3,7 @@
 // pure rules for applying a panel request.
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstddef>
@@ -364,8 +365,25 @@ TEST(LuaApp_Rtx40TextsNameNvidiasLimitAndMfgUnlocker) {
     CHECK(loaded < unlocked && unlocked < locked && locked < waiting && waiting < rtx30);
     // A game-folder version.dll the bridge could not identify is not called dlssg_for_sm86.
     CHECK(suffix.find("s.spoofLoaded == SPOOF_UNIDENTIFIED") != std::string::npos);
-    CHECK(suffix.find("', RTX 30 with an unidentified version.dll'") != std::string::npos);
+    CHECK(suffix.find("' with an unidentified version.dll'") != std::string::npos);
     CHECK(suffix.find("', unidentified version.dll loaded'") != std::string::npos);
+    // The GPUs dlssg_for_sm86 is for (rtx30, PanelSpoofGpuCode): RTX 30 and
+    // the RTX 2050 (Ampere SM86), and RTX 20, which is experimental.
+    std::string lf = lua;  // the checkout may have CRLF line ends
+    lf.erase(std::remove(lf.begin(), lf.end(), '\r'), lf.end());
+    const size_t gpuTable = lf.find("\nlocal SPOOF_GPU = {\n");
+    REQUIRE(gpuTable != std::string::npos);
+    const std::string spoofGpu = lf.substr(gpuTable, lf.find("\n}\n", gpuTable) + 1 - gpuTable);
+    CHECK(spoofGpu.find("  ampere = " + std::to_string(kPanelSpoofGpuAmpere) + ",\n") != std::string::npos);
+    CHECK(spoofGpu.find("  turing = " + std::to_string(kPanelSpoofGpuTuring) + ",\n") != std::string::npos);
+    CHECK(spoofGpu.find("  classAmpere = 'RTX 30 or RTX 2050 (Ampere SM86)',\n") != std::string::npos);
+    CHECK(spoofGpu.find("  classTuring = 'RTX 20',\n") != std::string::npos);
+    CHECK(spoofGpu.find("  turingSpoof = ', RTX 20 via dlssg_for_sm86 (experimental)',\n") != std::string::npos);
+    CHECK(suffix.find("local turing = s.rtx30 == SPOOF_GPU.turing") != std::string::npos);
+    CHECK(suffix.find("' without dlssg_for_sm86'") != std::string::npos);
+    CHECK(suffix.find("' via dlssg_for_sm86'") != std::string::npos);
+    CHECK(suffix.find("turing and SPOOF_GPU.turingSpoof") != std::string::npos);
+    CHECK(suffix.find("RTX 30 via") == std::string::npos);
 
     const std::string rebuild = acdb_test::LuaFunctionBody(lua, "rebuildTexts");
     CHECK(rebuild.find("texts.gpu = (s.gpuName ~= '' and s.gpuName or 'GPU unknown') .. gpuSuffix(s)") != std::string::npos);
@@ -979,6 +997,21 @@ void LuaStyleRequest(ControlLayout* m, uint32_t* counter, bool fg, bool flip, bo
 }
 
 }  // namespace
+
+// StatusLayout::rtx30 keeps its offset and name; its value says which GPU
+// class the render adapter is for dlssg_for_sm86 (a window of an earlier
+// build reads every value but 0 as RTX 30).
+TEST(PanelStatus_Rtx30CarriesTheSpoofGpuClass) {
+    CHECK_EQ(PanelSpoofGpu(SpoofGpu::None), static_cast<uint32_t>(kPanelSpoofGpuNone));
+    CHECK_EQ(PanelSpoofGpu(SpoofGpu::AmpereSm86), static_cast<uint32_t>(kPanelSpoofGpuAmpere));
+    CHECK_EQ(PanelSpoofGpu(SpoofGpu::TuringRtx), static_cast<uint32_t>(kPanelSpoofGpuTuring));
+    static_assert(kPanelSpoofGpuNone == 0 && kPanelSpoofGpuAmpere == 1 && kPanelSpoofGpuTuring == 2,
+                  "the window's SPOOF_GPU_* values");
+    CHECK_EQ(PanelSpoofGpu(SpoofGpuOf(0x10DE, 0x1E84, "NVIDIA GeForce RTX 2070 SUPER")),
+             static_cast<uint32_t>(kPanelSpoofGpuTuring));
+    CHECK_EQ(PanelSpoofGpu(SpoofGpuOf(0x10DE, 0x25A9, "NVIDIA GeForce RTX 2050 Laptop GPU")),
+             static_cast<uint32_t>(kPanelSpoofGpuAmpere));
+}
 
 TEST(PanelStatus_DefaultSectionsAreLocalV1) {
     CHECK(PanelStatusChannel::Get().SectionName() == L"Local\\AcDlssg.Status.v1");

@@ -165,7 +165,8 @@ void PublishPassThrough(const std::string& reason, const RenderAdapter& adapter)
         s.bridgeState = kPanelPassThrough;
         s.fgOn = 0;
         s.fgPaused = 0;
-        s.rtx30 = adapter.known && IsAmpereSm86(adapter.vendor_id, adapter.device_id) ? 1u : 0u;
+        s.rtx30 = adapter.known ? PanelSpoofGpu(SpoofGpuOf(adapter.vendor_id, adapter.device_id, adapter.description))
+                                : static_cast<uint32_t>(kPanelSpoofGpuNone);
         s.rtx40 = adapter.known && ArchFromIds(adapter.vendor_id, adapter.device_id) == GpuArch::Ada ? 1u : 0u;
         CopyText(s.gpuName, adapter.known ? adapter.description : std::string());
         CopyText(s.reason, reason);

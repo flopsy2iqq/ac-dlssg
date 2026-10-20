@@ -326,13 +326,25 @@ TEST(ReasonThrottle_ManyDistinctReasonsStayBounded) {
 
 TEST(FgText_UnsupportedAdapter) {
     const std::string why = "eErrorNoSupportedAdapterFound: the GPU does not support DLSS Frame Generation";
-    CHECK_EQ(DlssgUnsupportedMessage(why, false, false),
+    CHECK_EQ(DlssgUnsupportedMessage(why, SpoofGpu::None, false),
              "DLSS-G is not supported on this adapter (" + why + ")");
-    CHECK_EQ(DlssgUnsupportedMessage(why, true, false),
+    CHECK_EQ(DlssgUnsupportedMessage(why, SpoofGpu::None, true),
+             "DLSS-G is not supported on this adapter (" + why + ")");
+    CHECK_EQ(DlssgUnsupportedMessage(why, SpoofGpu::AmpereSm86, false),
              "DLSS-G is not supported on this adapter (" + why +
-                 "); RTX 30 needs dlssg_for_sm86 (version.dll) in the game folder");
+                 "); RTX 30 or RTX 2050 (Ampere SM86) needs dlssg_for_sm86 (version.dll) in the game folder");
     // With the spoof loaded the hint would be wrong: something else failed.
-    CHECK_EQ(DlssgUnsupportedMessage(why, true, true), "DLSS-G is not supported on this adapter (" + why + ")");
+    CHECK_EQ(DlssgUnsupportedMessage(why, SpoofGpu::AmpereSm86, true),
+             "DLSS-G is not supported on this adapter (" + why + ")");
+    // RTX 20 through dlssg_for_sm86 is experimental: with the spoof loaded,
+    // a refusal is what the testers should report.
+    CHECK_EQ(DlssgUnsupportedMessage(why, SpoofGpu::TuringRtx, false),
+             "DLSS-G is not supported on this adapter (" + why +
+                 "); RTX 20 needs dlssg_for_sm86 (version.dll) in the game folder (experimental on RTX 20)");
+    CHECK_EQ(DlssgUnsupportedMessage(why, SpoofGpu::TuringRtx, true),
+             "DLSS-G is not supported on this adapter (" + why +
+                 "); dlssg_for_sm86 is loaded, but RTX 20 support is experimental: please report this with "
+                 "ac-dlssg\\collect-logs.bat");
 }
 
 TEST(FgText_StatusNames) {

@@ -390,7 +390,7 @@ struct D3D12Presenter::Impl {
     std::string gate_reason;       // why the last frame was presented without DLSS-G; empty when with it
     std::string state_reason;      // why DLSS-G cannot run here (status stateReason)
     std::string gpu_name;
-    bool rtx30 = false;
+    SpoofGpu spoof_gpu = SpoofGpu::None;  // the render adapter for dlssg_for_sm86 (the panel's rtx30)
     bool rtx40 = false;            // the render adapter is Ada: NVIDIA allows 2X there without MFG-Unlocker
     bool provider_logged = false;  // the "DLSS-G provider" line was written
     bool vsync_note = false;       // the last Present planned "VSync not available with DLSS-G"
@@ -514,6 +514,9 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     DXGI_ADAPTER_DESC ad{};
     adapter->GetDesc(&ad);
     adapter.As(&adapter3);  // Windows 10 always has it; without it vram_mib is n/a
+    char name[128] = {};
+    WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
+    const SpoofGpu spoofGpu = SpoofGpuOf(ad.VendorId, ad.DeviceId, name);
 
     // 2. D3D12 device on that adapter.
     const PFN_D3D12_CREATE_DEVICE create = LoadD3D12CreateDevice(err);
@@ -554,7 +557,7 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
         // Spec criterion 5: without DLSS-G the chain passes through, unless
         // proxy_without_fg keeps the M2 behaviour.
         if (!fg_supported) {
-            state_reason = DlssgUnsupportedMessage(why, IsAmpereSm86(ad.VendorId, ad.DeviceId), env.spoof_loaded);
+            state_reason = DlssgUnsupportedMessage(why, spoofGpu, env.spoof_loaded);
             if (!config.proxy_without_fg) {
                 *err = state_reason;
                 return false;
@@ -716,10 +719,8 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
     }
     stats_start = GetTickCount64();
 
-    char name[128] = {};
-    WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, static_cast<int>(sizeof(name)) - 1, nullptr, nullptr);
     gpu_name = name;
-    rtx30 = IsAmpereSm86(ad.VendorId, ad.DeviceId);
+    spoof_gpu = spoofGpu;
     rtx40 = ArchFromIds(ad.VendorId, ad.DeviceId) == GpuArch::Ada;
     if (!sl) state_reason = "no Streamline: the plain D3D12 path of the tests";
     if (!fg_supported) gate_reason = "not supported on this adapter";
@@ -900,7 +901,7 @@ void D3D12Presenter::Impl::PublishStatus() {
         s.fgUserOn = fg_user_on ? 1u : 0u;
         s.fgPaused = mode_on && n.fgPaused ? 1u : 0u;
         s.spoofLoaded = env.spoof_panel;
-        s.rtx30 = rtx30 ? 1u : 0u;
+        s.rtx30 = PanelSpoofGpu(spoof_gpu);
         s.rtx40 = rtx40 ? 1u : 0u;
         s.mfgUnlockerLoaded = env.mfg_loaded ? 1u : 0u;
         s.vsyncNote = vsync_note ? 1u : 0u;

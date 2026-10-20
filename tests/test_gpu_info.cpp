@@ -1,9 +1,12 @@
 #include <cstring>
+#include <filesystem>
 #include <set>
+#include <sstream>
 #include <string>
 
 #include "gpu_info.h"
 #include "gpu_test_devices.h"
+#include "temp_dir.h"
 #include "test_framework.h"
 
 using namespace acdb;
@@ -78,6 +81,125 @@ TEST(GpuInfo_OtherArchitectures) {
     CHECK(ArchFromIds(kNv, 0x2C02) == GpuArch::Blackwell);  // RTX 5080
     CHECK(ArchFromIds(kNv, 0x2F04) == GpuArch::Blackwell);  // RTX 5070 (GB205)
     CHECK(ArchFromIds(kNv, 0x2D83) == GpuArch::Blackwell);  // GB207
+}
+
+// The RTX 2050 is a GA107 (SM86) despite its name: the ID decides, and a
+// tester ran 2X, 3X and 4X on an RTX 2050 laptop through dlssg_for_sm86.
+TEST(GpuInfo_Rtx2050IsAmpereSm86) {
+    for (uint32_t id : {0x25A9u, 0x25ADu, 0x25EDu}) {
+        CHECK(ArchFromIds(kNv, id) == GpuArch::Ampere);
+        CHECK(IsAmpereSm86(kNv, id));
+    }
+    CHECK(SpoofGpuOf(kNv, 0x25A9, "NVIDIA GeForce RTX 2050 Laptop GPU") == SpoofGpu::AmpereSm86);
+    CHECK(!IsTuringRtx(kNv, 0x25A9, "NVIDIA GeForce RTX 2050 Laptop GPU"));
+}
+
+// RTX 20 through dlssg_for_sm86 (its README: since 0.3.1, with the same
+// dlssg_sm86.ini as RTX 30): a TU102, TU104 or TU106 ID (the Turing dies
+// with tensor cores) whose adapter name has "RTX" in it.
+TEST(GpuInfo_TuringRtxNeedsTheIdAndTheName) {
+    CHECK(IsTuringRtx(kNv, 0x1F08, "NVIDIA GeForce RTX 2060"));                        // desktop
+    CHECK(IsTuringRtx(kNv, 0x1F12, "NVIDIA GeForce RTX 2060 with Max-Q Design"));      // laptop
+    CHECK(IsTuringRtx(kNv, 0x1E84, "NVIDIA GeForce RTX 2070 SUPER"));                  // desktop
+    CHECK(IsTuringRtx(kNv, 0x1E91, "NVIDIA GeForce RTX 2070 Super with Max-Q Design")); // laptop
+    CHECK(IsTuringRtx(kNv, 0x1E07, "NVIDIA GeForce RTX 2080 Ti"));
+    CHECK(IsTuringRtx(kNv, 0x1E02, "NVIDIA TITAN RTX"));
+    CHECK(IsTuringRtx(kNv, 0x1EB1, "NVIDIA Quadro RTX 4000"));
+    CHECK(IsTuringRtx(kNv, 0x1E84, "nvidia geforce rtx 2070 super"));  // the name rule ignores case
+    // GTX 16 on TU106: the name decides.
+    CHECK(!IsTuringRtx(kNv, 0x1F09, "NVIDIA GeForce GTX 1660 SUPER"));
+    CHECK(!IsTuringRtx(kNv, 0x1F0A, "NVIDIA GeForce GTX 1650"));
+    // TU116 and TU117 (GTX 16, MX, T-series): the ID decides.
+    CHECK(!IsTuringRtx(kNv, 0x1F82, "NVIDIA GeForce GTX 1650"));
+    CHECK(!IsTuringRtx(kNv, 0x1F97, "NVIDIA GeForce MX450"));
+    CHECK(!IsTuringRtx(kNv, 0x1FF0, "NVIDIA T1000 8GB"));
+    CHECK(!IsTuringRtx(kNv, 0x21C4, "NVIDIA GeForce GTX 1660 SUPER"));
+    CHECK(!IsTuringRtx(kNv, 0x1F82, "NVIDIA GeForce RTX 2050"));
+    CHECK(!IsTuringRtx(kNv, 0x1E84, ""));
+    CHECK(!IsTuringRtx(0x1002, 0x1E84, "RTX"));
+    CHECK(!IsTuringRtx(kNv, 0x2206, "NVIDIA GeForce RTX 3080"));  // Ampere is not Turing
+    CHECK(!IsTuringRtx(kNv, 0x2684, "NVIDIA GeForce RTX 4090"));
+}
+
+TEST(GpuInfo_SpoofGpuClassesAndLabels) {
+    CHECK(SpoofGpuOf(kNv, 0x2206, "NVIDIA GeForce RTX 3080") == SpoofGpu::AmpereSm86);
+    CHECK(SpoofGpuOf(kNv, 0x2206, "") == SpoofGpu::AmpereSm86);  // no name rule for Ampere
+    CHECK(SpoofGpuOf(kNv, 0x1E84, "NVIDIA GeForce RTX 2070 SUPER") == SpoofGpu::TuringRtx);
+    CHECK(SpoofGpuOf(kNv, 0x1F09, "NVIDIA GeForce GTX 1660 SUPER") == SpoofGpu::None);
+    CHECK(SpoofGpuOf(kNv, 0x2684, "NVIDIA GeForce RTX 4090") == SpoofGpu::None);
+    CHECK(SpoofGpuOf(kNv, 0x20B0, "NVIDIA A100") == SpoofGpu::None);
+    CHECK_EQ(std::string(SpoofGpuLabel(SpoofGpu::AmpereSm86)), "RTX 30 or RTX 2050 (Ampere SM86)");
+    CHECK_EQ(std::string(SpoofGpuLabel(SpoofGpu::TuringRtx)), "RTX 20 (experimental)");
+    CHECK_EQ(std::string(SpoofGpuLabel(SpoofGpu::None)), "");
+    // bridge.log's adapter lines.
+    CHECK_EQ(std::string(SpoofGpuLogTag(SpoofGpu::AmpereSm86)), " (SM86)");
+    CHECK_EQ(std::string(SpoofGpuLogTag(SpoofGpu::TuringRtx)), " (RTX 20 class, SM75: dlssg_for_sm86 is experimental there)");
+    CHECK_EQ(std::string(SpoofGpuLogTag(SpoofGpu::None)), "");
+}
+
+namespace {
+const char* ArchToken(GpuArch a) {
+    switch (a) {
+        case GpuArch::Unknown: return "Unknown";
+        case GpuArch::NonNvidia: return "NonNvidia";
+        case GpuArch::OlderNvidia: return "OlderNvidia";
+        case GpuArch::Turing: return "Turing";
+        case GpuArch::Ampere: return "Ampere";
+        case GpuArch::Ada: return "Ada";
+        case GpuArch::Blackwell: return "Blackwell";
+    }
+    return "?";
+}
+const char* SpoofGpuToken(SpoofGpu g) {
+    switch (g) {
+        case SpoofGpu::None: return "None";
+        case SpoofGpu::AmpereSm86: return "AmpereSm86";
+        case SpoofGpu::TuringRtx: return "TuringRtx";
+    }
+    return "?";
+}
+}  // namespace
+
+// tests/gpu_cases.txt is checked here and by tools/test-dev-scripts.ps1
+// SP0 against tools/dev-common.ps1, so the installer and the bridge classify
+// every listed adapter the same way.
+TEST(GpuInfo_SharedCasesFileMatchesTheBridge) {
+    const std::string text = acdb_test::ReadAll(std::filesystem::path(ACDB_SOURCE_DIR) / "tests" / "gpu_cases.txt");
+    REQUIRE(!text.empty());
+    std::istringstream in(text);
+    std::string line;
+    int cases = 0, rtx20 = 0, none = 0, sm86 = 0;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        std::string f[4];
+        size_t start = 0;
+        int n = 0;
+        for (; n < 4; ++n) {
+            const size_t bar = line.find('|', start);
+            f[n] = line.substr(start, bar == std::string::npos ? std::string::npos : bar - start);
+            if (bar == std::string::npos) break;
+            start = bar + 1;
+        }
+        REQUIRE(n == 3 && f[0].size() == 9 && f[0][4] == ':');
+        const uint32_t vendor = std::stoul(f[0].substr(0, 4), nullptr, 16);
+        const uint32_t device = std::stoul(f[0].substr(5, 4), nullptr, 16);
+        const std::string arch = ArchToken(ArchFromIds(vendor, device));
+        const SpoofGpu g = SpoofGpuOf(vendor, device, f[1]);
+        const std::string cls = SpoofGpuToken(g);
+        if (arch != f[2] || cls != f[3])
+            std::printf("  %s '%s': %s %s, expected %s %s\n", f[0].c_str(), f[1].c_str(), arch.c_str(), cls.c_str(),
+                        f[2].c_str(), f[3].c_str());
+        CHECK_EQ(arch, f[2]);
+        CHECK_EQ(cls, f[3]);
+        CHECK_EQ(IsAmpereSm86(vendor, device), g == SpoofGpu::AmpereSm86);
+        ++cases;
+        rtx20 += g == SpoofGpu::TuringRtx;
+        sm86 += g == SpoofGpu::AmpereSm86;
+        none += g == SpoofGpu::None;
+    }
+    CHECK(cases >= 45);
+    CHECK(rtx20 >= 20 && sm86 >= 5 && none >= 15);
 }
 
 TEST(GpuInfo_OlderUnknownAndNonNvidia) {

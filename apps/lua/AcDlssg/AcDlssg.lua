@@ -334,6 +334,16 @@ local TEXT_GPU_MFG_LOADED = ', MFG-Unlocker loaded'
 -- bridge could not identify (0: none).
 local SPOOF_PINNED = 1
 local SPOOF_UNIDENTIFIED = 2
+-- rtx30: what the render GPU is for dlssg_for_sm86 (0: neither): an SM86
+-- Ampere chip (RTX 30, and the RTX 2050, which is a GA107), or an RTX-class
+-- Turing chip (RTX 20, where dlssg_for_sm86 is experimental).
+local SPOOF_GPU = {
+  ampere = 1,
+  turing = 2,
+  classAmpere = 'RTX 30 or RTX 2050 (Ampere SM86)',
+  classTuring = 'RTX 20',
+  turingSpoof = ', RTX 20 via dlssg_for_sm86 (experimental)',
+}
 -- The 2X/3X/4X segments: IDs that never change, so the selection can move
 -- without ImGui seeing new widgets; the text drawn on them is MULT_TEXTS.
 local MULT_LABELS = { [2] = '2X###fgMult2', [3] = '3X###fgMult3', [4] = '4X###fgMult4' }
@@ -520,8 +530,8 @@ local function sendRequest(fg, flip, negate, save, mult)
 end
 
 -- What the GPU line adds to the GPU's name: MFG-Unlocker (fgMultMax is 0
--- until Streamline answered, 2 when it allows 2X only), else the RTX 30
--- spoof.
+-- until Streamline answered, 2 when it allows 2X only), else the spoof on
+-- RTX 30 and RTX 2050 (Ampere SM86) or on RTX 20.
 local function gpuSuffix(s)
   if s.mfgUnlockerLoaded ~= 0 then
     if s.fgMultMax > 2 then return s.rtx40 ~= 0 and TEXT_GPU_MFG or TEXT_GPU_MFG_OTHER end
@@ -529,8 +539,11 @@ local function gpuSuffix(s)
     return TEXT_GPU_MFG_LOADED
   end
   if s.rtx30 ~= 0 then
-    if s.spoofLoaded == SPOOF_UNIDENTIFIED then return ', RTX 30 with an unidentified version.dll' end
-    return s.spoofLoaded ~= 0 and ', RTX 30 via dlssg_for_sm86' or ', RTX 30 without dlssg_for_sm86'
+    local turing = s.rtx30 == SPOOF_GPU.turing
+    local class = turing and SPOOF_GPU.classTuring or SPOOF_GPU.classAmpere
+    if s.spoofLoaded == SPOOF_UNIDENTIFIED then return ', ' .. class .. ' with an unidentified version.dll' end
+    if s.spoofLoaded == 0 then return ', ' .. class .. ' without dlssg_for_sm86' end
+    return turing and SPOOF_GPU.turingSpoof or ', ' .. class .. ' via dlssg_for_sm86'
   end
   if s.spoofLoaded == SPOOF_UNIDENTIFIED then return ', unidentified version.dll loaded' end
   if s.spoofLoaded == SPOOF_PINNED then return ', dlssg_for_sm86 loaded' end

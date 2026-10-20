@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "config.h"
+#include "gpu_info.h"
 
 namespace acdb {
 
@@ -383,9 +384,11 @@ private:
 
 // Presenter creation failure when Streamline refuses DLSS-G and
 // proxy_without_fg=0: "DLSS-G is not supported on this adapter (<why>)", plus
-// "; RTX 30 needs dlssg_for_sm86 (version.dll) in the game folder" for an SM86
-// GPU without the spoof.
-std::string DlssgUnsupportedMessage(const std::string& why, bool sm86, bool spoofLoaded);
+// for an SM86 GPU without the spoof "; RTX 30 or RTX 2050 (Ampere SM86) needs
+// dlssg_for_sm86 (version.dll) in the game folder", and for an RTX 20 "; RTX
+// 20 needs dlssg_for_sm86 (version.dll) in the game folder (experimental on
+// RTX 20)" without the spoof, or a request to report it with the spoof loaded.
+std::string DlssgUnsupportedMessage(const std::string& why, SpoofGpu gpu, bool spoofLoaded);
 
 // sl::DLSSGStatus bits as names joined by '|' ("eOk" for 0); unknown bits as hex.
 std::string DlssgStatusText(uint32_t status);
