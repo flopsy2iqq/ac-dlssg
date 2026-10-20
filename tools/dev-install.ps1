@@ -116,6 +116,8 @@
 .PARAMETER MfgRemove
   Removes the MFG-Unlocker copy an earlier run installed (only while it is
   the file installed; a changed one stays with a warning) and its record.
+  The manifest's mfgUnlockerUsed stays true, so that dev-uninstall.ps1
+  -RemoveData still deletes the files that copy wrote.
 
 .PARAMETER Tools
   A folder whose files go into <game>\ac-dlssg as they are: the test
@@ -919,6 +921,12 @@ try {
     } elseif (-not $MfgRemove -and $mfgOld) {
         $mfgRecord = $mfgOld
     }
+    # Whether an MFG-Unlocker of ours was ever here: set when one is
+    # installed or recorded, and kept after -MfgRemove (install.bat
+    # -NoMfgUnlocker, a GPU change) took that copy out again, so that
+    # dev-uninstall.ps1 -RemoveData still deletes the files it wrote.
+    $mfgUsed = ($mfgPlans.Count -gt 0) -or [bool]$mfgRecorded -or
+        [bool]($manifest -and $manifest.PSObject.Properties['mfgUnlockerUsed'] -and $manifest.mfgUnlockerUsed)
     # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof, schema 5 tools,
     # schema 6 mfgUnlocker; dev-uninstall.ps1 reads a schema 1 manifest as
     # reshade, and one without luaApp, spoof, tools or mfgUnlocker as one
@@ -937,6 +945,7 @@ try {
         streamline   = [ordered]@{ source = $slSourceDir; files = $slFiles }
         spoof        = $spoofRecord
         mfgUnlocker  = $mfgRecord
+        mfgUnlockerUsed = $mfgUsed
         luaApp       = [ordered]@{ source = $luaSourceDir; dir = $script:AcdbLuaAppRelDir; createdDirs = $luaCreatedDirs; files = $luaFiles }
         tools        = $toolsRecord
         dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }

@@ -26,7 +26,9 @@
   deletes dlssg_for_sm86's data (<game>\dlssg_sm86 and
   %LOCALAPPDATA%\DlssgSm86) when install.ps1 installed it and no version.dll
   is left, and MFG-Unlocker's settings next to acs.exe and its logs in %TEMP%
-  when install.ps1 installed it and no other copy of it is left. The uninstaller and the log collector in
+  when install.ps1 installed it, now or earlier (also when -NoMfgUnlocker or
+  a GPU change removed that copy since), and no other copy of it is left.
+  The uninstaller and the log collector in
   <game>\ac-dlssg go too (see below). It refuses while acs.exe is running.
 
   The copy in the game folder (-InstalledCopy) works on the game folder it

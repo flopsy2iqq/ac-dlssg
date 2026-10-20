@@ -46,8 +46,10 @@
   deletes MFG-Unlocker's own files: RTXMFG-Universal.json,
   RTXMFG-Universal.status.json, RTX40MFG-UI.ini and RTX40MFG-UI-layout.ini
   next to acs.exe, and its logs RTXMFG-acs-<id>.log, .previous.log and
-  -intervals.csv in %TEMP%, but only when the install put MFG-Unlocker there
-  and no other copy of it is left in the game folder.
+  -intervals.csv in %TEMP%, but only when an install put MFG-Unlocker there,
+  now or earlier (the manifest's mfgUnlockerUsed stays true after
+  -MfgRemove, which install.bat -NoMfgUnlocker and a GPU change use), and no
+  other copy of it is left in the game folder.
 
   Last come the uninstaller and the log collector that the package install
   put into <game>\ac-dlssg (the manifest's tools: uninstall.bat,
@@ -383,13 +385,16 @@ try {
         }
     }
     # MFG-Unlocker's own settings next to acs.exe and its logs in %TEMP%:
-    # only when the install put it there and no other copy is left.
+    # only when an install put it there, now or earlier (mfgUnlockerUsed: a
+    # later -NoMfgUnlocker or GPU change may have removed that copy since),
+    # and no other copy is left. Only the names MFG-Unlocker itself writes.
     if ($RemoveData) {
         $mfgFiles = @(Get-MfgOwnFiles $game | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+        $mfgUsed = $mfgOurs -or [bool]($manifest.PSObject.Properties['mfgUnlockerUsed'] -and $manifest.mfgUnlockerUsed)
         if ($mfgFiles.Count -gt 0) {
             $others = @(Find-UserMfgCopies $game)
-            if (-not $mfgOurs) {
-                Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')): the install record names no MFG-Unlocker of its own now; delete them by hand if you no longer use MFG-Unlocker"
+            if (-not $mfgUsed) {
+                Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')): the install record names no MFG-Unlocker of its own; delete them by hand if you no longer use MFG-Unlocker"
             } elseif ($others.Count -gt 0) {
                 Step "kept the files of MFG-Unlocker ($($mfgFiles -join ', ')): another copy of it is still in the game folder ($($others -join ', '))"
             } else {

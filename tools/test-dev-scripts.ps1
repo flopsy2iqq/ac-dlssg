@@ -3295,6 +3295,45 @@ Invoke-Case 'MP8: -RemoveData keeps the settings of an MFG-Unlocker the install 
     foreach ($f in $own) { Remove-Item -LiteralPath $f -Force }
 }
 
+Invoke-Case 'MP15: -RemoveData deletes the files of an MFG-Unlocker of ours that a later install removed' {
+    $pkg = New-PackageCopy 'MP15'
+    # Our copy ran, then install.bat -NoMfgUnlocker or a GPU change (here to
+    # an RTX 30) removed it: what it wrote is still MFG-Unlocker's own files.
+    foreach ($how in @('nomfg', 'gpu')) {
+        $game = New-FakeGame "MP15-$how" -NoDxgi
+        $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+        Check ($r.Code -eq 0 -and (Test-MfgInstalled $game)) "$how`: MFG-Unlocker is installed first"
+        $m = Get-Manifest $game
+        Check ($m.PSObject.Properties['mfgUnlockerUsed'] -and $m.mfgUnlockerUsed -eq $true) "$how`: the manifest says that an MFG-Unlocker of ours is here"
+        $own = @(Add-MfgOwnFiles $game)
+        $again = if ($how -eq 'nomfg') { @('-NoMfgUnlocker') + (Get-MfgArgs '10DE:2684') } else { Get-MfgArgs '10DE:2206' }
+        $r = Invoke-PackageInstall $pkg $game $again
+        $m = Get-Manifest $game
+        Check ($r.Code -eq 0 -and -not (Test-Path -LiteralPath (Get-MfgTarget $game)) -and -not (Get-MfgRecord $m)) "$how`: the second install removes our copy"
+        Check ($m.PSObject.Properties['mfgUnlockerUsed'] -and $m.mfgUnlockerUsed -eq $true) "$how`: and the manifest still says that one of ours ran here"
+        # Only the names MFG-Unlocker itself uses: another game's log and other
+        # files next to acs.exe stay.
+        $otherLog = Join-Path $env:TEMP 'RTXMFG-othergame-0123456789ABCDEF.log'
+        $otherFile = Join-Path $game 'RTXMFG-Universal.json.bak'
+        Write-Text $otherLog 'the log of another game'
+        Write-Text $otherFile 'not a name MFG-Unlocker writes'
+        $r = Invoke-PackageUninstall $pkg $game -RemoveData
+        Check ($r.Code -eq 0 -and @($own | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0) "$how`: uninstall -RemoveData deletes MFG-Unlocker's settings and logs"
+        Check ((Test-Path -LiteralPath $otherLog) -and (Test-Path -LiteralPath $otherFile)) "$how`: and nothing else"
+        Remove-Item -LiteralPath $otherLog, $otherFile -Force
+    }
+    # A copy the user installed next to acs.exe since: its files stay.
+    $game = New-FakeGame 'MP15-user' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
+    $r = Invoke-PackageInstall $pkg $game (@('-NoMfgUnlocker') + (Get-MfgArgs '10DE:2684'))
+    $own = @(Add-MfgOwnFiles $game)
+    Copy-Item -LiteralPath $mfgDll -Destination (Join-Path $game 'winmm.dll')
+    $r = Invoke-PackageUninstall $pkg $game -RemoveData
+    Check ($r.Code -eq 0 -and @($own | Where-Object { Test-Path -LiteralPath $_ }).Count -eq $own.Count) 'next to a copy the user installed, its files stay'
+    Check ($r.Text -match 'another copy of it is still in the game folder') 'and the uninstaller says why'
+    foreach ($f in $own) { Remove-Item -LiteralPath $f -Force }
+}
+
 Invoke-Case 'MP9: upgrades: a schema 5 install gets MFG-Unlocker; a pin bump replaces only an unchanged copy' {
     $pkg = New-PackageCopy 'MP9'
     $game = New-FakeGame 'MP9' -NoDxgi
