@@ -13,6 +13,11 @@ section of a version as its GitHub release notes.
 - A failed MFG-Unlocker download or a hash mismatch is a warning: everything else is installed, and frame generation stays at 2X. An MFG-Unlocker you installed yourself (a proxy DLL next to `acs.exe` that exports `MfgUnlockSingleModuleQuery`, or its older file names) is left alone, and the installer does not add its own copy next to it.
 - On an RTX 40 without MFG-Unlocker, the dimmed 3X and 4X buttons and the multiplier note say "NVIDIA enables 3X/4X only on RTX 50". With it, the GPU line under Details says ", RTX 40 via MFG-Unlocker (unofficial)", or ", MFG-Unlocker loaded but did not unlock" when Streamline still allows 2X only. The 4X cap and the clamp to what Streamline allows stay.
 - The uninstaller removes MFG-Unlocker (only while it is the file installed), and `uninstall.bat -RemoveData` also deletes its settings next to `acs.exe` (`RTXMFG-Universal.json`, `RTXMFG-Universal.status.json`, `RTX40MFG-UI.ini`, `RTX40MFG-UI-layout.ini`) and its logs in `%TEMP%` when the installer put it there, also after a later `install.bat -NoMfgUnlocker` or a GPU change removed that copy again (the manifest remembers it). `collect-logs.bat` collects them. The install manifest records it (schema 6); schema 5 manifests upgrade without a step.
+- **RTX 20 through dlssg_for_sm86 (experimental)** (GitHub issues 4, 5 and 6). dlssg_for_sm86's README says that its release 0.3.1 and newer run DLSS-G on RTX 20 (Turing) with the same stock `dlssg_sm86.ini` as on RTX 30, and its author tested an RTX 2080 Ti with 0.3.x. The installer now installs the pinned dlssg_for_sm86 0.3.5 on RTX 20 too: a Turing chip with tensor cores (a device ID of TU102, TU104 or TU106) whose name contains "RTX", that is the RTX 2060 to 2080 Ti with their Super models, laptop GPUs, TITAN RTX and Quadro RTX. It says "RTX 20 via dlssg_for_sm86 (experimental)" and asks for a report with the `collect-logs.bat` zip, and the GPU line of the AC DLSS-G window says the same. GTX 16 cards (also the GTX 1660 SUPER and GTX 1650 built on TU106), MX and T-series GPUs have no tensor cores and no DLSS; the installer says that they are not supported. The rules for PCs with several GPUs stay: no dlssg_for_sm86 next to an RTX 40 or RTX 50, and MFG-Unlocker only when every NVIDIA GPU is an RTX 40. Frame generation stays clamped to what Streamline allows and to 4X.
+
+### Changed
+
+- The RTX 2050 is an Ampere chip (GA107, SM86) despite its name, and a tester confirmed 2X, 3X and 4X on an RTX 2050 laptop. It always got dlssg_for_sm86 by its device ID; the installer and the window now say "RTX 30 or RTX 2050 (Ampere SM86)" where they said RTX 30.
 
 ### Fixed
 
@@ -21,6 +26,7 @@ section of a version as its GitHub release notes.
 ### Documentation
 
 - The READMEs, the install guides, the test package's `README-test.txt` and `THIRD_PARTY_NOTICES.txt` describe NVIDIA's 2X limit on RTX 40 and MFG-Unlocker, what it downloads and changes in the game folder, and how to leave it out or remove it. The earlier texts said that 3X and 4X run only on RTX 50 and on RTX 30.
+- They list RTX 20 as experimental through dlssg_for_sm86, GTX 16, MX and T-series cards as not supported, and the RTX 2050 as an Ampere chip. The README's "Looking for an RTX 20 tester" section is now "RTX 20 (experimental)": it thanks the testers and asks for results (the old link still leads there).
 
 ## [1.1.1] - 2026-10-13
 

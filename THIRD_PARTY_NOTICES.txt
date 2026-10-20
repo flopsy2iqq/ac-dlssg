@@ -99,14 +99,15 @@ SOFTWARE.
 -------------------------------------------------------------------------------
 5. dlssg_for_sm86 by sdli1995 (with Coldwood1026's RTX 20 work)
    https://github.com/sdli1995/dlssg_for_sm86
-   Not included. On RTX 30 GPUs the installer downloads version.dll and
+   Not included. On RTX 30 GPUs and the RTX 2050 (Ampere SM86), and on RTX 20
+   GPUs (experimental), the installer downloads version.dll and
    dlssg_sm86.ini of the pinned release 0.3.5 (commit
    9621db573e07ed54f50c15bbb585ed9a7bdfac28) from the author's repository and
    checks their hashes. That repository has no LICENSE file; its README says
    the source is GPLv3, but no source is published. It embeds NVIDIA's
-   nvngx_dlssg.dll, which is not relicensed. Using it on RTX 30 circumvents a
-   technical limitation, which section 4.d of the NVIDIA RTX SDKs License
-   forbids for that license's licensees.
+   nvngx_dlssg.dll, which is not relicensed. Using it on RTX 30 or RTX 20
+   circumvents a technical limitation, which section 4.d of the NVIDIA RTX
+   SDKs License forbids for that license's licensees.
 
 -------------------------------------------------------------------------------
 6. MFG-Unlocker by dashdogy

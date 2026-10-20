@@ -6,7 +6,8 @@ It takes about 5 minutes.
 
 ## What you need
 
-- An **NVIDIA RTX 30, 40 or 50** graphics card. Laptops work too.
+- An **NVIDIA RTX 30, 40 or 50** graphics card, or an **RTX 2050** (an Ampere chip like the RTX 30 series). Laptops work too.
+- **RTX 20** (2060, 2070, 2080, also Super, Ti and laptop GPUs) is **experimental**: the installer sets it up like an RTX 30, and the README's section "RTX 20 (experimental)" asks for your results. GTX 16, MX and T-series cards are not supported: they have no DLSS.
 - **Assetto Corsa** with a **Custom Shaders Patch (CSP) preview build** (0.3.0-preview or newer). You get it from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
 - An internet connection. The installer downloads NVIDIA's files by itself.
 - **RTX 40:** NVIDIA allows only 2X there. On a PC with RTX 40 GPUs only, the installer also downloads the third-party MFG-Unlocker for 3X and 4X (unofficial); the README's section "RTX 40 and MFG-Unlocker" explains it. `install.bat -NoMfgUnlocker` installs without it.
