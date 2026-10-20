@@ -85,7 +85,7 @@ TEST(GpuInfo_OtherArchitectures) {
 
 // The RTX 2050 is a GA107 (SM86) despite its name: the ID decides, and a
 // tester ran 2X, 3X and 4X on an RTX 2050 laptop through dlssg_for_sm86
-// (his own test build based on 1.1.1).
+// (their own test build based on 1.1.1).
 TEST(GpuInfo_Rtx2050IsAmpereSm86) {
     for (uint32_t id : {0x25A9u, 0x25ADu, 0x25EDu}) {
         CHECK(ArchFromIds(kNv, id) == GpuArch::Ampere);

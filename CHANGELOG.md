@@ -17,7 +17,7 @@ section of a version as its GitHub release notes.
 
 ### Changed
 
-- The RTX 2050 is an Ampere chip (GA107, SM86) despite its name (GitHub issue 6): a tester ran 2X, 3X and 4X on an RTX 2050 laptop with his own test build based on 1.1.1. It always got dlssg_for_sm86 by its device ID; the installer and the window now say "RTX 30 or RTX 2050 (Ampere SM86)" where they said RTX 30.
+- The RTX 2050 is an Ampere chip (GA107, SM86) despite its name (GitHub issue 6): a tester ran 2X, 3X and 4X on an RTX 2050 laptop with their own test build based on 1.1.1. It always got dlssg_for_sm86 by its device ID; the installer and the window now say "RTX 30 or RTX 2050 (Ampere SM86)" where they said RTX 30.
 
 ### Fixed
 
