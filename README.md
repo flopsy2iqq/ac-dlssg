@@ -4,7 +4,7 @@
 
 [![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Install](https://img.shields.io/badge/Install-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.md) [![Nexus Mods](https://img.shields.io/badge/Nexus_Mods-D98F40?style=for-the-badge)](https://www.nexusmods.com/assettocorsa/mods/124) [![Support on Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
 
-[![Help wanted: RTX 20 tester](https://img.shields.io/badge/help_wanted-RTX_20_tester-orange)](#looking-for-an-rtx-20-tester) [![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 20 | 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2020%20%7C%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X and 4X) for **Assetto Corsa** with **Custom Shaders Patch**.
 
@@ -65,7 +65,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 - **An NVIDIA RTX GPU:**
   - RTX 40 and RTX 50 support DLSS-G themselves.
   - RTX 30, including laptop GPUs such as the RTX 3050 Ti, needs the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). You do not install it yourself: on an RTX 30 the installer downloads the pinned release 0.3.5 from the author's repository, checks its hashes and puts it next to `acs.exe`. See [RTX 30 and dlssg_for_sm86](#rtx-30-and-dlssg_for_sm86). It needs NVIDIA driver R580 or newer.
-  - RTX 20 is not supported yet. We are looking for a tester to change that: see [Looking for an RTX 20 tester](#looking-for-an-rtx-20-tester).
+  - RTX 20 (the 2060, 2070 and 2080 with their Super and Ti models and laptop GPUs) is supported from version 1.2.0, which comes out soon: a tester ran 2X, 3X and 4X on an RTX 2070 SUPER. Release 1.1.1 does not run on RTX 20 yet. See [RTX 20](#rtx-20).
 - **Windows 10 version 2004 or newer, or Windows 11.** Hardware-accelerated GPU scheduling must be on: Settings > System > Display > Graphics > Change default graphics settings.
 - **Laptops:** set `acs.exe` to "High performance" in the same Graphics settings, so the game runs on the NVIDIA GPU.
 - **Internet on the first install.** The installer downloads NVIDIA Streamline 2.14.1 (about 276 MB) from NVIDIA's GitHub release and checks its hash and NVIDIA's signatures, and on an RTX 30 also dlssg_for_sm86 (about 30 MB). An update does not download them again while the installed copies are intact. This project never ships NVIDIA files or dlssg_for_sm86.
@@ -117,15 +117,17 @@ Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local 
 - The following are not supported: VR, triple screens, HDR output, MSAA, `EXCLUSIVE_FULLSCREEN=1`, and letterboxed output.
 - Other CSP upscalers (FSR, XeSS) do not provide the inputs frame generation needs.
 
-## Looking for an RTX 20 tester
+<a id="looking-for-an-rtx-20-tester"></a>
 
-We want DLSS-G to work on RTX 20 cards too: the 2060, 2070 and 2080, including the Super and Ti models and laptop GPUs. dlssg_for_sm86 already contains Coldwood1026's RTX 20 work, but nobody has tried ac-dlssg on an RTX 20 card yet, so the installer does not support them.
+## RTX 20
 
-If you have one, you can make it happen:
+RTX 20 support is confirmed and comes with version 1.2.0, which comes out soon. Since its release 0.3.1, dlssg_for_sm86 also runs DLSS Frame Generation on RTX 20 cards, and from 1.2.0 on the installer puts it there just as on RTX 30. Until then, the 1.1.1 installer says that RTX 20 is not supported.
 
-- **What you need:** an RTX 20 card, Windows 10 (2004 or newer) or 11 with hardware-accelerated GPU scheduling, Assetto Corsa with a CSP 0.3.0 preview build and DLSS turned on, and NVIDIA driver R580 or newer.
-- **What you do:** install the test builds we send you, drive for 10 to 15 minutes, and send the zip from `ac-dlssg\collect-logs.bat` with a few words on how it ran. One build takes about half an hour, and `ac-dlssg\uninstall.bat` puts the game folder back as it was.
-- **How to sign up:** [open an issue named "RTX 20 tester"](https://github.com/flopsy2iqq/ac-dlssg/issues/new?title=RTX%2020%20tester&labels=help%20wanted&body=GPU%3A%20%0ADriver%3A%20%0AWindows%3A%20%0ACSP%20version%3A%20%0ALaptop%20or%20desktop%3A%20) with your GPU, driver, Windows and CSP version.
+A tester confirmed it on an RTX 2070 SUPER: 52 real fps became 104 at 2X, 43 became 130 at 3X and 39 became 156 at 4X, with no stutter or crashes.
+
+Thank you to everyone who signed up as a tester. We have enough testers now, so please do not open new tester issues. If ac-dlssg 1.2.0 does not work on your RTX 20 card, open an issue and attach the zip from `ac-dlssg\collect-logs.bat`.
+
+GTX 16 cards (GTX 1630, 1650 and 1660 with their Super and Ti models), MX and T-series GPUs stay unsupported: these Turing chips have no tensor cores and no DLSS.
 
 ## RTX 30 and dlssg_for_sm86
 
