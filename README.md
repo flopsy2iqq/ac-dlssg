@@ -4,7 +4,7 @@
 
 [![English](https://img.shields.io/badge/English-1F1F24?style=for-the-badge)](README.md) [![Русский](https://img.shields.io/badge/Русский-1F1F24?style=for-the-badge)](README.ru.md) [![Install](https://img.shields.io/badge/Install-E10600?style=for-the-badge&logo=windows&logoColor=white)](docs/INSTALL.md) [![Nexus Mods](https://img.shields.io/badge/Nexus_Mods-D98F40?style=for-the-badge)](https://www.nexusmods.com/assettocorsa/mods/124) [![Support on Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/flopsy2iq)
 
-[![Help wanted: RTX 20 tester](https://img.shields.io/badge/help_wanted-RTX_20_tester-orange)](#rtx-20-experimental) [![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/flopsy2iqq/ac-dlssg?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases/latest) [![Downloads](https://img.shields.io/github/downloads/flopsy2iqq/ac-dlssg/total?color=E10600)](https://github.com/flopsy2iqq/ac-dlssg/releases) [![Build](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml/badge.svg)](https://github.com/flopsy2iqq/ac-dlssg/actions/workflows/build.yml) ![NVIDIA RTX 20 | 30 | 40 | 50](https://img.shields.io/badge/NVIDIA-RTX%2020%20%7C%2030%20%7C%2040%20%7C%2050-76B900?logo=nvidia&logoColor=white) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 NVIDIA DLSS Frame Generation (DLSS-G 2X, 3X and 4X) for **Assetto Corsa** with **Custom Shaders Patch**.
 
@@ -66,7 +66,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
   - RTX 50 supports DLSS-G 2X, 3X and 4X itself.
   - RTX 40 supports DLSS-G itself, but NVIDIA allows only 2X there: 3X and 4X are for RTX 50. On a PC whose NVIDIA GPUs are all RTX 40, the installer downloads the third-party [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker), which lifts that limit (unofficial). See [RTX 40 and MFG-Unlocker](#rtx-40-and-mfg-unlocker).
   - RTX 30, including laptop GPUs such as the RTX 3050 Ti, needs the third-party [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86). So does the RTX 2050: despite its name it is an Ampere chip (GA107, SM86) like the RTX 30 series, and a tester ran 2X, 3X and 4X on an RTX 2050 laptop with their own test build based on 1.1.1. You do not install dlssg_for_sm86 yourself: on these GPUs the installer downloads the pinned release 0.3.5 from the author's repository, checks its hashes and puts it next to `acs.exe`. See [RTX 30 and dlssg_for_sm86](#rtx-30-and-dlssg_for_sm86). It needs NVIDIA driver R580 or newer.
-  - RTX 20 (the 2060, 2070 and 2080 with their Super and Ti models, laptop GPUs, TITAN RTX and Quadro RTX) is experimental: the installer puts dlssg_for_sm86 there too, which runs on RTX 20 since its release 0.3.1. See [RTX 20 (experimental)](#rtx-20-experimental).
+  - RTX 20 (the 2060, 2070 and 2080 with their Super and Ti models, laptop GPUs, TITAN RTX and Quadro RTX) needs dlssg_for_sm86 too, which runs on RTX 20 since its release 0.3.1: the installer puts it there just as on RTX 30. A tester confirmed 2X, 3X and 4X on an RTX 2070 SUPER. See [RTX 20](#rtx-20).
   - GTX 16 cards (GTX 1630, 1650 and 1660 with their Super and Ti models), MX and T-series GPUs are not supported: these Turing chips have no tensor cores and no DLSS.
 - **Windows 10 version 2004 or newer, or Windows 11.** Hardware-accelerated GPU scheduling must be on: Settings > System > Display > Graphics > Change default graphics settings.
 - **Laptops:** set `acs.exe` to "High performance" in the same Graphics settings, so the game runs on the NVIDIA GPU.
@@ -124,20 +124,22 @@ Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local 
 
 <a id="looking-for-an-rtx-20-tester"></a>
 
-## RTX 20 (experimental)
+<a id="rtx-20-experimental"></a>
 
-Since its release 0.3.1, dlssg_for_sm86 also runs DLSS Frame Generation on RTX 20 (Turing): the 2060, 2070 and 2080, including the Super and Ti models and laptop GPUs, and TITAN RTX and Quadro RTX. Its README says that RTX 20 uses the same stock `dlssg_sm86.ini` as RTX 30, and its author tested an RTX 2080 Ti with 0.3.x. So the installer now puts dlssg_for_sm86 on RTX 20 just as on RTX 30, and the AC DLSS-G window says "RTX 20 via dlssg_for_sm86 (experimental)".
+## RTX 20
 
-It is experimental because ac-dlssg itself has not been confirmed on an RTX 20 yet. Thank you to the testers who signed up: the two RTX 2070 SUPER owners of issues 4 and 5, and the RTX 2050 laptop owner of issue 6, who ran 2X, 3X and 4X on that Ampere chip with their own test build based on 1.1.1 (a report with the 1.2.0 release is welcome too).
+Since its release 0.3.1, dlssg_for_sm86 also runs DLSS Frame Generation on RTX 20 (Turing): the 2060, 2070 and 2080, including the Super and Ti models and laptop GPUs, and TITAN RTX and Quadro RTX. Its README says that RTX 20 uses the same stock `dlssg_sm86.ini` as RTX 30, and its author tested an RTX 2080 Ti with 0.3.x. So the installer puts dlssg_for_sm86 on RTX 20 just as on RTX 30, and the AC DLSS-G window says "RTX 20 via dlssg_for_sm86 (experimental)".
+
+A tester confirmed it on an RTX 2070 SUPER: 52 real fps became 104 at 2X, 43 became 130 at 3X and 39 became 156 at 4X, with no stutter or crashes. Thank you to everyone who signed up as a tester, and to the RTX 2050 laptop owner who ran 2X, 3X and 4X on that Ampere chip with their own test build based on 1.1.1. We have enough testers now, so please do not open new tester issues.
 
 - **Which cards:** a Turing chip with tensor cores whose name says RTX. The installer tells them apart by the PCI device ID and by the name Windows reports. GTX 16 cards (also those built on the RTX 2060's chip, such as some GTX 1660 SUPER and GTX 1650), MX and T-series GPUs have no tensor cores and no DLSS; the installer says so and installs no dlssg_for_sm86 there. Run the installer with the NVIDIA driver installed: without it Windows names the card "Microsoft Basic Display Adapter", and the installer installs no dlssg_for_sm86 and says to install the driver and run `install.bat` again.
 - **What you need:** Windows 10 (2004 or newer) or 11 with hardware-accelerated GPU scheduling, Assetto Corsa with a CSP 0.3.0 preview build and DLSS turned on, and NVIDIA driver R580 or newer.
 - **Multipliers:** 3X and 4X show up only when NVIDIA's frame generation on that card reports multi frame support; the bridge never goes above what Streamline allows, and never above 4X.
-- **Please report your results:** whether frame generation turns on, which of 2X, 3X and 4X run, and how it feels (fps, input lag, artifacts, crashes). [Open an issue](https://github.com/flopsy2iqq/ac-dlssg/issues/new?title=RTX%2020%20report&body=GPU%3A%20%0ADriver%3A%20%0AWindows%3A%20%0ACSP%20version%3A%20%0ALaptop%20or%20desktop%3A%20%0A2X%2F3X%2F4X%3A%20%0AHow%20it%20runs%3A%20) and attach the zip from `ac-dlssg\collect-logs.bat`. `ac-dlssg\uninstall.bat` puts the game folder back as it was.
+- **If it does not work:** open an issue and attach the zip from `ac-dlssg\collect-logs.bat`. `ac-dlssg\uninstall.bat` puts the game folder back as it was.
 
 ## RTX 30 and dlssg_for_sm86
 
-NVIDIA locks DLSS Frame Generation to RTX 40 and newer. [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) by sdli1995, which includes Coldwood1026's RTX 20 work, lifts that lock on RTX 30 (and on the RTX 2050, an Ampere chip too) and, since its release 0.3.1, on RTX 20 (experimental here, see [RTX 20 (experimental)](#rtx-20-experimental)). The author agreed to this project pointing to it.
+NVIDIA locks DLSS Frame Generation to RTX 40 and newer. [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) by sdli1995, which includes Coldwood1026's RTX 20 work, lifts that lock on RTX 30 (and on the RTX 2050, an Ampere chip too) and, since its release 0.3.1, on RTX 20 (confirmed on an RTX 2070 SUPER, see [RTX 20](#rtx-20)). The author agreed to this project pointing to it.
 
 - ac-dlssg does not contain or modify it. On an RTX 30, RTX 2050 or RTX 20 the installer downloads exactly `version.dll` and `dlssg_sm86.ini` of release 0.3.5 (commit `9621db5`) from the author's repository on your PC, checks their git hashes (and the SHA-256 of `version.dll`) before it installs anything, and prints this notice first. A `version.dll` that was in the game folder before the install is never replaced.
 - That repository has no LICENSE file. Its README says the source is GPLv3, but no source is published.
