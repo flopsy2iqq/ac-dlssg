@@ -4,7 +4,7 @@ All notable changes to ac-dlssg are listed here. Versions follow
 [Semantic Versioning](https://semver.org/). The release workflow publishes the
 section of a version as its GitHub release notes.
 
-## [1.2.0] - 2026-10-14
+## [1.2.0] - 2026-10-22
 
 ### Added
 
@@ -17,7 +17,7 @@ section of a version as its GitHub release notes.
 
 ### Changed
 
-- The RTX 2050 is an Ampere chip (GA107, SM86) despite its name (GitHub issue 6): a tester ran 2X, 3X and 4X on an RTX 2050 laptop with their own test build based on 1.1.1. It always got dlssg_for_sm86 by its device ID; the installer and the window now say "RTX 30 or RTX 2050 (Ampere SM86)" where they said RTX 30.
+- The RTX 2050 is an Ampere chip (GA107, SM86) despite its name (GitHub issue 8): a tester ran 2X, 3X and 4X on an RTX 2050 laptop, first with their own test build based on 1.1.1 and then with the 1.2.0 test build. It always got dlssg_for_sm86 by its device ID; the installer and the window now say "RTX 30 or RTX 2050 (Ampere SM86)" where they said RTX 30.
 
 ### Fixed
 
