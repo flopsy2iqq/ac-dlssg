@@ -21,6 +21,7 @@
 #include "fence_pair.h"
 #include "gpu_test_devices.h"
 #include "log.h"
+#include "temp_dir.h"
 #include "test_framework.h"
 
 using Microsoft::WRL::ComPtr;
@@ -111,6 +112,20 @@ bool Has(const std::string& s, const char* piece) {
     const bool ok = s.find(piece) != std::string::npos;
     if (!ok) std::printf("  '%s' does not contain '%s'\n", s.c_str(), piece);
     return ok;
+}
+
+bool Has(const std::string& s, const std::string& piece) { return Has(s, piece.c_str()); }
+
+size_t Count(const std::string& s, const char* piece) {
+    size_t n = 0;
+    for (size_t pos = s.find(piece); pos != std::string::npos; pos = s.find(piece, pos + 1)) ++n;
+    return n;
+}
+
+std::string Ptr(const void* p) {
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%p", p);
+    return buf;
 }
 
 }  // namespace
@@ -376,6 +391,41 @@ TEST(Coordinator_EveryEvaluateCountsAsSeenAlsoAnIgnoredOne) {
     CHECK_EQ(f.evaluates, 0u);
     CHECK_EQ(f.allEvaluates, 2u);
     CHECK_EQ(r.coord->EndFrame().allEvaluates, 0u);
+}
+
+// Diagnostics (GitHub issue 10): the first evaluate whose device is not the
+// game's logs, once, what the two devices are, whose immediate context the
+// evaluate's context is, and which device owns its depth and motion vectors.
+TEST(Coordinator_FirstEvaluateOnAnotherDeviceDescribesBothDevicesOnce) {
+    Rig r;
+    if (!r.Create()) return;
+    acdb_test::GpuTestDevices other;
+    REQUIRE(acdb_test::CreateGpuTestDevices(&other));
+    CspSources os = MakeSources(other.device11.Get(), 64, 36);
+    REQUIRE(os.depth && os.mvec);
+    acdb_test::TempDir dir(L"coordinator_mismatch");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    for (int i = 0; i < 2; ++i) {
+        r.coord->OnEvaluate(r.Inputs(os, other.ctx11.Get()));
+        CHECK(!r.coord->EndFrame().captured);
+    }
+    LogClose();
+    const std::string log = acdb_test::ReadAll(logPath);
+    CHECK_EQ(Count(log, " INFO diag: first DLSS evaluate on another device: ctx "), static_cast<size_t>(1));
+    CHECK(Has(log, "ctx " + Ptr(other.ctx11.Get()) + " (immediate, vtable "));
+    CHECK(Has(log, "the evaluate's device: " + Ptr(other.device11.Get()) + " (identity "));
+    CHECK(Has(log, "the game's device: " + Ptr(r.d.device11.Get()) + " (identity "));
+    CHECK(Has(log, "; its immediate context " + Ptr(other.ctx11.Get()) + " (this ctx); ReShade unwrap 0x"));
+    CHECK(Has(log, "; its immediate context " + Ptr(r.d.ctx11.Get()) + " (not this ctx); ReShade unwrap 0x"));
+    CHECK(Has(log, "depth " + Ptr(os.depth.Get()) + " (device " + Ptr(other.device11.Get()) +
+                       "): the game's device no, the evaluate's device yes"));
+    CHECK(Has(log, "motion vectors " + Ptr(os.mvec.Get()) + " (device " + Ptr(other.device11.Get()) +
+                       "): the game's device no, the evaluate's device yes"));
+    // Whether it is a pass-through chain's device; the factory hook tests'
+    // released devices may share its address, so only the line is checked.
+    CHECK(Has(log, "diag:   the evaluate's device is "));
+    if (log.find(" diag: first DLSS evaluate") == std::string::npos) std::printf("  log:\n%s\n", log.c_str());
 }
 
 TEST(Coordinator_UnsupportedSourceFormatGivesNoCapture) {

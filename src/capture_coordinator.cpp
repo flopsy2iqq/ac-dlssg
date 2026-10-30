@@ -1,9 +1,12 @@
 #include "capture_coordinator.h"
 
+#include <atomic>
 #include <cstdio>
+#include <vector>
 
 #include "capture_slots.h"
 #include "d3d12_presenter.h"
+#include "diag_util.h"
 #include "fence_pair.h"
 #include "log.h"
 
@@ -40,6 +43,54 @@ bool TextureDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC* desc) {
     return true;
 }
 
+// ---- Diagnostics (GitHub issue 10); logging only.
+
+// The module list follows the first mismatch of the process.
+std::atomic<bool> g_modules_logged{false};
+
+// As OwnedBy in capture_slots.cpp: the resource's device has this native identity.
+bool OwnedBy(ID3D11DeviceChild* child, IUnknown* nativeIdentity) {
+    if (!child || !nativeIdentity) return false;
+    ComPtr<ID3D11Device> owner;
+    child->GetDevice(&owner);
+    return owner && NativeIdentity(owner.Get()).Get() == nativeIdentity;
+}
+
+const char* YesNo(bool b) { return b ? "yes" : "no"; }
+
+HRESULT ReShadeUnwrapResult(ID3D11Device* device) {
+    if (!device) return E_POINTER;
+    ComPtr<IUnknown> unwrapped;
+    return device->QueryInterface(IID_ReShadeUnwrappedObject, reinterpret_cast<void**>(unwrapped.GetAddressOf()));
+}
+
+// "<its immediate context> (this ctx)" or "(not this ctx)".
+std::string ImmediateContextText(ID3D11Device* device, ID3D11DeviceContext* ctx) {
+    if (!device) return "none";
+    ComPtr<ID3D11DeviceContext> immediate;
+    device->GetImmediateContext(&immediate);
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%p (%s)", static_cast<void*>(immediate.Get()),
+                  immediate.Get() == ctx ? "this ctx" : "not this ctx");
+    return buf;
+}
+
+// "<what> <resource> (device <its device>): the game's device yes|no, the evaluate's device yes|no".
+std::string ResourceOwnerText(const char* what, ID3D11Resource* resource, IUnknown* gameNative,
+                              IUnknown* evaluateNative) {
+    char buf[160];
+    if (!resource) {
+        std::snprintf(buf, sizeof(buf), "%s none", what);
+        return buf;
+    }
+    ComPtr<ID3D11Device> device;
+    resource->GetDevice(&device);
+    std::snprintf(buf, sizeof(buf), "%s %p (device %p): the game's device %s, the evaluate's device %s", what,
+                  static_cast<void*>(resource), static_cast<void*>(device.Get()),
+                  YesNo(OwnedBy(resource, gameNative)), YesNo(OwnedBy(resource, evaluateNative)));
+    return buf;
+}
+
 }  // namespace
 
 const char* CameraReadResultText(CameraChannel::ReadResult r) {
@@ -72,6 +123,44 @@ void CaptureCoordinator::LogThrottled(const std::string& what) {
     if (throttle_.ShouldLog(what, GetTickCount64())) LOGW("capture: %s (logged at most every 10 s)", what.c_str());
 }
 
+// Caller holds mu_. Diagnostics only: everything here reads and logs.
+void CaptureCoordinator::LogDeviceMismatch(const NgxEvaluateInputs& in) {
+    try {
+        ID3D11DeviceContext* const ctx = in.ctx;
+        ID3D11Device* const game = deps_.device11;
+        ComPtr<ID3D11Device> owner;
+        ctx->GetDevice(&owner);
+        LOGI("diag: first DLSS evaluate on another device: ctx %p (%s, vtable %s)", static_cast<void*>(ctx),
+             ctx->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE ? "immediate" : "deferred",
+             VtableModuleText(ctx).c_str());
+        LOGI("diag:   the evaluate's device: %s; its immediate context %s; ReShade unwrap 0x%08lX",
+             DescribeD3D11Device(owner.Get()).c_str(), ImmediateContextText(owner.Get(), ctx).c_str(),
+             static_cast<unsigned long>(ReShadeUnwrapResult(owner.Get())));
+        LOGI("diag:   the game's device: %s; its immediate context %s; ReShade unwrap 0x%08lX",
+             DescribeD3D11Device(game).c_str(), ImmediateContextText(game, ctx).c_str(),
+             static_cast<unsigned long>(ReShadeUnwrapResult(game)));
+        const ComPtr<IUnknown> ownerNative = NativeIdentity(owner.Get());
+        LOGI("diag:   %s; %s",
+             ResourceOwnerText("depth", in.depth, native_identity_.Get(), ownerNative.Get()).c_str(),
+             ResourceOwnerText("motion vectors", in.mvec, native_identity_.Get(), ownerNative.Get()).c_str());
+        HWND hwnd = nullptr;
+        const int call = PassThroughDeviceCall(owner.Get(), &hwnd);
+        if (call > 0) {
+            LOGI("diag:   the evaluate's device is the device of the pass-through swap chain of call #%d (window %p)",
+                 call, static_cast<void*>(hwnd));
+        } else {
+            LOGI("diag:   the evaluate's device is not the device of any of the %d pass-through swap chains seen",
+                 PassThroughDeviceCount());
+        }
+        if (!g_modules_logged.exchange(true)) {
+            const std::vector<std::string> modules = NonWindowsModules();
+            LOGI("diag: %zu loaded modules outside the Windows folder (its DriverStore included):", modules.size());
+            for (const std::string& m : modules) LOGI("diag:   module %s", m.c_str());
+        }
+    } catch (...) {
+    }
+}
+
 void CaptureCoordinator::OnCreateFeature(uint64_t featureKey, const NgxCreateInfo& info) {
     try {
         std::lock_guard<std::mutex> lock(mu_);
@@ -99,6 +188,12 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
             if (frame_.evaluates == 0)
                 frame_.reason = "no capture: the DLSS evaluate's device is not the game's D3D11 device";
             LogThrottled("DLSS evaluate on another D3D11 device ignored");
+            // Diagnostics (GitHub issue 10): the first mismatch says what the
+            // two devices are.
+            if (!logged_mismatch_) {
+                logged_mismatch_ = true;
+                LogDeviceMismatch(in);
+            }
             return;
         }
         ++frame_.evaluates;

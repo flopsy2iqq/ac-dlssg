@@ -116,6 +116,13 @@ private:
     bool SameDevice(ID3D11DeviceContext* ctx);
     void Capture(const NgxEvaluateInputs& in);
     void LogThrottled(const std::string& what);
+    // Diagnostics (GitHub issue 10), at the first evaluate whose device is
+    // not the game's: the context, both devices (diag_util's description,
+    // their immediate contexts, ReShade's unwrap answer), which of them owns
+    // the depth and motion vectors, whether the evaluate's device is a
+    // pass-through swap chain's, and once per process the modules outside the
+    // Windows folder. Logging only.
+    void LogDeviceMismatch(const NgxEvaluateInputs& in);
 
     Deps deps_;
     std::mutex mu_;
@@ -133,6 +140,7 @@ private:
     bool logged_first_evaluate_ = false;
     uint32_t idle_frames_ = 0;  // frames in a row without a counted evaluate
     bool logged_first_fresh_ = false;
+    bool logged_mismatch_ = false;  // LogDeviceMismatch ran
 };
 
 }  // namespace acdb
