@@ -18,12 +18,31 @@ struct DrsValue {
     uint32_t value = 0;
 };
 
+// Diagnostics (GitHub issue 10): one setting of a profile as
+// NvAPI_DRS_EnumSettings reports it.
+struct DrsSetting {
+    uint32_t id = 0;
+    uint32_t type = 0;      // NVDRS_SETTING_TYPE: 0 DWORD, 1 binary, 2 string, 3 wide string, 4 QWORD
+    uint32_t location = 0;  // NVDRS_SETTING_LOCATION: 0 this profile, 1 global, 2 base, 3 default
+    std::wstring name;      // the driver's name for it, may be empty
+    uint64_t number = 0;    // a DWORD or QWORD value
+    std::wstring text;      // a string value
+    uint32_t binary_length = 0;  // a binary value's length in bytes
+};
+
 struct DriverProfileReport {
     bool nvapi_ok = false;
     std::string error;                 // why NVAPI or DRS could not be read
     std::wstring app_profile;          // name of the profile that holds the exe, empty if none
     DrsValue dlssg_mode_app, dlssg_mode_base;
     DrsValue sl_override_app, sl_override_base;
+    // Diagnostics (GitHub issue 10), from NvAPI_DRS_EnumSettings: every
+    // setting of the app profile, and the base profile's settings whose
+    // value does not come from the driver's defaults. settings_error says
+    // why they could not be listed (NvAPI_DRS_EnumSettings missing or
+    // failing); the rest of the report does not depend on them.
+    std::vector<DrsSetting> app_settings, base_settings;
+    std::string settings_error;
 };
 
 // NvAPI_Initialize, DRS CreateSession/LoadSettings, FindApplicationByName(exe
@@ -34,6 +53,14 @@ struct DriverProfileReport {
 // Never throws; a non-NVIDIA system or a missing nvapi64.dll gives
 // nvapi_ok=false.
 DriverProfileReport ReadDriverProfile(const std::wstring& exePath);
+
+// Pure: "0x<id> <type> <value> (<origin>)" and, when the setting has a name,
+// " \"<name>\"". A DWORD is "dword 0x%08X", a QWORD "qword 0x%016llX", a
+// string "string|wstring \"<at most 64 characters>...\"", a binary value
+// "binary <n> bytes", anything else "type <n>"; the origin is "this
+// profile", "global profile", "base profile" or "default"; the name is cut
+// at 48 characters ("..." marks a cut).
+std::string DrsSettingText(const DrsSetting& s);
 
 // Pure: one English warning per problem, empty when none.
 //  - NGX_DLSSG_MODE == NGX_DLSSG_MODE_OFF in the app or base profile:
