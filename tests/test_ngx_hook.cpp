@@ -719,6 +719,21 @@ TEST(NgxIsDenoiserModule_Names) {
     CHECK(!NgxIsDenoiserModule(nullptr));
 }
 
+// Diagnostics (GitHub issue 10): the driver's own DLSS-G module, which driver
+// 621.01 loads into the game on RTX 40 and 50, is told apart from
+// Streamline's copy in ac-dlssg\sl and from the driver's other NGX modules.
+TEST(NgxIsDriverStoreDlssg_Paths) {
+    CHECK(NgxIsDriverStoreDlssg(
+        L"C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_20f49c6eb5c9b39b\\nvngx_dlssg.dll"));
+    CHECK(NgxIsDriverStoreDlssg(L"c:\\windows\\system32\\driverstore\\filerepository\\nv\\NVNGX_DLSSG.DLL"));
+    CHECK(!NgxIsDriverStoreDlssg(L"D:\\Steam\\steamapps\\common\\assettocorsa\\ac-dlssg\\sl\\nvngx_dlssg.dll"));
+    CHECK(!NgxIsDriverStoreDlssg(
+        L"C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_20f49c6eb5c9b39b\\_nvngx.dll"));
+    CHECK(!NgxIsDriverStoreDlssg(L"C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv\\my_nvngx_dlssg.dll"));
+    CHECK(!NgxIsDriverStoreDlssg(L""));
+    CHECK(!NgxIsDriverStoreDlssg(nullptr));
+}
+
 // Calls whose outermost layer is the NR snippet are forwarded but never
 // counted, even a feature-id-1 create with plain DLSS parameters; the handle it
 // returns is recorded as not ours, so an evaluate on it through another layer

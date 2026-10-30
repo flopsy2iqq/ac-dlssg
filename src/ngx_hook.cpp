@@ -298,10 +298,7 @@ bool FirstTime(std::atomic<bool>& done) {
 void NoteDriverDlssgModule(HMODULE m, const std::wstring& path) {
     if (g_logged_driver_dlssg.load(std::memory_order_relaxed)) return;
     try {
-        if (!EndsWithNoCase(path.c_str(), L"\\nvngx_dlssg.dll")) return;
-        std::wstring lower(path);
-        for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
-        if (lower.find(L"\\driverstore\\") == std::wstring::npos || !FirstTime(g_logged_driver_dlssg)) return;
+        if (!NgxIsDriverStoreDlssg(path.c_str()) || !FirstTime(g_logged_driver_dlssg)) return;
         LOGI("diag: the driver's own DLSS-G module is loaded: %ls at %p, version %s", path.c_str(),
              static_cast<void*>(m), ModuleVersionText(m).c_str());
     } catch (...) {
@@ -318,6 +315,17 @@ bool NgxIsFillerStub(const void* fn) {
     for (int i = 1; i < 14; ++i)
         if (b[i] != b[0]) return false;
     return true;
+}
+
+bool NgxIsDriverStoreDlssg(const wchar_t* path) {
+    if (!path || !*path) return false;
+    const wchar_t* base = path;
+    for (const wchar_t* p = path; *p; ++p)
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    if (_wcsicmp(base, L"nvngx_dlssg.dll") != 0) return false;
+    std::wstring lower(path, base);
+    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+    return lower.find(L"\\driverstore\\") != std::wstring::npos;
 }
 
 bool NgxIsDenoiserModule(const wchar_t* path) {

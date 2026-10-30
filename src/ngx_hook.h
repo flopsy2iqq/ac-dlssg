@@ -75,6 +75,10 @@ bool NgxIsFillerStub(const void* fn);
 // Ray Reconstruction). Calls whose outermost layer is such a module, or a
 // module whose exports resolve into one, are never counted (ngx review F4).
 bool NgxIsDenoiserModule(const wchar_t* path);
+// Diagnostics (GitHub issue 10): true when path is an nvngx_dlssg.dll in a
+// DriverStore folder, the driver's own DLSS-G module (the hook skips it under
+// rule 4); case-insensitive, the base name must match exactly.
+bool NgxIsDriverStoreDlssg(const wchar_t* path);
 
 class NgxHook {
 public:
