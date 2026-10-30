@@ -120,6 +120,7 @@ add_library(acdb_core STATIC
     src/panel_status.cpp
     src/panel_status.h
     src/panel_control.cpp
+    src/diag_util.cpp
     ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
@@ -172,6 +173,7 @@ add_executable(acdb_tests
     tests/test_capture_coordinator.cpp
     tests/test_bridge_mode.cpp
     tests/test_dxgi_export_coverage.cpp
+    tests/test_diag_util.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
