@@ -306,6 +306,8 @@ void ProxySwapChain::TracePresent(const char* method, const void* caller, UINT s
         LARGE_INTEGER freq{};
         QueryPerformanceCounter(&now);
         QueryPerformanceFrequency(&freq);
+        // The module lookup takes loader locks; never under mu_.
+        const std::string from = ModuleAddressText(caller);
         std::lock_guard<std::recursive_mutex> lock(mu_);
         // The presenter counts g_trace_frames down by one per frame it
         // presents, so the previous traced Present was the one right before
@@ -318,8 +320,8 @@ void ProxySwapChain::TracePresent(const char* method, const void* caller, UINT s
                           static_cast<double>(now.QuadPart - trace_prev_qpc_) * 1000.0 / static_cast<double>(freq.QuadPart));
         trace_prev_qpc_ = now.QuadPart;
         trace_prev_left_ = left;
-        LOGI("diag: %s(%u, 0x%X) from %s, %s (%d traced frames left)", method, syncInterval, flags,
-             ModuleAddressText(caller).c_str(), since, left);
+        LOGI("diag: %s(%u, 0x%X) from %s, %s (%d traced frames left)", method, syncInterval, flags, from.c_str(),
+             since, left);
     } catch (...) {
     }
 }
