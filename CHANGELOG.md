@@ -4,6 +4,10 @@ All notable changes to ac-dlssg are listed here. Versions follow
 [Semantic Versioning](https://semver.org/). The release workflow publishes the
 section of a version as its GitHub release notes.
 
+## [1.2.1] - unreleased
+
+Diagnostic build diag-621 for GitHub issue 10 (NVIDIA driver 621.01: frame generation never turns on). It only adds logging: the first line of `bridge.log` names the build, `diag:` lines say who creates the swap chains and who calls Present and NGX, describe the devices, windows and modules involved and list the driver profile's settings, and the stats line ends with `no_evaluate=<n>`. Nothing else changes.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added

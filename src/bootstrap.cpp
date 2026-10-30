@@ -491,7 +491,9 @@ BridgeMode BridgeModeFromPath(const std::wstring& modulePath) {
 const char* BridgeModeName(BridgeMode mode) { return mode == BridgeMode::Standalone ? "standalone" : "proxy"; }
 
 std::string BannerLine() {
-    return std::string("ac-dlssg ") + ACDB_VERSION +
+    // A diagnostic build (ACDB_BUILD_TAG, empty for a release) says so.
+    const std::string tag = ACDB_BUILD_TAG;
+    return std::string("ac-dlssg ") + ACDB_VERSION + (tag.empty() ? std::string() : " diagnostic build " + tag) +
            " (DLSS Frame Generation 2X/3X/4X and Reflex through NVIDIA Streamline for Assetto Corsa with CSP)";
 }
 

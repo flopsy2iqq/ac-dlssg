@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
-project(ac_dlssg_bridge VERSION 1.2.0 LANGUAGES CXX)
+project(ac_dlssg_bridge VERSION 1.2.1 LANGUAGES CXX)
+# A diagnostic build names itself in the first line of bridge.log
+# (BannerLine); empty for a release. diag-621: the logging for GitHub issue
+# 10 (NVIDIA driver 621.01).
+set(ACDB_BUILD_TAG "diag-621")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,7 +17,7 @@ add_compile_options(/W4 /permissive- /utf-8 /EHsc)
 # clean in our own files.
 add_compile_options(/external:anglebrackets /external:W0)
 add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
-                        ACDB_VERSION="${PROJECT_VERSION}")
+                        ACDB_VERSION="${PROJECT_VERSION}" ACDB_BUILD_TAG="${ACDB_BUILD_TAG}")
 
 # Third-party headers staged by tools/fetch-deps.ps1 (never committed): the
 # pinned Streamline SDK headers and the NVAPI headers. The DLLs themselves are

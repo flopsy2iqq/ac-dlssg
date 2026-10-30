@@ -17,14 +17,27 @@ TEST(Banner_VersionIsMajorMinorPatch) {
 TEST(Banner_NamesTheVersionAndWhatTheBridgeDoes) {
     const std::string line = BannerLine();
     std::printf("  %s\n", line.c_str());
-    const std::string head = std::string("ac-dlssg ") + ACDB_VERSION + " (";
+    const std::string head = std::string("ac-dlssg ") + ACDB_VERSION + " ";
     CHECK(line.compare(0, head.size(), head) == 0);
+    CHECK(line.find(" (") != std::string::npos);
     CHECK(!line.empty() && line.back() == ')');
     CHECK(line.find("DLSS Frame Generation 2X/3X/4X") != std::string::npos);
     CHECK(line.find("Reflex") != std::string::npos);
     CHECK(line.find("Streamline") != std::string::npos);
     // A release banner names no development milestone.
     CHECK(!std::regex_search(line, std::regex(R"(\bM\d\b)")));
+}
+
+// A diagnostic build (ACDB_BUILD_TAG in CMakeLists.txt, empty for a release)
+// says so right after the version, so that the first line of a tester's
+// bridge.log tells it apart from the release of the same version.
+TEST(Banner_NamesADiagnosticBuildRightAfterTheVersion) {
+    const std::string tag = ACDB_BUILD_TAG;
+    const std::string line = BannerLine();
+    const std::string head = tag.empty() ? std::string("ac-dlssg ") + ACDB_VERSION + " ("
+                                         : std::string("ac-dlssg ") + ACDB_VERSION + " diagnostic build " + tag + " (";
+    CHECK(line.compare(0, head.size(), head) == 0);
+    if (line.compare(0, head.size(), head) != 0) std::printf("  expected the banner to start with '%s'\n", head.c_str());
 }
 
 TEST(BridgeMode_DxgiDllIsStandalone) {
