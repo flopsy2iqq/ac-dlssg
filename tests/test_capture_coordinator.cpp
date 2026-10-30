@@ -349,6 +349,35 @@ TEST(Coordinator_DeferredContextAndOtherDeviceAreNotCsp) {
     CHECK_EQ(r.markers, 0);
 }
 
+// Diagnostics (GitHub issue 10): every evaluate the coordinator is handed
+// counts as seen, also one it ignores for its context or its device, so that
+// the stats line can count the Presents that had no DLSS evaluate at all.
+TEST(Coordinator_EveryEvaluateCountsAsSeenAlsoAnIgnoredOne) {
+    Rig r;
+    if (!r.Create()) return;
+    CspSources s = MakeSources(r.d.device11.Get(), 64, 36);
+    REQUIRE(s.depth && s.mvec);
+    FrameCapture f = r.coord->EndFrame();
+    CHECK_EQ(f.allEvaluates, 0u);
+    r.coord->OnEvaluate(r.Inputs(s));
+    r.coord->OnEvaluate(r.Inputs(s));
+    f = r.coord->EndFrame();
+    CHECK_EQ(f.evaluates, 2u);
+    CHECK_EQ(f.allEvaluates, 2u);
+
+    ComPtr<ID3D11DeviceContext> deferred;
+    REQUIRE(SUCCEEDED(r.d.device11->CreateDeferredContext(0, &deferred)));
+    r.coord->OnEvaluate(r.Inputs(s, deferred.Get()));
+    acdb_test::GpuTestDevices other;
+    REQUIRE(acdb_test::CreateGpuTestDevices(&other));
+    CspSources os = MakeSources(other.device11.Get(), 64, 36);
+    r.coord->OnEvaluate(r.Inputs(os, other.ctx11.Get()));
+    f = r.coord->EndFrame();
+    CHECK_EQ(f.evaluates, 0u);
+    CHECK_EQ(f.allEvaluates, 2u);
+    CHECK_EQ(r.coord->EndFrame().allEvaluates, 0u);
+}
+
 TEST(Coordinator_UnsupportedSourceFormatGivesNoCapture) {
     Rig r;
     if (!r.Create()) return;

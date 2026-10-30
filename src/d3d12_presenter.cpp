@@ -361,6 +361,7 @@ struct D3D12Presenter::Impl {
     unsigned stats_fg_frames = 0;
     unsigned stats_double = 0;
     uint64_t stats_generated = 0;
+    unsigned stats_no_evaluate = 0;  // diagnostics (GitHub issue 10)
 
     // Multi frame generation (spec 6.8, 6.11).
     std::atomic<int> pending_multiplier{0};  // SetFgMultiplier, applied at the next frame; 0: none
@@ -1587,6 +1588,9 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
         ++stats_double;
         ++totals.double_evaluates;
     }
+    // Diagnostics (GitHub issue 10): a Present with no DLSS evaluate at all
+    // since the previous one, counted or ignored.
+    if (cap.allEvaluates == 0) ++stats_no_evaluate;
     if (cap.captured) {
         last_mvec_w = cap.mvecWidth;
         last_mvec_h = cap.mvecHeight;
@@ -1969,15 +1973,18 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     // logged when it changes. The M3 fields sit before vram_mib, and so does
     // fg_mult, the multiplier the DLSS-G options carry (or will carry at the
     // next eOn); vram_mib: local video memory usage/budget of the render
-    // adapter, last so that parsers of the fields before it keep working.
+    // adapter, after them so that parsers of the fields before it keep
+    // working. no_evaluate (the diagnostic build of GitHub issue 10, after
+    // everything else): the Presents with no DLSS evaluate at all since the
+    // previous Present, counted or ignored.
     LOGI("stats: base_fps=%.1f presented_fps=%.1f skipped=%u failed=%u occluded=%u uncopied=%u max_frame_ms=%.1f "
          "max_present_ms=%.1f bridge_gpu_ms d3d11=%s d3d12=%s fg=%s stalls=%u streamline=%s reflex=%s "
          "pcl_problems=%u captures=%u camera_fresh=%u tagged=%u fg_frames=%u generated=%s double_evaluates=%u "
-         "fg_mult=%u vram_mib=%s",
+         "fg_mult=%u vram_mib=%s no_evaluate=%u",
          stats_presents / seconds, stats_delivered / seconds, stats_skipped, stats_failed, stats_occluded,
          stats_uncopied, max_frame_ms, max_present_ms, a11, a12, mode_on ? "on" : "off", stalls, sl ? "on" : "off",
          reflex_on ? "on" : "off", pclProblems, stats_captures, stats_camera_fresh, stats_tagged, stats_fg_frames,
-         generated, stats_double, UsedMultiplier(), vram);
+         generated, stats_double, UsedMultiplier(), vram, stats_no_evaluate);
     // Spec 6.9: the same second for the panel; presented includes the
     // generated frames.
     PanelNumbers& pn = panel_numbers;
@@ -1995,6 +2002,7 @@ void D3D12Presenter::Impl::MaybeLogStats(ID3D11DeviceContext* ctx) {
     status_due = true;
     stats_captures = stats_camera_fresh = stats_tagged = stats_fg_frames = stats_double = 0;
     stats_generated = 0;
+    stats_no_evaluate = 0;
     stats_start = now;
     stats_presents = stats_delivered = stats_skipped = stats_failed = stats_occluded = stats_uncopied = 0;
     max_frame_ms = max_present_ms = 0;

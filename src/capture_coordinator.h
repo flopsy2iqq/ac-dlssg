@@ -67,6 +67,9 @@ const char* CameraReadResultText(CameraChannel::ReadResult r);
 
 struct FrameCapture {
     uint32_t evaluates = 0;   // qualifying evaluates since the previous Present
+    // Diagnostics (GitHub issue 10): every evaluate handed to OnEvaluate since
+    // the previous Present, also those ignored for their context or device.
+    uint32_t allEvaluates = 0;
     bool captured = false;    // copied into slot (ordered before the Present's signal)
     uint32_t slot = 0;        // this frame's slot (frame index mod 3)
     // renderW/H: the tag extent and the MV scale's reference size (the

@@ -167,6 +167,9 @@ struct PresenterCreateInfo {
 //    "fg: first DLSS-G Present at <m>X (frame <n>): numFramesActuallyPresented
 //    <raw>, status <s>".
 //  - stats: fg_mult=<used> after double_evaluates, before vram_mib.
+// Diagnostic build (GitHub issue 10): the stats line ends with
+// no_evaluate=<n> after vram_mib, the Presents with no DLSS evaluate at all
+// (counted or ignored, FrameCapture::allEvaluates) since the previous one.
 // The in-game panel (spec 6.9), both paths, with env.status and env.control:
 //  - creation: the control record's current requestCounter is the baseline
 //    (a request from before this presenter is never applied), and the

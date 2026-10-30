@@ -88,6 +88,7 @@ void CaptureCoordinator::OnCreateFeature(uint64_t featureKey, const NgxCreateInf
 void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
     try {
         std::lock_guard<std::mutex> lock(mu_);
+        ++frame_.allEvaluates;
         if (!in.ctx) return;
         if (in.ctx->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) {
             if (frame_.evaluates == 0) frame_.reason = "no capture: DLSS evaluate on a deferred context";

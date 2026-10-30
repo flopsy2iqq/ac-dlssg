@@ -59,6 +59,10 @@ TEST(TestappLogs_M3StatisticsLinePasses) {
                  "captures=320 camera_fresh=319 tagged=319 fg_frames=319 generated=957 double_evaluates=0 fg_mult=4",
                  "on"))),
              std::string());
+    // The diagnostic build of GitHub issue 10 appends no_evaluate after vram_mib.
+    const Stats diag = ParseStats(M3Stats(kM3Fields) + " no_evaluate=160");
+    CHECK_EQ(StatsProblem(diag), std::string());
+    CHECK(diag.Num("no_evaluate") == 160);
 }
 
 TEST(TestappLogs_StatisticsLineProblems) {
@@ -93,6 +97,9 @@ TEST(TestappLogs_StatisticsLineProblems) {
                             "captures=320 camera_fresh=319 tagged=319 fg_frames=0 generated=n/a fg_mult=2 "
                             "double_evaluates=0")))
                .empty());
+    // no_evaluate is a count, and nothing follows it.
+    CHECK(!StatsProblem(ParseStats(M3Stats(kM3Fields) + " no_evaluate=x")).empty());
+    CHECK(!StatsProblem(ParseStats(M3Stats(kM3Fields) + " no_evaluate=0 fg_mult=2")).empty());
     // An M2 field missing.
     std::string noStalls = kM2Stats;
     noStalls.replace(noStalls.find(" stalls=0"), 9, "");

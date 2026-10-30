@@ -494,13 +494,14 @@ TEST(Presenter_LogsStatisticsEverySecond) {
     CHECK(lines >= 2);
     // Every field of spec 6.10 that M2 has, in order; the plain path has no
     // Streamline. The render adapter's local video memory, usage/budget in
-    // MiB, comes last.
+    // MiB, comes after them, and the diagnostic build's no_evaluate (GitHub
+    // issue 10) last: without NGX no Present had an evaluate.
     const std::string vram = d.warp ? "([0-9]+/[0-9]+|n/a)" : "[0-9]+/[1-9][0-9]*";
     const std::regex full(
         " INFO stats: base_fps=[0-9]+\\.[0-9] presented_fps=[0-9]+\\.[0-9] skipped=0 failed=0 occluded=[0-9]+ "
         "uncopied=0 max_frame_ms=[0-9]+\\.[0-9] max_present_ms=[0-9]+\\.[0-9] bridge_gpu_ms d3d11=[0-9.na/]+ "
         "d3d12=[0-9.na/]+ fg=off stalls=0 streamline=off reflex=off pcl_problems=0 captures=0 camera_fresh=0 "
-        "tagged=0 fg_frames=0 generated=n/a double_evaluates=0 fg_mult=2 vram_mib=" + vram + "\n");
+        "tagged=0 fg_frames=0 generated=n/a double_evaluates=0 fg_mult=2 vram_mib=" + vram + " no_evaluate=[1-9][0-9]*\n");
     CHECK(std::regex_search(log, full));
     // Budget and usage are logged once at creation.
     const std::regex created(d.warp ? " INFO presenter: VRAM " : " INFO presenter: VRAM \\(local\\) budget [1-9][0-9]* MiB, "
