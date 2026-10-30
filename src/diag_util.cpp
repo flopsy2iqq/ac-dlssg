@@ -72,6 +72,7 @@ struct PassThroughDevice {
     uintptr_t identity = 0;
     uintptr_t unwrapped = 0;
     HWND hwnd = nullptr;
+    int call = 0;
 };
 std::mutex g_pass_mu;
 PassThroughDevice g_pass[kMaxPassThroughDevices];  // guarded by g_pass_mu
@@ -219,20 +220,21 @@ std::vector<std::string> NonWindowsModules() {
     return out;
 }
 
-void NotePassThroughDevice(IUnknown* device, HWND hwnd) {
+void NotePassThroughDevice(IUnknown* device, HWND hwnd, int call) {
     if (!device) return;
     try {
         PassThroughDevice d;
         d.identity = IdentityOf(device);
         d.unwrapped = UnwrappedIdentityOf(device);
         d.hwnd = hwnd;
+        d.call = call;
         std::lock_guard<std::mutex> lock(g_pass_mu);
         if (g_pass_count < kMaxPassThroughDevices) g_pass[g_pass_count++] = d;
     } catch (...) {
     }
 }
 
-int PassThroughDeviceNumber(IUnknown* device, HWND* hwnd) {
+int PassThroughDeviceCall(IUnknown* device, HWND* hwnd) {
     if (hwnd) *hwnd = nullptr;
     if (!device) return 0;
     try {
@@ -243,7 +245,7 @@ int PassThroughDeviceNumber(IUnknown* device, HWND* hwnd) {
         for (int i = 0; i < g_pass_count; ++i) {
             if (same(identity, g_pass[i]) || same(unwrapped, g_pass[i])) {
                 if (hwnd) *hwnd = g_pass[i].hwnd;
-                return i + 1;
+                return g_pass[i].call;
             }
         }
     } catch (...) {

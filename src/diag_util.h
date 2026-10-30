@@ -54,14 +54,15 @@ std::vector<std::string> NonWindowsModules();
 
 // The devices of the swap chains the factory hook passed through, so that
 // the capture coordinator can say whether a DLSS evaluate's device is one of
-// them. Only COM identities are kept (no reference): a match means the same
-// object unless the device was released and its address reused. At most 16
-// are kept; later ones are dropped.
-void NotePassThroughDevice(IUnknown* device, HWND hwnd);
-// The number (1-based, in the order they were noted) of the first noted
-// pass-through whose device has the COM identity of device, directly or as
-// the object a ReShade proxy wraps; 0 when none. *hwnd gets its window.
-int PassThroughDeviceNumber(IUnknown* device, HWND* hwnd);
+// them. call is the factory hook's number of the call ("#<call>" in its log
+// lines). Only COM identities are kept (no reference): a match means the
+// same object unless the device was released and its address reused. At
+// most 16 are kept; later ones are dropped.
+void NotePassThroughDevice(IUnknown* device, HWND hwnd, int call);
+// The call number of the first noted pass-through whose device has the COM
+// identity of device, directly or as the object a ReShade proxy wraps; 0
+// when none. *hwnd gets its window.
+int PassThroughDeviceCall(IUnknown* device, HWND* hwnd);
 int PassThroughDeviceCount();
 
 }  // namespace acdb
