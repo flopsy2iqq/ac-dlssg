@@ -120,6 +120,7 @@ jobs:
               'test_present_flags.cpp'      # the Present flag rules
               'test_smooth_motion.cpp'      # what the helper writes into the driver profile, and restores
               'test_testapp_logs.cpp'       # the test app's log checks
+              'test_triple_diag.cpp'        # the triple-screen diagnostics' windows and log lines
           )
           powershell -NoProfile -ExecutionPolicy Bypass -File tools\run-ci-tests.ps1 -Source ($sources -join ',')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
