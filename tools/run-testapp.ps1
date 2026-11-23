@@ -106,6 +106,14 @@
   sections are per logon session too, so the scenario SKIPs while acs.exe
   runs.
 
+  The triple-diag scenario (1.3.0): AC in triple-screen mode (the triple
+  fixture's video.ini) with [debug] triple_diag=1 and the test app playing
+  CSP's DLSS calls. The chain must be proxied, DLSS-G must never turn on,
+  and the bridge log must have the triple-diag lines of a whole window of
+  300 frames (each scenario's LogMust patterns must match a line of the
+  kept bridge log, and no line may match one of its LogMustNot patterns).
+  It shares the camera section, so it SKIPs while acs.exe runs.
+
   -ReShadeDll names ReShade's dxgi.dll. By default it is the dxgi.dll in the
   Assetto Corsa folder found through Steam's libraryfolders.vdf; it is only
   read and copied. A DLL whose version resource ProductName is not "ReShade",
@@ -196,7 +204,17 @@ $scenarios = @(
     # the test app. 1500 frames at 500 fps: the requests, then about two
     # statistics lines for the heartbeat.
     @{ Name = 'panel';              Args = @('--fake-panel', '--frames', '1500', '--fps-cap', '500', '--expect-proxy');
-       Ini = @('start_with_fg=1'); Panel = $true }
+       Ini = @('start_with_fg=1'); Panel = $true },
+    # The triple-screen diagnostics (see the description): 600 frames at 500
+    # fps, so that a window of 300 frames ends inside the run.
+    @{ Name = 'triple-diag';        Args = @('--fixture', 'triple', '--fake-ngx', '--fake-camera', '--frames', '600',
+                                             '--fps-cap', '500', '--expect-proxy');
+       Ini = @('[debug]', 'triple_diag=1'); Camera = $true;
+       LogMust = @(' INFO triple-diag: \[debug\] triple_diag=1 in triple-screen mode', ' INFO triple-diag: on \(',
+           ' INFO triple-diag: window 1 of 4: ', ' INFO triple-diag: frame 1 evaluate 1: feature 0x[0-9A-F]+; create ',
+           ' INFO triple-diag: frame 300: [1-9][0-9]* DLSS evaluates; swap chain 1280x720 format 28',
+           ' INFO triple-diag: window 1 done after 300 frames', 'triple-screen diagnostics \(\[debug\] triple_diag=1\)');
+       LogMustNot = @('fg: DLSS-G on', 'camera mode TRIPLE \(triple screen\) is not supported') }
 )
 if ($Scenario.Count) {
     $unknown = @($Scenario | Where-Object { $n = $_; -not ($scenarios | Where-Object { $_.Name -eq $n }) })
@@ -637,6 +655,26 @@ foreach ($cfg in $Config) {
         if ($s.Panel) {
             # The test app checks these itself; they are printed as evidence.
             @($lines | Where-Object { $_ -match '^testapp: (fake panel|note: panel)' }) | ForEach-Object { Write-Host "  $_" }
+        }
+
+        if ($s.LogMust -or $s.LogMustNot) {
+            $logLines = @(if (Test-Path -LiteralPath $keptLog -PathType Leaf) { [System.IO.File]::ReadAllLines($keptLog) })
+            $logProblems = @()
+            foreach ($pattern in @($s.LogMust)) {
+                $hit = @($logLines | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+                if ($hit.Count) { Write-Host "  bridge.log: $($hit[0])" } else { $logProblems += "no bridge.log line matches '$pattern'" }
+            }
+            foreach ($pattern in @($s.LogMustNot)) {
+                $hit = @($logLines | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+                if ($hit.Count) { $logProblems += "bridge.log has '$($hit[0])'" }
+            }
+            if ($logProblems.Count) {
+                $logProblems | ForEach-Object { Write-Host "  PROBLEM: $_" }
+                if ($result -eq 'PASS') { $result = 'FAIL' }
+                $detail += "; " + ($logProblems -join '; ')
+            } elseif ($result -eq 'PASS') {
+                $detail += "; bridge.log has the $(@($s.LogMust).Count) expected lines"
+            }
         }
 
         if ($s.Budget) {
