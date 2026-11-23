@@ -21,7 +21,10 @@
   dlssg_sm86.ini) that install.ps1 put next to acs.exe, and the MFG-Unlocker
   copy it put into <game>\ac-dlssg\mfg, each only while it is the file
   installed. dlssg_for_sm86 files that were there before the install stay,
-  and so does an MFG-Unlocker the user installed. The logs and ac-dlssg.ini
+  and so does an MFG-Unlocker the user installed. When install.ps1 turned
+  NVIDIA Smooth Motion off for Assetto Corsa, the driver profile goes back
+  as it was, only while it still holds the value written (Windows asks for
+  administrator rights for that; see dev-uninstall.ps1). The logs and ac-dlssg.ini
   stay in <game>\ac-dlssg unless -RemoveData is given; -RemoveData also
   deletes dlssg_for_sm86's data (<game>\dlssg_sm86 and
   %LOCALAPPDATA%\DlssgSm86) when install.ps1 installed it and no version.dll
@@ -33,10 +36,10 @@
 
   The copy in the game folder (-InstalledCopy) works on the game folder it
   is in, without a Steam lookup, and removes itself last: after a successful
-  uninstall and the Enter, it deletes uninstall.bat, collect-logs.bat and
-  scripts\ (each file only while it is the version installed; with
-  -RemoveData all of <game>\ac-dlssg), then <game>\ac-dlssg when that is
-  empty. uninstall.bat ends itself without reading its file again (see
+  uninstall and the Enter, it deletes uninstall.bat, collect-logs.bat,
+  ac-dlssg-drs.exe and scripts\ (each file only while it is the version
+  installed; with -RemoveData all of <game>\ac-dlssg), then <game>\ac-dlssg
+  when that is empty. uninstall.bat ends itself without reading its file again (see
   there). When the run starts again with administrator rights, the elevated
   run does all of that in its window while the first one waits for it; the
   first one then only reports the exit code and touches no file.
@@ -72,6 +75,15 @@
   start the second run without asking Windows for them (no UAC prompt), as
   another Windows PowerShell in this console.
 
+.PARAMETER DrsHelper
+  For tests: a stand-in for the driver-profile helper with which
+  dev-uninstall.ps1 restores NVIDIA Smooth Motion, a .ps1 that runs in this
+  console and is never elevated. -NoElevate also keeps that restore from
+  asking for administrator rights.
+
+.PARAMETER DrsDeclineUac
+  For tests: that restore acts as if the Windows prompt was declined.
+
 .EXAMPLE
   tools\uninstall.bat
 
@@ -88,7 +100,9 @@ param(
     [switch]$NoElevate,
     [switch]$Elevated,
     [switch]$InstalledCopy,
-    [switch]$FakeElevation
+    [switch]$FakeElevation,
+    [string]$DrsHelper,
+    [switch]$DrsDeclineUac
 )
 
 $ErrorActionPreference = 'Stop'
@@ -159,7 +173,7 @@ function Remove-InstalledTools([string]$Game, $Records) {
             return
         }
         if (@($Records).Count -eq 0) {
-            Say "WARNING: there is no record of the uninstaller's files, so they stay. Delete uninstall.bat, collect-logs.bat and the scripts folder in $dataDir by hand."
+            Say "WARNING: there is no record of the uninstaller's files, so they stay. Delete uninstall.bat, collect-logs.bat, ac-dlssg-drs.exe and the scripts folder in $dataDir by hand."
             return
         }
         $removed = 0
@@ -180,7 +194,7 @@ function Remove-InstalledTools([string]$Game, $Records) {
         }
         if ($removed -gt 0) { Say "removed the uninstaller and the log collector from $dataDir ($removed files)" }
     } catch {
-        Say "WARNING: the uninstaller could not remove itself completely ($($_.Exception.Message)). Delete uninstall.bat, collect-logs.bat and the scripts folder in $dataDir by hand."
+        Say "WARNING: the uninstaller could not remove itself completely ($($_.Exception.Message)). Delete uninstall.bat, collect-logs.bat, ac-dlssg-drs.exe and the scripts folder in $dataDir by hand."
     }
 }
 
@@ -237,6 +251,9 @@ try {
         $uninstallArgs = @{ GameDir = $game; Force = $true }
         if ($RemoveData) { $uninstallArgs.RemoveData = $true }
         if ($InstalledCopy) { $uninstallArgs.KeepTools = $true }
+        if ($NoElevate) { $uninstallArgs.NoElevate = $true }
+        if ($DrsHelper) { $uninstallArgs.DrsHelper = $DrsHelper }
+        if ($DrsDeclineUac) { $uninstallArgs.DrsDeclineUac = $true }
         & (Join-Path $PSScriptRoot 'dev-uninstall.ps1') @uninstallArgs
         $code = $LASTEXITCODE
     }

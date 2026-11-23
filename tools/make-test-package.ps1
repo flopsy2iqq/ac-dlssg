@@ -16,10 +16,14 @@
                          so that the unpacked package can be deleted after the
                          install: uninstall.bat and collect-logs.bat (from
                          tools\package\installed; they work on the game folder
-                         they are in) and scripts\ with uninstall.ps1,
-                         dev-uninstall.ps1, dev-common.ps1, collect-logs.ps1,
-                         collect-sysinfo.ps1 and tools.json (the list of these
-                         files with their SHA-256, written here)
+                         they are in), the driver-profile helper
+                         ac-dlssg-drs.exe (-DrsHelper; install.ps1 turns NVIDIA
+                         Smooth Motion off with it on RTX 40 and 50, and the
+                         uninstaller restores it) and scripts\ with
+                         uninstall.ps1, dev-uninstall.ps1, dev-common.ps1,
+                         collect-logs.ps1, collect-sysinfo.ps1 and tools.json
+                         (the list of these files with their SHA-256, written
+                         here)
     scripts\install.ps1  tools\package\install.ps1: finds the game through
                          Steam, starts itself again with administrator rights
                          when the game folder needs them, gets Streamline with
@@ -54,14 +58,19 @@
   downloads dlssg_for_sm86 from its author's repository and checks its pinned
   hashes, and on a PC with RTX 40 GPUs only downloads MFG-Unlocker's release
   asset from its author's GitHub and checks its pinned hashes. The script
-  fails when the package would hold any DLL other than files\ac-dlssg.dll, an
-  .asi file, or a file named like one of those projects' (Test-RehostedFile
-  in dev-common.ps1).
+  fails when the package would hold any DLL other than files\ac-dlssg.dll,
+  any program other than files\ac-dlssg\ac-dlssg-drs.exe, an .asi file, or a
+  file named like one of those projects' (Test-RehostedFile in
+  dev-common.ps1). The helper must be an x64 program that imports only
+  KERNEL32.dll (Test-DrsHelperExe).
 
   An existing package folder and zip of the same version are replaced.
 
 .PARAMETER Dll
   The bridge DLL. Default: build\Release\ac-dlssg.dll.
+
+.PARAMETER DrsHelper
+  The driver-profile helper. Default: build\Release\ac-dlssg-drs.exe.
 
 .PARAMETER OutDir
   Default: build\package.
@@ -74,6 +83,7 @@
 #>
 param(
     [string]$Dll,
+    [string]$DrsHelper,
     [string]$OutDir,
     [string]$Version
 )
@@ -96,6 +106,7 @@ function Remove-PatreonLinks([string]$Text) {
 $script:PackageDocs = @('README.md', 'README.ru.md', 'LICENSE', 'EXCEPTIONS.md', 'THIRD_PARTY_NOTICES.txt',
     'docs\INSTALL.md', 'docs\INSTALL.ru.md')
 if (-not $Dll) { $Dll = Join-Path $repo 'build\Release\ac-dlssg.dll' }
+if (-not $DrsHelper) { $DrsHelper = Join-Path $repo "build\Release\$($script:AcdbDrsHelperName)" }
 if (-not $OutDir) { $OutDir = Join-Path $repo 'build\package' }
 
 try {
@@ -105,6 +116,12 @@ try {
     $Dll = Get-NormalizedPath (Resolve-Path -LiteralPath $Dll).ProviderPath
     $problems = @(Test-BridgeDll $Dll)
     if ($problems.Count -gt 0) { throw "$Dll cannot be packaged: $($problems -join '; ')" }
+    if (-not (Test-Path -LiteralPath $DrsHelper -PathType Leaf)) {
+        throw "driver-profile helper not found: $DrsHelper. Build it first: cmake --build build --config Release"
+    }
+    $DrsHelper = Get-NormalizedPath (Resolve-Path -LiteralPath $DrsHelper).ProviderPath
+    $problems = @(Test-DrsHelperExe $DrsHelper)
+    if ($problems.Count -gt 0) { throw "$DrsHelper cannot be packaged: $($problems -join '; ')" }
 
     if (-not $Version) {
         $cmake = [System.IO.File]::ReadAllText((Join-Path $repo 'CMakeLists.txt'))
@@ -163,6 +180,7 @@ try {
     foreach ($f in @('uninstall.bat', 'collect-logs.bat')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "package\installed\$f") -Destination (Join-Path $gameTools $f)
     }
+    Copy-Item -LiteralPath $DrsHelper -Destination (Join-Path $gameTools $script:AcdbDrsHelperName)
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'package\uninstall.ps1') -Destination (Join-Path $gameScripts 'uninstall.ps1')
     foreach ($f in @('dev-uninstall.ps1', 'dev-common.ps1', 'collect-logs.ps1', 'collect-sysinfo.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $f) -Destination (Join-Path $gameScripts $f)
@@ -182,8 +200,10 @@ try {
     Copy-Item -Path (Join-Path $luaSource '*') -Destination $luaTarget -Recurse
 
     $dllHash = Get-Sha256OfFile $Dll
+    $drsHash = Get-Sha256OfFile $DrsHelper
     $readme = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'package\README-test.txt'), $script:Utf8NoBom)
     $readme = $readme.Replace('{VERSION}', $Version).Replace('{COMMIT}', $commit).Replace('{DLL_SHA256}', $dllHash).
+        Replace('{DRS_SHA256}', $drsHash).
         Replace('{DATE}', [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm') + ' UTC')
     $readme = ($readme -replace "`r?`n", "`r`n")
     [System.IO.File]::WriteAllText((Join-Path $docsDir 'README-test.txt'), (Remove-PatreonLinks $readme), (New-Object System.Text.UTF8Encoding($true)))
@@ -228,6 +248,7 @@ try {
         Write-Host ('  {0,-40} {1,10:N0} bytes' -f $f.FullName.Substring($pkg.Length + 1), $f.Length)
     }
     Write-Host "  ac-dlssg.dll SHA-256 $dllHash, version $Version, commit $commit"
+    Write-Host "  $($script:AcdbDrsHelperName) SHA-256 $drsHash"
     Write-Host "make-test-package: $zip ($('{0:N0}' -f (Get-Item -LiteralPath $zip).Length) bytes)"
     exit 0
 } catch {

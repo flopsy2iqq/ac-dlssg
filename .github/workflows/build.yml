@@ -1,7 +1,8 @@
 # Builds ac-dlssg on every push to main and every pull request: the pinned
-# dependencies (cached), the Release build, the import allow-list, the unit
-# tests that need no GPU, the release helper tests and the release zip, which
-# is uploaded as a workflow artifact. release.yml calls this workflow for a
+# dependencies (cached), the Release build, the import allow-lists of the DLL
+# and of the driver-profile helper ac-dlssg-drs.exe, the unit tests that need
+# no GPU, the release helper tests and the release zip, which is uploaded as
+# a workflow artifact with the DLL and the helper. release.yml calls this workflow for a
 # tag and publishes what it built.
 name: build
 
@@ -88,6 +89,12 @@ jobs:
         shell: cmd
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-imports.ps1 -Dll build\Release\ac-dlssg.dll
 
+      # The helper may run with administrator rights from the game folder:
+      # KERNEL32.dll only.
+      - name: Check the driver-profile helper's imports
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-imports.ps1 -Dll build\Release\ac-dlssg-drs.exe -Helper
+
       # The runners have no GPU, so only the tests of these files run: none of
       # them creates a D3D11 or D3D12 device, loads Streamline, NGX or NVAPI,
       # or loads the built DLL. The other test files need an NVIDIA GPU and
@@ -100,6 +107,8 @@ jobs:
               'test_bridge_mode.cpp'        # the bridge mode from the module path, the banner, the version
               'test_camera_channel.cpp'     # the camera layout, the camera section and the Lua app's layout string
               'test_compat.cpp'             # the CSP and graphics settings rules
+              'test_drs_json.cpp'           # the driver-profile helper's JSON reader and writer
+              'test_drs_tool.cpp'           # the helper's commands against a fake of the driver settings
               'test_fg_policy.cpp'          # the DLSS-G gate, the multiplier, the video memory guard, the reasons
               'test_frame_constants.cpp'    # Streamline's camera constants
               'test_ini_config.cpp'         # the INI reader and writer, ac-dlssg.ini, the log
@@ -109,6 +118,7 @@ jobs:
               'test_panel.cpp'              # the panel's status and control sections and the Lua window
               'test_pcl_sequencer.cpp'      # the PCL marker order
               'test_present_flags.cpp'      # the Present flag rules
+              'test_smooth_motion.cpp'      # what the helper writes into the driver profile, and restores
               'test_testapp_logs.cpp'       # the test app's log checks
           )
           powershell -NoProfile -ExecutionPolicy Bypass -File tools\run-ci-tests.ps1 -Source ($sources -join ',')
@@ -132,4 +142,5 @@ jobs:
           path: |
             build/package/ac-dlssg-${{ steps.meta.outputs.version }}.zip
             build/Release/ac-dlssg.dll
+            build/Release/ac-dlssg-drs.exe
           if-no-files-found: error

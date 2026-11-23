@@ -124,7 +124,9 @@
   package's files\ac-dlssg, which its install.ps1 passes, with uninstall.bat
   and collect-logs.bat and, in scripts\, the scripts they run, so that the
   unpacked package is not needed after the install. Only .bat files at its
-  top and files in its scripts folder are allowed, and it must hold
+  top, the driver-profile helper ac-dlssg-drs.exe (which the uninstaller
+  runs to restore NVIDIA Smooth Motion) and files in its scripts folder are
+  allowed, and it must hold
   uninstall.bat and scripts\uninstall.ps1, dev-uninstall.ps1 and
   dev-common.ps1. They are recorded in the manifest (tools) before they are
   written and rolled back like every other file; tools an earlier run
@@ -368,7 +370,7 @@ function Get-ToolSources([string]$Dir) {
     foreach ($f in @(Get-ChildItem -LiteralPath $root -File -Recurse -Force | Sort-Object FullName)) {
         $rel = "$($script:AcdbDataDirName)\$($f.FullName.Substring($root.Length + 1))"
         if (-not (Test-ToolRelPath $rel)) {
-            Stop-Refused "the tools folder $root holds $($f.FullName), which is neither a .bat file at its top nor a file in its scripts folder."
+            Stop-Refused "the tools folder $root holds $($f.FullName), which is neither a .bat file or $($script:AcdbDrsHelperName) at its top nor a file in its scripts folder."
         }
         $sources += [pscustomobject]@{ Source = $f.FullName; Rel = $rel }
     }
@@ -927,14 +929,19 @@ try {
     # dev-uninstall.ps1 -RemoveData still deletes the files it wrote.
     $mfgUsed = ($mfgPlans.Count -gt 0) -or [bool]$mfgRecorded -or
         [bool]($manifest -and $manifest.PSObject.Properties['mfgUnlockerUsed'] -and $manifest.mfgUnlockerUsed)
+    # The package install's record of the NVIDIA Smooth Motion change in the
+    # driver profile (dev-common.ps1): the package's install.ps1 writes it
+    # after this script, and every run keeps it, so that dev-uninstall.ps1
+    # can restore the driver setting.
+    $driverProfileRecord = Get-ManifestDriverProfile $manifest
     # Schema 2 adds mode, schema 3 luaApp, schema 4 spoof, schema 5 tools,
-    # schema 6 mfgUnlocker; dev-uninstall.ps1 reads a schema 1 manifest as
-    # reshade, and one without luaApp, spoof, tools or mfgUnlocker as one
-    # without the Lua app, the spoof, the tools or MFG-Unlocker. Every run
-    # writes the whole manifest, so an older one becomes schema 6 on the next
-    # install.
+    # schema 6 mfgUnlocker, schema 7 driverProfile; dev-uninstall.ps1 reads a
+    # schema 1 manifest as reshade, and one without luaApp, spoof, tools,
+    # mfgUnlocker or driverProfile as one without the Lua app, the spoof, the
+    # tools, MFG-Unlocker or a driver profile change. Every run writes the
+    # whole manifest, so an older one becomes schema 7 on the next install.
     $newManifest = [ordered]@{
-        schema       = 6
+        schema       = 7
         tool         = 'tools\dev-install.ps1'
         mode         = $chosen.Mode
         state        = 'installing'
@@ -950,6 +957,7 @@ try {
         tools        = $toolsRecord
         dll          = [ordered]@{ path = $targetRel; source = $source; sha256 = $sourceHash }
         config       = [ordered]@{ path = "$($script:AcdbDataDirName)\ac-dlssg.ini"; created = $configCreated }
+        driverProfile = $driverProfileRecord
     }
 
     # Changes start here. A mode change from ReShade mode undoes that mode

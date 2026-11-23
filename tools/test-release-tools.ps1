@@ -138,15 +138,21 @@ Write-Text $changelog ("# Changelog`r`n`r`nIntro text.`r`n`r`n## [1.2.4] - 2026-
 $emptyChangelog = Join-Path $fx 'CHANGELOG-empty.md'
 Write-Text $emptyChangelog "# Changelog`r`n`r`n## [1.2.3] - 2026-09-29`r`n`r`n`r`n## [1.0.0] - 2026-09-01`r`n`r`n- Earlier.`r`n"
 
-# A release zip as make-test-package.ps1 builds it: <name>/files/ac-dlssg.dll.
+# A release zip as make-test-package.ps1 builds it: <name>/files/ac-dlssg.dll
+# and, with $HelperBytes, the driver-profile helper
+# <name>/files/ac-dlssg/ac-dlssg-drs.exe.
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-function New-ReleaseZip([string]$Zip, [string]$Folder, [byte[]]$DllBytes, [switch]$NoDll) {
+function New-ReleaseZip([string]$Zip, [string]$Folder, [byte[]]$DllBytes, [switch]$NoDll, [byte[]]$HelperBytes) {
     $stage = Join-Path $fx ("stage-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $root = Join-Path $stage $Folder
     New-Item -ItemType Directory -Path (Join-Path $root 'files') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $root 'install.bat'), "@echo off`r`n")
     if (-not $NoDll) { [IO.File]::WriteAllBytes((Join-Path $root 'files\ac-dlssg.dll'), $DllBytes) }
+    if ($HelperBytes) {
+        New-Item -ItemType Directory -Path (Join-Path $root 'files\ac-dlssg') -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $root 'files\ac-dlssg\ac-dlssg-drs.exe'), $HelperBytes)
+    }
     [System.IO.Compression.ZipFile]::CreateFromDirectory($root, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
 }
 $dllBytes = [byte[]](1..200 | ForEach-Object { $_ % 256 })
@@ -163,6 +169,12 @@ New-ReleaseZip $wrongName 'ac-dlssg-1.2.4' $dllBytes
 $noDllZip = Join-Path $fx 'nodll\ac-dlssg-1.2.3.zip'
 New-Item -ItemType Directory -Path (Split-Path -Parent $noDllZip) -Force | Out-Null
 New-ReleaseZip $noDllZip 'ac-dlssg-1.2.3' $dllBytes -NoDll
+$helperBytes = [byte[]](1..150 | ForEach-Object { (7 * $_) % 256 })
+$fixtureHelper = Join-Path $fx 'ac-dlssg-drs.exe'
+[IO.File]::WriteAllBytes($fixtureHelper, $helperBytes)
+$helperZip = Join-Path $fx 'helper\ac-dlssg-1.2.3.zip'
+New-Item -ItemType Directory -Path (Split-Path -Parent $helperZip) -Force | Out-Null
+New-ReleaseZip $helperZip 'ac-dlssg-1.2.3' $dllBytes -HelperBytes $helperBytes
 
 function Invoke-Notes([string[]]$Arguments) {
     return Invoke-Script $notesScript (@('-CMakeLists', $cmake123, '-Changelog', $changelog) + @($Arguments))
@@ -202,6 +214,25 @@ Invoke-Case 'RN2: the DLL hash is read from the zip, and -Dll must match it' {
     Check (-not (Test-Path -LiteralPath $out3)) 'and writes no notes'
     $r = Invoke-Notes @('-Zip', $noDllZip, '-OutFile', (Join-Path $fx 'out\notes-4.md'))
     Check ($r.Code -ne 0 -and $r.Text -match 'files/ac-dlssg\.dll') 'a zip without files/ac-dlssg.dll: exits non-zero and names the entry'
+}
+
+# 1.3.0 ships ac-dlssg-drs.exe, which may run with administrator rights:
+# its hash is listed too when the zip holds it, and -Helper (the build's,
+# which the release workflow attests) must match it.
+Invoke-Case 'RN6: the driver-profile helper in the zip is listed with its SHA-256, and -Helper must match it' {
+    $out = Join-Path $fx 'out\notes-helper-1.md'
+    $r = Invoke-Notes @('-Zip', $helperZip, '-Dll', $fixtureDll, '-Helper', $fixtureHelper, '-OutFile', $out)
+    Check ($r.Code -eq 0) 'release-notes exits 0'
+    $text = if (Test-Path -LiteralPath $out) { ([IO.File]::ReadAllText($out, $utf8)) -replace "`r`n", "`n" } else { '' }
+    Check ($text.Contains("| ``ac-dlssg.dll`` (``files\ac-dlssg.dll`` in the zip) | ``$(Get-Sha $fixtureDll)`` |")) 'the DLL''s SHA-256 is listed'
+    Check ($text.Contains("| ``ac-dlssg-drs.exe`` (``files\ac-dlssg\ac-dlssg-drs.exe`` in the zip) | ``$(Get-Sha $fixtureHelper)`` |")) 'the helper''s SHA-256 is listed'
+    $r = Invoke-Notes @('-Zip', $helperZip, '-Helper', $fixtureDll, '-OutFile', (Join-Path $fx 'out\notes-helper-2.md'))
+    Check ($r.Code -ne 0 -and $r.Text -match 'differs') 'a -Helper that differs from the zip''s: exits non-zero and says so'
+    $r = Invoke-Notes @('-Zip', $zip, '-Helper', $fixtureHelper, '-OutFile', (Join-Path $fx 'out\notes-helper-3.md'))
+    Check ($r.Code -ne 0 -and $r.Text -match 'ac-dlssg-drs\.exe') '-Helper with a zip that holds no helper: exits non-zero and names it'
+    $out4 = Join-Path $fx 'out\notes-helper-4.md'
+    $r = Invoke-Notes @('-Zip', $zip, '-OutFile', $out4)
+    Check ($r.Code -eq 0 -and (Test-Path -LiteralPath $out4) -and ([IO.File]::ReadAllText($out4)) -notmatch 'ac-dlssg-drs') 'a zip without the helper: no helper line'
 }
 
 Invoke-Case 'RN3: the tag must be v<version>, and the zip must be ac-dlssg-<version>.zip' {

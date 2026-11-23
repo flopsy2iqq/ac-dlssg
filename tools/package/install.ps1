@@ -104,6 +104,23 @@
      ships are removed, and when the mode has to change (ReShade was
      installed or removed since) the old mode's files are undone and the new
      mode installed in the same run.
+  5. NVIDIA Smooth Motion, unless -KeepSmoothMotion is given, only when an
+     NVIDIA adapter is an RTX 40 or RTX 50 (the GPUs it runs on). Smooth
+     Motion is the driver's own frame generation; it takes over the game's
+     window, also while the NVIDIA App shows it off, and DLSS-G cannot run
+     on top of it (GitHub issue 10). The driver-profile helper the install
+     put into <game>\ac-dlssg (ac-dlssg-drs.exe) reads, without
+     administrator rights, "Smooth Motion - Enabled APIs" (0xB0CC0875) of
+     the driver profile that holds acs.exe ("Assetto Corsa") and of the
+     global profile. When DX11 is among the APIs in effect, it prints a
+     notice and has the helper remove DX11 in that profile, never in the
+     global one; Windows asks for administrator rights for that (UAC),
+     unless the installer already has them. The manifest records the
+     profile, the value before and the value written (driverProfile), so
+     that the uninstaller restores it. A declined prompt or a failed helper
+     is a warning, and the rest of the install stays. When DX11 is already
+     excluded, nothing is changed; the record of an earlier install stays
+     while the profile still holds the value it wrote.
   Undo with <game>\ac-dlssg\uninstall.bat (or this package's
   tools\uninstall.bat).
 
@@ -118,9 +135,15 @@
   Skip step 3b: no MFG-Unlocker download or install, and the copy an earlier
   run put into <game>\ac-dlssg\mfg is removed.
 
+.PARAMETER KeepSmoothMotion
+  Skip step 5: the NVIDIA driver profile is not read or changed. A change an
+  earlier install made stays recorded, and the uninstaller still restores
+  it; to get Smooth Motion back before that, see the README.
+
 .PARAMETER NoElevate
   For tests: when the game folder is not writable, refuse instead of
-  starting again with administrator rights.
+  starting again with administrator rights; and step 5 does not ask for them
+  either (it warns and changes nothing when it would need them).
 
 .PARAMETER Elevated
   Set by the script itself on the elevated run, so that it restarts only once.
@@ -147,6 +170,14 @@
   For tests: a JSON file with the pins of that zip (see Get-MfgPins in
   scripts\dev-common.ps1).
 
+.PARAMETER DrsHelper
+  For tests: a stand-in for the driver-profile helper of step 5, a .ps1
+  that runs in this console and is never elevated.
+
+.PARAMETER DrsDeclineUac
+  For tests: step 5 acts as if the Windows prompt for administrator rights
+  was declined.
+
 .EXAMPLE
   install.bat
 
@@ -155,6 +186,9 @@
 
 .EXAMPLE
   install.bat -NoMfgUnlocker
+
+.EXAMPLE
+  install.bat -KeepSmoothMotion
 #>
 param(
     [string]$GameDir,
@@ -170,7 +204,16 @@ param(
     [string]$SpoofPins,
     [switch]$NoMfgUnlocker,
     [string]$MfgSourceDir,
-    [string]$MfgPins
+    [string]$MfgPins,
+    [switch]$KeepSmoothMotion,
+    [string]$DrsHelper,
+    [switch]$DrsDeclineUac,
+    # Developer note, not for users and not in the help above: step 5 runs
+    # on any GPU, so that the driver-profile write and its restore can be
+    # tried on a PC without an RTX 40 or 50 (the maintainer's RTX 3080):
+    # install.bat -SmoothMotionAnyGpu, then uninstall.bat. Smooth Motion
+    # itself does not run there, so the change does nothing in the game.
+    [switch]$SmoothMotionAnyGpu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -477,6 +520,125 @@ function Get-MfgInstallArgs([string]$Game) {
     return @{ MfgInstall = $staged }
 }
 
+# Printed before the helper turns Smooth Motion off; then Windows asks.
+function Write-SmoothMotionNotice($Status) {
+    Say ('NVIDIA Smooth Motion is the driver''s own frame generation; it takes over the game''s window and frame ' +
+        'generation cannot run on top of it, even when the NVIDIA App shows it off. ac-dlssg turns it off for Assetto ' +
+        "Corsa only (driver profile setting $($script:AcdbSmoothMotionSettingId), DX11 bit) and restores it on " +
+        'uninstall. install.bat -KeepSmoothMotion skips this.')
+    $from = if ($Status.app -and $Status.app.present) { Format-SmoothMotionValue $Status.app } else {
+        $effective = Format-SmoothMotionValue ([pscustomobject]@{ present = $true; value = $Status.effective })
+        $origin = if ([string]$Status.source -eq 'global') { 'from the global profile' } else { 'the driver''s default' }
+        "not set (in effect: $effective, $origin)"
+    }
+    Write-Host ("  `"$($Status.profile)`" profile, Smooth Motion - Enabled APIs: $from -> " +
+        "$(Format-SmoothMotionValue ([pscustomobject]@{ present = $true; value = $Status.plan.value }))")
+    Write-Host '  Windows now asks for administrator rights for this one change (the NVIDIA driver settings are protected).'
+}
+
+# Step 5 (see the description). Never throws and never fails the install:
+# every problem is a warning.
+function Invoke-SmoothMotionStep([string]$Game) {
+    $manifestPath = Join-Path $Game "$($script:AcdbDataDirName)\install\dev-manifest.json"
+    $manifest = $null
+    try { $manifest = Read-Manifest $manifestPath } catch { }
+    $earlier = Get-ManifestDriverProfile $manifest
+    if ($KeepSmoothMotion) {
+        $kept = if ($earlier) { ' The change an earlier install made stays recorded; uninstall.bat restores it.' } else { '' }
+        Say "NVIDIA Smooth Motion: skipped (-KeepSmoothMotion); the driver profile is not changed.$kept"
+        return
+    }
+    try {
+        $adapters = @(Get-GpuAdapters $GpuDeviceIds)
+    } catch {
+        Say "WARNING: the GPUs could not be read ($($_.Exception.Message)), so NVIDIA Smooth Motion was not checked. On an RTX 40 or RTX 50, run install.bat again."
+        return
+    }
+    if (-not (Test-SmoothMotionGpu $adapters)) {
+        if (-not $SmoothMotionAnyGpu) {
+            Say 'NVIDIA Smooth Motion: not checked; it runs only on RTX 40 and RTX 50, and this PC has neither.'
+            return
+        }
+        Say 'NVIDIA Smooth Motion: developer test (-SmoothMotionAnyGpu): the driver profile is changed although this PC has no RTX 40 or RTX 50.'
+    }
+    $helper = if ($DrsHelper) { $DrsHelper } else { Join-Path $Game "$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)" }
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        Say "WARNING: NVIDIA Smooth Motion was not checked: the driver-profile helper $helper is missing."
+        return
+    }
+    $acs = Join-Path $Game $script:AcdbGameExe
+    $work = $null
+    try {
+        $work = New-DrsWorkDir
+        $statusJson = Join-Path $work 'status.json'
+        $run = Invoke-DrsHelper $helper @('smooth-motion', 'status', '--exe', $acs, '--json', $statusJson) $work
+        $status = Read-DrsJson $statusJson
+        if ($run.Code -ne $script:AcdbDrsExit.Ok -or -not $status) {
+            foreach ($line in $run.Log) { Write-Host "  $line" }
+            Say "WARNING: NVIDIA Smooth Motion was not checked: $(Get-DrsExitText $run.Code $acs) (see above). If frame generation does not start, the AC DLSS-G window names Smooth Motion; the README has the manual steps."
+            return
+        }
+        if ($status.plan.action -ne 'write') {
+            $now = if ($status.app -and $status.app.present) { "$(Format-SmoothMotionValue $status.app) in the `"$($status.profile)`" profile" } else {
+                "$(Format-SmoothMotionValue ([pscustomobject]@{ present = $true; value = $status.effective })) from the $($status.source) profile"
+            }
+            if ($earlier -and $status.app -and $status.app.present -and [long]$status.app.value -eq [long]$earlier.written -and
+                [string]$status.profile -eq [string]$earlier.profile) {
+                Say "NVIDIA Smooth Motion: off for Assetto Corsa since an earlier install (Smooth Motion - Enabled APIs $now); uninstall.bat restores it."
+                return
+            }
+            if ($earlier) {
+                Set-ManifestDriverProfile $manifestPath $null
+                Say 'NVIDIA Smooth Motion: the setting an earlier install wrote was changed since; its record is dropped, and the uninstall leaves the driver profile alone.'
+            }
+            Say "NVIDIA Smooth Motion: already kept away from Assetto Corsa (Smooth Motion - Enabled APIs $now, without DX11); nothing to change."
+            return
+        }
+        Write-SmoothMotionNotice $status
+        $offJson = Join-Path $work 'off.json'
+        try {
+            $run = Invoke-DrsHelper $helper @('smooth-motion', 'off', '--exe', $acs, '--json', $offJson) $work -Elevate -NoElevate:$NoElevate -DeclineUac:$DrsDeclineUac
+        } catch {
+            Say ("WARNING: NVIDIA Smooth Motion was not turned off: $(Get-DrsStartFailure $_). The rest of the install stays. " +
+                'If frame generation does not start, run install.bat again and confirm the prompt, or turn it off by hand (see the README).')
+            return
+        }
+        foreach ($line in $run.Log) { Write-Host "  $line" }
+        $rec = Read-DrsJson $offJson
+        if ($run.Code -eq $script:AcdbDrsExit.Ok -and $rec -and [string]$rec.result -eq 'written') {
+            $record = [ordered]@{
+                tool       = [string]$rec.tool
+                profile    = [string]$rec.profile
+                exe        = [string]$rec.exe
+                settingId  = [string]$rec.settingId
+                before     = [ordered]@{ present = [bool]$rec.before.present; value = $rec.before.value; predefined = [bool]$rec.before.predefined }
+                written    = [long]$rec.written
+                writtenUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            }
+            try {
+                Set-ManifestDriverProfile $manifestPath $record
+            } catch {
+                Say ("WARNING: NVIDIA Smooth Motion was turned off, but the record of it could not be written into $manifestPath " +
+                    "($($_.Exception.Message)); the uninstaller will not restore it. To restore it by hand: $(Get-SmoothMotionManualRestore $record).")
+                return
+            }
+            Say ("NVIDIA Smooth Motion: turned off for Assetto Corsa (`"$($record.profile)`" profile, Smooth Motion - Enabled APIs " +
+                "$(Format-SmoothMotionValue $rec.before) -> $([long]$rec.written)). uninstall.bat restores it.")
+            return
+        }
+        if ($run.Code -eq $script:AcdbDrsExit.Ok -and $rec -and [string]$rec.result -eq 'unchanged') {
+            Say 'NVIDIA Smooth Motion: already kept away from Assetto Corsa; nothing to change.'
+            return
+        }
+        Say ("WARNING: NVIDIA Smooth Motion was not turned off: $(Get-DrsExitText $run.Code $acs) (see above). The rest of the install stays. If frame " +
+            'generation does not start, the AC DLSS-G window names Smooth Motion; the README has the manual steps.')
+    } catch {
+        Say "WARNING: NVIDIA Smooth Motion was not checked: $($_.Exception.Message). The rest of the install stays."
+    } finally {
+        if ($work -and (Test-Path -LiteralPath $work)) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 $code = 1
 $reusedSl = $null
 try {
@@ -564,6 +726,7 @@ try {
     & (Join-Path $scripts 'dev-install.ps1') @installArgs
     $code = $LASTEXITCODE
     if ($code -eq 0) {
+        Invoke-SmoothMotionStep $game
         Say 'installed. Nothing in the game folder needs this unpacked folder: it and the zip can be deleted now.'
         Say "Start the game as usual, drive a few minutes, close it, then run $(Get-InstalledTool $game 'collect-logs.bat') and send the zip it writes next to it."
         Say "To undo, run $(Get-InstalledTool $game 'uninstall.bat')."

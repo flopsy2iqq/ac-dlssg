@@ -99,6 +99,16 @@ ac-dlssg {VERSION} для Assetto Corsa
      командной строке в этой папке  install.bat -NoSpoof
      а без MFG-Unlocker (и чтобы убрать уже поставленный)
      install.bat -NoMfgUnlocker
+     На RTX 40 и RTX 50 установщик ещё выключает для Assetto Corsa NVIDIA
+     Smooth Motion, собственную генерацию кадров драйвера: она захватывает
+     окно игры, и генерация кадров моста поверх неё не работает, даже если
+     приложение NVIDIA показывает Smooth Motion выключенным. Меняется одна
+     настройка, и только в профиле драйвера «Assetto Corsa» (0xB0CC0875,
+     бит DX11); глобальный профиль и другие игры не трогаются. Установщик
+     сначала пишет, что меняет, затем Windows просит права администратора:
+     нажмите «Да». Если отказаться, установка всё равно закончится, только
+     Smooth Motion останется как был. Удаление возвращает настройку назад.
+     Чтобы установщик не трогал профиль драйвера:  install.bat -KeepSmoothMotion
 
   4. Перед запуском игры включите DLSS, без него генерация не работает:
      в Content Manager откройте Настройки, затем Custom Shaders Patch, в
@@ -150,6 +160,10 @@ ac-dlssg {VERSION} для Assetto Corsa
      dlssg_for_sm86 или MFG-Unlocker был у вас до установки, он остаётся. Логи и настройки
      остаются в папке игры в ac-dlssg; после удаления эту папку можно
      просто удалить.
+     Если установщик выключал NVIDIA Smooth Motion, удаление возвращает
+     прежнее значение в профиле «Assetto Corsa» (Windows снова попросит
+     права администратора). Если вы с тех пор сами меняли эту настройку,
+     она остаётся как есть, и удаление так и пишет.
 
 Если игра не запускается или вылетает
   Сначала запустите ac-dlssg\collect-logs.bat из папки игры и сохраните
@@ -158,12 +172,14 @@ ac-dlssg {VERSION} для Assetto Corsa
 
 Если окно пишет "NVIDIA Smooth Motion ... is active" (RTX 40 и RTX 50)
   Игру захватила собственная генерация кадров драйвера NVIDIA (Smooth
-  Motion), даже если приложение NVIDIA показывает её выключенной. В NVIDIA
-  Profile Inspector (ссылка на него есть в docs\README.ru.md)
-  выберите профиль Assetto Corsa, поставьте Smooth Motion - Enabled APIs
-  (0xB0CC0875) в 5, нажмите Apply changes и перезапустите игру. Если окно
-  пишет то же, поставьте то же значение в глобальном профиле
-  (_GLOBAL_DRIVER_PROFILE).
+  Motion), даже если приложение NVIDIA показывает её выключенной. Обычно
+  её выключает установщик (шаг 3): запустите install.bat ещё раз, нажмите
+  «Да» в окне Windows и перезапустите игру. Если не помогло или вы ставили
+  с -KeepSmoothMotion, сделайте это вручную: в NVIDIA Profile Inspector
+  (ссылка на него есть в docs\README.ru.md) выберите профиль Assetto Corsa,
+  поставьте Smooth Motion - Enabled APIs (0xB0CC0875) в 5, нажмите Apply
+  changes и перезапустите игру. Если окно пишет то же, поставьте то же
+  значение в глобальном профиле (_GLOBAL_DRIVER_PROFILE).
 
 Что ещё нужно знать
   - VR не поддерживается и не планируется: в VR мост сам выключается.
@@ -183,13 +199,15 @@ ac-dlssg {VERSION} для Assetto Corsa
 Что меняется в папке игры
   Появляются dxgi.dll (это и есть мост), папка ac-dlssg (Streamline,
   настройки ac-dlssg.ini, логи, служебный файл установки, uninstall.bat,
-  collect-logs.bat и папка scripts для них) и папка apps\lua\AcDlssg
+  collect-logs.bat, ac-dlssg-drs.exe, маленький помощник для профиля
+  драйвера NVIDIA, и папка scripts для них) и папка apps\lua\AcDlssg
   (Lua-приложение для CSP). На RTX 30 и RTX 20 ещё version.dll и dlssg_sm86.ini
   (dlssg_for_sm86) и его папка с логами dlssg_sm86. На RTX 40 ещё
   ac-dlssg\mfg\version.dll (MFG-Unlocker) и, после первого запуска игры, его
   настройки RTXMFG-Universal.json, RTXMFG-Universal.status.json,
-  RTX40MFG-UI.ini и RTX40MFG-UI-layout.ini рядом с acs.exe. Больше ничего
-  не трогается.
+  RTX40MFG-UI.ini и RTX40MFG-UI-layout.ini рядом с acs.exe. На RTX 40 и
+  RTX 50 вне папки игры меняется одна настройка профиля драйвера NVIDIA
+  «Assetto Corsa» (Smooth Motion, шаг 3). Больше ничего не трогается.
   Если в папке игры уже есть ReShade (dxgi.dll), мост встанет рядом с ним
   через ReShade; если там какой-то другой dxgi.dll или чужая папка
   apps\lua\AcDlssg, установка откажется и ничего не изменит.
@@ -197,3 +215,4 @@ ac-dlssg {VERSION} для Assetto Corsa
 Сборка
   Версия {VERSION}, коммит {COMMIT}, собрано {DATE}
   SHA-256 ac-dlssg.dll: {DLL_SHA256}
+  SHA-256 ac-dlssg-drs.exe: {DRS_SHA256}

@@ -119,8 +119,11 @@ function Get-StreamlineRuntimeProblem([string]$Dir) {
 }
 
 # True when $Rel (relative to the game folder) may be a tool file: a .bat
-# file directly in <game>\ac-dlssg, or a file in <game>\ac-dlssg\scripts.
+# file directly in <game>\ac-dlssg, a file in <game>\ac-dlssg\scripts, or the
+# driver-profile helper <game>\ac-dlssg\ac-dlssg-drs.exe, which the
+# uninstaller runs to restore NVIDIA Smooth Motion.
 function Test-ToolRelPath([string]$Rel) {
+    if ($Rel -ieq "$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)") { return $true }
     $name = '[^\\/:*?"<>|]+'
     return $Rel -match ('^' + [regex]::Escape($script:AcdbDataDirName) + '\\(?:' + $name + '\.bat|' +
         [regex]::Escape($script:AcdbToolsScriptsDirName) + '\\' + $name + ')$')
@@ -1130,14 +1133,38 @@ function Find-UserMfgCopies([string]$GameDir) {
 
 # ---------------------------------------------------------------------------
 # The package's re-host guard (spec 13): make-test-package.ps1 refuses a
-# package with any of these. $Rel is a path in the package; the only DLL is
-# files\ac-dlssg.dll, and nothing of NVIDIA, dlssg_for_sm86 or MFG-Unlocker
-# is ever in it (the install downloads them from their authors).
+# package with any of these. $Rel is a path in the package; its only
+# binaries are this project's own, files\ac-dlssg.dll and the driver-profile
+# helper files\ac-dlssg\ac-dlssg-drs.exe, and nothing of NVIDIA,
+# dlssg_for_sm86 or MFG-Unlocker is ever in it (the install downloads them
+# from their authors).
 function Test-RehostedFile([string]$Rel) {
     $leaf = ($Rel -split '[\\/]')[-1]
     if ($leaf -match '(?i)\.dll$' -and $Rel -ine 'files\ac-dlssg.dll') { return $true }
+    if ($leaf -match '(?i)\.exe$' -and $Rel -ine "files\$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)") { return $true }
     if ($leaf -match '(?i)\.asi$') { return $true }
     return $leaf -match '(?i)^(nvngx|sl\.|dlssg_sm86|mfgunlocker|rtxmfg|rtx[34]0mfg|rtx30fg)'
+}
+
+# Problems that keep a file from being the driver-profile helper the package
+# ships: an x64 executable (not a DLL) that imports nothing outside
+# $script:AcdbHelperImportAllowList. Empty when it is acceptable.
+function Test-DrsHelperExe([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @("file not found: $Path") }
+    try {
+        $info = Get-PeInfo $Path
+    } catch {
+        return @("not a valid PE file ($($_.Exception.Message))")
+    }
+    $problems = @()
+    if ($info.Machine -ne 0x8664) { $problems += ('not an x64 image (machine 0x{0:X})' -f $info.Machine) }
+    if ($info.IsDll) { $problems += 'a DLL, not a program' }
+    foreach ($name in @($info.Imports) + @($info.DelayImports)) {
+        if ($script:AcdbHelperImportAllowList -notcontains $name) {
+            $problems += "imports $name, which is outside the helper's allow-list ($($script:AcdbHelperImportAllowList -join ', '))"
+        }
+    }
+    return $problems
 }
 
 # ---------------------------------------------------------------------------
@@ -1210,4 +1237,144 @@ function Invoke-ElevatedScript([string]$Script, [string[]]$Arguments, [switch]$W
     [void]$process.Handle
     $process.WaitForExit()
     return $process.ExitCode
+}
+
+# ---------------------------------------------------------------------------
+# NVIDIA Smooth Motion (GitHub issue 10): the driver's own frame generation
+# (RTX 40 and 50) takes over the game's window, even while the NVIDIA App
+# shows it off, and DLSS-G cannot run on top of it. The package install turns
+# it off for Assetto Corsa only with the driver-profile helper
+# ac-dlssg-drs.exe, which it puts into <game>\ac-dlssg as one of the tools:
+# "Smooth Motion - Enabled APIs" (0xB0CC0875) loses its DX11 bit in the
+# driver profile that holds acs.exe (src/smooth_motion.h). The manifest
+# records the change (driverProfile, schema 7), and dev-uninstall.ps1 puts
+# the old state back while the profile still holds the value written.
+
+$script:AcdbSmoothMotionSettingId = '0xB0CC0875'
+# The helper's exit codes (src/drs_tool.h).
+$script:AcdbDrsExit = @{ Ok = 0; Usage = 1; NoDriver = 2; NoProfile = 3; NeedsAdmin = 4; Failed = 5; Changed = 6; File = 7 }
+
+# True when one of the adapters is an RTX 40 or RTX 50 (Ada or Blackwell),
+# the GPUs Smooth Motion runs on.
+function Test-SmoothMotionGpu($Adapters) {
+    return @($Adapters | Where-Object { $_.VendorId -eq $script:AcdbNvidiaVendorId -and ($_.Arch -eq 'Ada' -or $_.Arch -eq 'Blackwell') }).Count -gt 0
+}
+
+# A new, empty folder for the helper's --json and --log files.
+function New-DrsWorkDir {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('ac-dlssg-drs-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    return $dir
+}
+
+# The JSON the helper wrote, or $null when there is none or it is not JSON.
+function Read-DrsJson([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try { return Read-Manifest $Path } catch { return $null }
+}
+
+# Runs the helper with $Arguments plus "--log <file>" and returns
+# @{ Code = <its exit code>; Log = <the lines it wrote> }. Its console text
+# goes to the log, which the caller shows (an elevated run has its own
+# window). -Elevate: the command changes the driver settings, which needs
+# administrator rights: when this PowerShell has none, Windows asks for them
+# (UAC); a declined prompt throws, and with -NoElevate it is not asked and
+# this throws as well. A .ps1 helper is a stand-in for the tests
+# (test-dev-scripts.ps1): it runs in this console with Windows PowerShell,
+# never elevated. -DeclineUac, for tests only: throws as a declined prompt
+# does (Windows error 1223), without asking.
+function Invoke-DrsHelper([string]$Helper, [string[]]$Arguments, [string]$WorkDir, [switch]$Elevate, [switch]$NoElevate,
+    [switch]$DeclineUac) {
+    $log = Join-Path $WorkDir ('drs-{0}.log' -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $all = @($Arguments) + @('--log', $log)
+    if ($Helper -like '*.ps1') {
+        if ($Elevate -and $DeclineUac) { throw (New-Object System.ComponentModel.Win32Exception 1223) }
+        & (Join-Path $PSHOME 'powershell.exe') -NoProfile -ExecutionPolicy Bypass -File $Helper @all | Out-Null
+        $code = $LASTEXITCODE
+    } elseif (-not $Elevate -or (Test-IsAdministrator)) {
+        & $Helper @all | Out-Null
+        $code = $LASTEXITCODE
+    } else {
+        if ($DeclineUac) { throw (New-Object System.ComponentModel.Win32Exception 1223) }
+        if ($NoElevate) { throw 'it needs administrator rights, and -NoElevate keeps Windows from being asked for them' }
+        $text = (@($all | ForEach-Object { ConvertTo-CommandLineArg $_ })) -join ' '
+        $process = Start-Process -FilePath $Helper -ArgumentList $text -Verb RunAs -WindowStyle Hidden -PassThru
+        # Opened now, so that the exit code is still there after the wait.
+        [void]$process.Handle
+        $process.WaitForExit()
+        $code = $process.ExitCode
+    }
+    $lines = @()
+    if (Test-Path -LiteralPath $log -PathType Leaf) {
+        $lines = @([IO.File]::ReadAllLines($log, $script:Utf8NoBom) | Where-Object { $_ })
+    }
+    return [pscustomobject]@{ Code = $code; Log = $lines }
+}
+
+# Why the helper could not start: a declined Windows prompt, or the error.
+function Get-DrsStartFailure($ErrorRecord) {
+    $e = $ErrorRecord.Exception
+    while ($e) {
+        if ($e -is [System.ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 1223) {
+            return 'the Windows prompt for administrator rights was declined'
+        }
+        $e = $e.InnerException
+    }
+    return "the helper could not run ($($ErrorRecord.Exception.Message))"
+}
+
+# "not set" or "5 (DX12, Vulkan)" for a value the helper reported
+# ({present, value}), as src/smooth_motion.cpp names the API bits.
+function Format-SmoothMotionValue($Value) {
+    if (-not $Value -or -not $Value.present) { return 'not set' }
+    $v = [long]$Value.value
+    $apis = @()
+    if ($v -band 1) { $apis += 'DX12' }
+    if ($v -band 2) { $apis += 'DX11' }
+    if ($v -band 4) { $apis += 'Vulkan' }
+    $other = $v -band (-bnot [long]7)
+    if ($other -ne 0) { $apis += ('other bits 0x{0:X8}' -f $other) }
+    if ($apis.Count -eq 0) { $apis = @('none') }
+    return "$v ($($apis -join ', '))"
+}
+
+# What a failing exit code of the helper means, for a warning.
+function Get-DrsExitText([int]$Code, [string]$Exe) {
+    if ($Code -eq $script:AcdbDrsExit.NoDriver) { return 'the NVIDIA driver settings could not be read' }
+    if ($Code -eq $script:AcdbDrsExit.NoProfile) { return "no NVIDIA driver profile holds $Exe" }
+    if ($Code -eq $script:AcdbDrsExit.NeedsAdmin) { return 'saving the driver settings needs administrator rights' }
+    if ($Code -eq $script:AcdbDrsExit.Failed) { return 'the driver settings could not be changed, or they read back differently' }
+    if ($Code -eq $script:AcdbDrsExit.Changed) { return 'the setting was changed since the install' }
+    if ($Code -eq $script:AcdbDrsExit.File) { return 'the helper could not write or read its record' }
+    return "the driver-profile helper ended with exit code $Code"
+}
+
+# The manifest's record of the change (driverProfile), or $null.
+function Get-ManifestDriverProfile($Manifest) {
+    if ($Manifest -and $Manifest.PSObject.Properties['driverProfile'] -and $Manifest.driverProfile) { return $Manifest.driverProfile }
+    return $null
+}
+
+# Sets the manifest's driverProfile to $Record ($null: none) and writes the
+# manifest again; every other part stays as it is.
+function Set-ManifestDriverProfile([string]$ManifestPath, $Record) {
+    $manifest = Read-Manifest $ManifestPath
+    if ($manifest.PSObject.Properties['driverProfile']) {
+        $manifest.driverProfile = $Record
+    } else {
+        $manifest | Add-Member -NotePropertyName 'driverProfile' -NotePropertyValue $Record
+    }
+    Write-Utf8NoBom $ManifestPath ($manifest | ConvertTo-Json -Depth 8)
+}
+
+# What to do by hand when the helper could not restore the setting: the
+# steps in NVIDIA Profile Inspector for that record.
+function Get-SmoothMotionManualRestore($Record) {
+    $what = if ($Record.before -and $Record.before.present) {
+        "set it back to $([long]$Record.before.value)"
+    } else {
+        'delete the value (right-click it, "Delete user-defined value"), or set it to 7'
+    }
+    return "in NVIDIA Profile Inspector, open the profile `"$($Record.profile)`", find `"Smooth Motion - Enabled APIs`" " +
+        "($($script:AcdbSmoothMotionSettingId)) and $what, then click Apply changes"
 }

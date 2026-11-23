@@ -51,6 +51,15 @@
   runner refuses to start the package install.ps1 without -NoMfgUnlocker or
   -MfgSourceDir. MFG-Unlocker's logs go to %TEMP%, which is the fake one.
 
+  The DR cases cover NVIDIA Smooth Motion: the package install turns it off
+  for Assetto Corsa on RTX 40 and 50 with the driver-profile helper, and the
+  uninstall restores it. The helper is always a stand-in there, a .ps1 that
+  is never elevated and never touches NVAPI (-DrsHelper; its driver settings
+  are a JSON file next to it). Every other package install gets
+  -KeepSmoothMotion, so that it never runs a helper, and the runner refuses
+  an uninstall whose manifest records a driver profile change without
+  -DrsHelper.
+
   -Case runs only the named cases (their ids, such as SA1 or LA2; wildcards
   allowed); the fixtures are built as always.
 
@@ -200,6 +209,31 @@ function Assert-PackageArguments([string]$Script, [string[]]$Arguments) {
         $Arguments -notcontains '-FakeElevation') {
         throw "refusing to run $Script without -NoElevate; it could ask Windows for administrator rights"
     }
+    # On an RTX 40 or 50 the install changes the NVIDIA driver profile with
+    # the driver-profile helper: only with its stand-in, or not at all.
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-KeepSmoothMotion' -and
+        $Arguments -notcontains '-DrsHelper') {
+        throw "refusing to run $Script without -KeepSmoothMotion or -DrsHelper; it could change the NVIDIA driver profile"
+    }
+    # The uninstall of an install that changed it restores it with the helper:
+    # only with the stand-in.
+    if (@('uninstall.ps1', 'uninstall.bat', 'dev-uninstall.ps1') -contains $leaf -and $Arguments -notcontains '-DrsHelper') {
+        $i = [array]::IndexOf($Arguments, '-GameDir')
+        $game = if ($i -ge 0 -and $i + 1 -lt $Arguments.Count) { $Arguments[$i + 1] } else { Split-Path -Parent (Split-Path -Parent $Script) }
+        $manifest = Join-Path $game 'ac-dlssg\install\dev-manifest.json'
+        if ((Test-Path -LiteralPath $manifest -PathType Leaf) -and (Get-ManifestDriverProfile (Read-Manifest $manifest))) {
+            throw "refusing to run $Script without -DrsHelper; the manifest records a driver profile change, which the real helper would restore"
+        }
+    }
+}
+
+# The package installs that do not test the Smooth Motion step skip it.
+function Add-KeepSmoothMotion([string]$Script, [string[]]$Arguments) {
+    if (@('install.ps1', 'install.bat') -contains (Split-Path -Leaf $Script) -and $Arguments -notcontains '-KeepSmoothMotion' -and
+        $Arguments -notcontains '-DrsHelper') {
+        return @($Arguments) + '-KeepSmoothMotion'
+    }
+    return @($Arguments)
 }
 
 function Invoke-Tool([string]$Script, [string[]]$Arguments) {
@@ -208,6 +242,7 @@ function Invoke-Tool([string]$Script, [string[]]$Arguments) {
     if ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1])) {
         throw "refusing to run $Script without a -GameDir under $FakeRoot"
     }
+    $Arguments = Add-KeepSmoothMotion $Script $Arguments
     Assert-PackageArguments $Script $Arguments
     $eap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -278,7 +313,7 @@ function Test-Refused($Result) { return $Result.Code -ne 0 -and $Result.Text -ma
 # import and delay-import directories that name DLLs. It is never loaded; it
 # only has to satisfy the install script's header, export and import checks.
 function New-FakePeDll([string]$Path, [string[]]$Exports, [uint16]$Machine = 0x8664, [string]$Salt = '',
-    [string[]]$Imports = @(), [string[]]$DelayImports = @()) {
+    [string[]]$Imports = @(), [string[]]$DelayImports = @(), [switch]$Exe) {
     $names = @($Exports | Sort-Object)
     $n = $names.Count
     $secRva = 0x1000
@@ -318,7 +353,9 @@ function New-FakePeDll([string]$Path, [string[]]$Exports, [uint16]$Machine = 0x8
     & $put16 ($coff + 0) $Machine
     & $put16 ($coff + 2) 1
     & $put16 ($coff + 16) 0xF0
-    & $put16 ($coff + 18) 0x2022
+    # Characteristics: an executable image, large-address aware, and with
+    # -Exe not a DLL.
+    & $put16 ($coff + 18) $(if ($Exe) { 0x0022 } else { 0x2022 })
     $opt = $coff + 20
     & $put16 ($opt + 0) 0x20B
     & $put64 ($opt + 24) 0x180000000
@@ -443,6 +480,10 @@ $dllV1 = Join-Path $fakeBuild 'Release\ac-dlssg.dll'
 $dllV2 = Join-Path $fakeBuild 'v2\ac-dlssg.dll'
 New-FakePeDll $dllV1 $goodExports
 New-FakePeDll $dllV2 $goodExports -Salt '-v2'
+# The driver-profile helper the package ships: an x64 program that imports
+# only KERNEL32.dll. It is never run; the DR cases run a .ps1 stand-in.
+$drsFakeExe = Join-Path $fakeBuild 'Release\ac-dlssg-drs.exe'
+New-FakePeDll $drsFakeExe @() -Salt '-drs' -Imports @('KERNEL32.dll') -Exe
 
 if (-not $StreamlineDir) { $StreamlineDir = Join-Path $tools '..\deps\streamline-2.14.1\bin\x64' }
 $slReal = Get-NormalizedPath $StreamlineDir
@@ -1725,7 +1766,7 @@ function Get-TestPackage {
     $ErrorActionPreference = 'Continue'
     try {
         $text = @(& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $packageScript -Dll $dllV1 `
-                -OutDir $out -Version '9.8.7' 2>&1 | ForEach-Object { "$_" })
+                -DrsHelper $drsFakeExe -OutDir $out -Version '9.8.7' 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $eap
@@ -1767,6 +1808,7 @@ function Invoke-Bat([string]$Bat, [string[]]$Arguments) {
     if (($i -ge 0 -or -not $installed) -and ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1]))) {
         throw "refusing to run $Bat without a -GameDir under $FakeRoot"
     }
+    $Arguments = Add-KeepSmoothMotion $Bat $Arguments
     Assert-PackageArguments $Bat $Arguments
     $id = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $stdin = Join-Path $tempDir "bat-$id-in.txt"
@@ -1889,10 +1931,10 @@ function Invoke-PackageInstall([string]$Pkg, [string]$Game, [string[]]$Extra) {
     return Invoke-Tool (Join-Path $Pkg 'scripts\install.ps1') (@('-GameDir', $Game, '-StreamlineDir', $slReal, '-NoPause', '-NoElevate') + @($Extra))
 }
 
-function Invoke-PackageUninstall([string]$Pkg, [string]$Game, [switch]$RemoveData) {
+function Invoke-PackageUninstall([string]$Pkg, [string]$Game, [switch]$RemoveData, [string[]]$Extra = @()) {
     $a = @('-GameDir', $Game, '-NoPause', '-NoElevate')
     if ($RemoveData) { $a += '-RemoveData' }
-    return Invoke-Tool (Join-Path $Pkg 'scripts\uninstall.ps1') $a
+    return Invoke-Tool (Join-Path $Pkg 'scripts\uninstall.ps1') (@($a) + @($Extra))
 }
 
 function Get-SpoofRecord($Manifest, [string]$Name) {
@@ -1925,13 +1967,14 @@ function Get-TreeState([string]$Dir) {
 }
 
 # The uninstaller and log collector that the package install puts into
-# <game>\ac-dlssg, each with the repository file it is a copy of; the package
-# carries them in files\ac-dlssg. scripts\tools.json has no repository
-# file: make-test-package.ps1 writes it, the list of the others with their
-# hashes.
+# <game>\ac-dlssg, each with the repository file it is a copy of (the
+# driver-profile helper: the fake build's); the package carries them in
+# files\ac-dlssg. scripts\tools.json has no source: make-test-package.ps1
+# writes it, the list of the others with their hashes.
 $toolSources = [ordered]@{
     'ac-dlssg\uninstall.bat'               = 'package\installed\uninstall.bat'
     'ac-dlssg\collect-logs.bat'            = 'package\installed\collect-logs.bat'
+    'ac-dlssg\ac-dlssg-drs.exe'            = $drsFakeExe
     'ac-dlssg\scripts\uninstall.ps1'       = 'package\uninstall.ps1'
     'ac-dlssg\scripts\dev-uninstall.ps1'   = 'dev-uninstall.ps1'
     'ac-dlssg\scripts\dev-common.ps1'      = 'dev-common.ps1'
@@ -1941,11 +1984,19 @@ $toolSources = [ordered]@{
 }
 $toolRels = @($toolSources.Keys | Sort-Object)
 
+# The file a tool is a copy of: a repository file under tools\, or the fake build's helper.
+function Get-ToolSource([string]$Rel) {
+    $source = $toolSources[$Rel]
+    if ([IO.Path]::IsPathRooted($source)) { return $source }
+    return Join-Path $tools $source
+}
+
 # The tool files in <game>\ac-dlssg: the .bat files at its top and everything in scripts\.
 function Get-ToolFiles([string]$Game) {
     $data = Join-Path $Game 'ac-dlssg'
     if (-not (Test-Path -LiteralPath $data -PathType Container)) { return @() }
     $found = @(Get-ChildItem -LiteralPath $data -File -Force -Filter '*.bat' | ForEach-Object { "ac-dlssg\$($_.Name)" })
+    if (Test-Path -LiteralPath (Join-Path $data 'ac-dlssg-drs.exe')) { $found += 'ac-dlssg\ac-dlssg-drs.exe' }
     $scripts = Join-Path $data 'scripts'
     if (Test-Path -LiteralPath $scripts) {
         $found += @(Get-ChildItem -LiteralPath $scripts -Recurse -Force | ForEach-Object { 'ac-dlssg\scripts\' + $_.FullName.Substring($scripts.Length + 1) })
@@ -1959,11 +2010,11 @@ function Test-ToolsInstalled([string]$Game) {
     if ((@(Get-ToolFiles $Game) -join '|') -ne ($toolRels -join '|')) { return $false }
     foreach ($rel in $toolRels) {
         if ($toolSources[$rel]) {
-            if ((Get-Sha (Join-Path $Game $rel)) -ne (Get-Sha (Join-Path $tools $toolSources[$rel]))) { return $false }
+            if ((Get-Sha (Join-Path $Game $rel)) -ne (Get-Sha (Get-ToolSource $rel))) { return $false }
             continue
         }
         $list = Read-Manifest (Join-Path $Game $rel)
-        $want = @($toolRels | Where-Object { $toolSources[$_] } | ForEach-Object { "$_|$(Get-Sha (Join-Path $tools $toolSources[$_]))" } | Sort-Object)
+        $want = @($toolRels | Where-Object { $toolSources[$_] } | ForEach-Object { "$_|$(Get-Sha (Get-ToolSource $_))" } | Sort-Object)
         $got = @($list.files | ForEach-Object { "$($_.path)|$($_.sha256)" } | Sort-Object)
         if (($got -join "`n") -ne ($want -join "`n")) { return $false }
     }
@@ -2005,6 +2056,9 @@ Invoke-Case 'PK: the friend test package' {
     Check (($files -join '|') -eq (($expected | Sort-Object) -join '|')) "the package holds exactly the expected files ($($files -join ', '))"
     $dlls = @($files | Where-Object { $_ -like '*.dll' })
     Check ($dlls.Count -eq 1 -and $dlls[0] -eq 'files/ac-dlssg.dll') 'the package holds no DLL other than files\ac-dlssg.dll'
+    $exes = @($files | Where-Object { $_ -like '*.exe' })
+    Check ($exes.Count -eq 1 -and $exes[0] -eq 'files/ac-dlssg/ac-dlssg-drs.exe') 'the only program in the package is the driver-profile helper files\ac-dlssg\ac-dlssg-drs.exe'
+    Check ((Get-Sha (Join-Path $pkg 'files\ac-dlssg\ac-dlssg-drs.exe')) -eq (Get-Sha $drsFakeExe)) 'the package helper is the given build'
     $rootFiles = @(Get-ChildItem -LiteralPath $pkg -File -Force | ForEach-Object { $_.Name })
     $rootDirs = @(Get-ChildItem -LiteralPath $pkg -Directory -Force | ForEach-Object { $_.Name } | Sort-Object)
     Check (($rootFiles -join '|') -eq 'install.bat' -and ($rootDirs -join '|') -eq 'docs|files|scripts|tools') "the package root holds only install.bat and the folders docs, files, scripts, tools ($(@($rootFiles + $rootDirs) -join ', '))"
@@ -2039,6 +2093,7 @@ Invoke-Case 'PK: the friend test package' {
         $readmeText -notmatch '\.ps1' -and $readmeText -match '9\.8\.7' -and
         $readmeText -match (Get-Sha $dllV1)) 'README-test.txt names install.bat and the two tools\ files (no .ps1), the version and the DLL hash'
     Check ($readmeText -match 'ac-dlssg\\uninstall\.bat' -and $readmeText -match 'ac-dlssg\\collect-logs\.bat') 'README-test.txt names uninstall.bat and collect-logs.bat in the game folder''s ac-dlssg'
+    Check ($readmeText -match (Get-Sha $drsFakeExe) -and $readmeText -match 'ac-dlssg-drs\.exe' -and $readmeText -match 'KeepSmoothMotion') 'README-test.txt names the driver-profile helper with its hash, and -KeepSmoothMotion'
     # Russian patterns as \u escapes: Windows PowerShell reads this BOM-less file in the ANSI code page.
     Check ($readmeText -match '\u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438[\u044f\u044e] \u043a\u0430\u0434\u0440\u043e\u0432' -and
         $readmeText -notmatch '\u0435\u0449\u0451\s+\u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u0430') 'README-test.txt says the build contains frame generation'
@@ -2569,7 +2624,7 @@ Invoke-Case 'UP1: upgrade of an older package install: changed files are replace
     Check (Test-LuaMatches $game $luaReal) 'the Lua app is exactly the new one (the changed file replaced, the obsolete one and its folder gone)'
     Check (Test-SlMatches $game $slReal) 'ac-dlssg\sl is exactly the new Streamline (the obsolete file removed)'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 6 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 6 and records the new bridge'
+    Check ($m.schema -eq 7 -and $m.dll.sha256 -eq (Get-Sha $dllV1)) 'the manifest is schema 7 and records the new bridge'
     Check (@($m.streamline.files | Where-Object { $_.path -like '*sl.old.dll' }).Count -eq 0 -and
         @($m.luaApp.files | Where-Object { $_.path -like '*old.lua' }).Count -eq 0) 'the manifest no longer records the obsolete files'
     $backups = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg\install\backup') -File -ErrorAction SilentlyContinue | ForEach-Object { Get-Sha $_.FullName } | Sort-Object)
@@ -2598,7 +2653,7 @@ Invoke-Case 'UP2: upgrade of a schema 1 ReShade-mode install (no Streamline, no 
     Check ((Test-SlMatches $game $slReal) -and (Test-LuaMatches $game $luaReal)) 'it adds Streamline and the Lua app'
     Check (Test-SameBytes (Read-Bytes $ini) $afterFirst) 'ReShade.ini is unchanged'
     $m = Get-Manifest $game
-    Check ($m.mode -eq 'reshade' -and $m.schema -eq 6) 'the manifest records ReShade mode, schema 6'
+    Check ($m.mode -eq 'reshade' -and $m.schema -eq 7) 'the manifest records ReShade mode, schema 7'
     $r = Invoke-PackageUninstall $pkg $game
     Check ($r.Code -eq 0 -and (Test-SameBytes (Read-Bytes $ini) $original)) 'the uninstall restores a byte-identical ReShade.ini'
 }
@@ -2749,7 +2804,7 @@ Invoke-Case 'IT1: the uninstaller in the game folder works after the package is 
     Check ($r.Code -eq 0 -and $r.Text -match 'mode: reshade') 'install exits 0 in ReShade mode'
     Check (Test-ToolsInstalled $game) '<game>\ac-dlssg holds uninstall.bat, collect-logs.bat and the scripts they run in scripts\'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 6 -and (Test-ToolsRecorded $m $game)) 'the manifest (schema 6) records each of them with its hash'
+    Check ($m.schema -eq 7 -and (Test-ToolsRecorded $m $game)) 'the manifest (schema 7) records each of them with its hash'
     Check ($r.Text -match '(?i)can be deleted' -and $r.Text -match 'ac-dlssg\\uninstall\.bat' -and $r.Text -match 'ac-dlssg\\collect-logs\.bat' -and
         $r.Text -notmatch 'tools\\(uninstall|collect-logs)\.bat') 'the install says the unpacked folder can be deleted and names the uninstall.bat and collect-logs.bat in the game folder'
     $pkgRoot = Split-Path -Parent $pkg
@@ -2838,7 +2893,7 @@ Invoke-Case 'IT4: an upgrade over a 1.0.0 install adds the tools, a later one re
     Check ($r.Code -eq 0 -and $r.Text -notmatch 'REFUSED') 'the upgrade over a 1.0.0 install exits 0'
     Check (Test-ToolsInstalled $game) 'it adds the tools'
     $m = Get-Manifest $game
-    Check ($m.schema -eq 6 -and (Test-ToolsRecorded $m $game)) 'the manifest becomes schema 6 and records them'
+    Check ($m.schema -eq 7 -and (Test-ToolsRecorded $m $game)) 'the manifest becomes schema 7 and records them'
 
     # An older build's tools: two files it recorded that differ from this
     # build's, and one that this build no longer ships.
@@ -3130,10 +3185,11 @@ Invoke-Case 'MP0: MFG-Unlocker pins, its file names and the package guard (stati
     # The package never re-hosts a third-party or NVIDIA file.
     foreach ($bad in @('files\MFGUnlocker.dll', 'files\deps\MFGUnlocker-v1.5.0.zip', 'docs\RTXMFG-Universal.json', 'files\RTX40MFG.asi',
             'files\RTXMFG.dll', 'files\ac-dlssg\mfg\version.dll', 'files\version.dll', 'files\nvngx_dlssg.dll', 'files\sl.interposer.dll',
-            'files\dlssg_sm86.ini', 'scripts\x.asi')) {
+            'files\dlssg_sm86.ini', 'scripts\x.asi', 'files\ac-dlssg-drs.exe', 'files\deps\x.exe', 'scripts\ac-dlssg-drs.exe')) {
         Check (Test-RehostedFile $bad) "the package guard refuses $bad"
     }
-    foreach ($good in @('files\ac-dlssg.dll', 'files\apps\lua\AcDlssg\AcDlssg.lua', 'docs\README.md', 'scripts\fetch-deps.ps1')) {
+    foreach ($good in @('files\ac-dlssg.dll', 'files\apps\lua\AcDlssg\AcDlssg.lua', 'docs\README.md', 'scripts\fetch-deps.ps1',
+            'files\ac-dlssg\ac-dlssg-drs.exe')) {
         Check (-not (Test-RehostedFile $good)) "the package guard lets $good through"
     }
 }
@@ -3159,7 +3215,7 @@ Invoke-Case 'MP1: RTX 40: MFG-Unlocker is fetched, verified, installed into ac-d
         -not (Test-Path -LiteralPath (Join-Path $pkg 'files\deps\download'))) 'the zip is not kept'
     $m = Get-Manifest $game
     $rec = Get-MfgRecord $m
-    Check ($m.schema -eq 6 -and $rec) 'the manifest (schema 6) has an mfgUnlocker record'
+    Check ($m.schema -eq 7 -and $rec) 'the manifest (schema 7) has an mfgUnlocker record'
     if ($rec) {
         Check ($rec.project -eq 'MFG-Unlocker' -and $rec.version -eq '1.5.0-hotfix.1' -and $rec.repository -eq 'dashdogy/MFG-Unlocker' -and
             $rec.tag -eq 'v1.5.0-hotfix.1' -and $rec.asset -eq 'MFGUnlocker-v1.5.0-hotfix.1.zip' -and
@@ -3389,7 +3445,7 @@ Invoke-Case 'MP9: upgrades: a schema 5 install gets MFG-Unlocker; a pin bump rep
     [void]$m.PSObject.Properties.Remove('mfgUnlocker')
     Set-Manifest $game $m
     $r = Invoke-PackageInstall $pkg $game (Get-MfgArgs '10DE:2684')
-    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and (Get-Manifest $game).schema -eq 6) 'over a schema 5 manifest: MFG-Unlocker is installed, the manifest becomes schema 6'
+    Check ($r.Code -eq 0 -and (Test-MfgInstalled $game) -and (Get-Manifest $game).schema -eq 7) 'over a schema 5 manifest: MFG-Unlocker is installed, the manifest becomes schema 7'
     # The earlier pin, v1.5.0, as the 1.2.0 test build installed it: the
     # recorded hash is the file's, so the new pin (v1.5.0-hotfix.1) replaces it.
     $old = Join-Path $FakeRoot 'mfg\old\MFGUnlocker.dll'
@@ -3524,6 +3580,324 @@ Invoke-Case 'MP14: the Nexus page credits MFG-Unlocker and names its download in
     Check ($links.Count -eq 3 -and @($links | Where-Object { $_ -ne $version }).Count -eq 0) "its license, exceptions and source links name v$version ($($links -join ', '))"
     $missing = @($script:AcdbMfgGameFiles | Where-Object { -not $text.Contains($_) })
     Check ($missing.Count -eq 0) "the page names $($script:AcdbMfgGameFiles -join ', ') (missing: $($missing -join ', '))"
+}
+
+# ---------------------------------------------------------------------------
+# NVIDIA Smooth Motion (GitHub issue 10): on RTX 40 and 50 the package
+# install turns it off for Assetto Corsa with the driver-profile helper, and
+# the uninstall restores it. The helper is a stand-in here, never the real
+# ac-dlssg-drs.exe: a .ps1 that install.ps1 and dev-uninstall.ps1 run
+# without elevation (-DrsHelper), whose driver settings are state.json next
+# to it and which logs each call in calls.txt.
+
+$fakeDrsScript = @'
+# A stand-in for ac-dlssg-drs.exe (tools\test-dev-scripts.ps1): the driver
+# settings are state.json next to it (profile: the profile that holds
+# acs.exe, empty for none; app and global: their values of 0xB0CC0875, null
+# for not set; saveFails: admin, error or empty; noDriver), and each call is
+# a line of calls.txt. Its JSON results and exit codes are those of
+# src/drs_tool.h.
+$ErrorActionPreference = 'Stop'
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$statePath = Join-Path $PSScriptRoot 'state.json'
+$state = [IO.File]::ReadAllText($statePath, $utf8) | ConvertFrom-Json
+[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.txt'), (($args -join ' ') + "`r`n"), $utf8)
+$cmd = if ($args.Count -ge 2) { [string]$args[1] } else { '' }
+$opt = @{}
+for ($i = 2; $i + 1 -lt $args.Count; $i += 2) { $opt[[string]$args[$i]] = [string]$args[$i + 1] }
+$lines = New-Object System.Collections.Generic.List[string]
+$lines.Add("fake ac-dlssg-drs: smooth-motion $cmd")
+function Val($v) {
+    if ($null -eq $v) { return [ordered]@{ present = $false; value = $null; predefined = $false } }
+    return [ordered]@{ present = $true; value = [long]$v; predefined = $false }
+}
+function Done([int]$Code, $Json) {
+    if ($Json -and $opt['--json'] -and $cmd -ne 'restore') { [IO.File]::WriteAllText($opt['--json'], ($Json | ConvertTo-Json -Depth 5), $utf8) }
+    if ($opt['--log']) { [IO.File]::WriteAllText($opt['--log'], (($lines -join "`r`n") + "`r`n"), $utf8) }
+    exit $Code
+}
+function Save { [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json), $utf8) }
+if ($state.noDriver) {
+    $lines.Add('the NVIDIA driver settings could not be read: the fake has no driver')
+    Done 2 ([ordered]@{ command = $cmd; result = 'no-driver'; exitCode = 2 })
+}
+if ($cmd -eq 'restore') {
+    try { $rec = [IO.File]::ReadAllText($opt['--json'], $utf8) | ConvertFrom-Json } catch { $lines.Add('no record'); Done 7 $null }
+    if (-not $state.profile -or [string]$rec.profile -ne [string]$state.profile) { $lines.Add('nothing to restore: the profile is gone'); Done 3 $null }
+    if ($null -eq $state.app -or [long]$state.app -ne [long]$rec.written) { $lines.Add("left as it is: $($state.app)"); Done 6 $null }
+    if ($state.saveFails -eq 'admin') { $lines.Add('not restored: needs administrator rights'); Done 4 $null }
+    $state.app = if ($rec.before.present) { [long]$rec.before.value } else { $null }
+    Save
+    $lines.Add("restored: $($state.app)")
+    Done 0 $null
+}
+if (-not $state.profile) {
+    $lines.Add('no NVIDIA driver profile holds acs.exe')
+    Done 3 ([ordered]@{ command = $cmd; result = 'no-profile'; exitCode = 3; profile = $null })
+}
+$effective = 7
+$source = 'default'
+if ($null -ne $state.app) { $effective = [long]$state.app; $source = 'app' } elseif ($null -ne $state.global) { $effective = [long]$state.global; $source = 'global' }
+$write = ($effective -band 2) -ne 0
+$value = $effective -band (-bnot [long]2)
+$json = [ordered]@{ tool = 'ac-dlssg-drs fake'; command = $cmd; result = 'read'; exitCode = 0; exe = $opt['--exe']; profile = [string]$state.profile; settingId = '0xB0CC0875' }
+$json[$(if ($cmd -eq 'off') { 'before' } else { 'app' })] = Val $state.app
+$json.global = Val $state.global
+$json.effective = $effective
+$json.source = $source
+$json.plan = [ordered]@{ action = $(if ($write) { 'write' } else { 'none' }); value = $(if ($write) { $value } else { $null }) }
+if ($cmd -eq 'status') { Done 0 $json }
+$json.written = $null
+$json.after = $null
+if (-not $write) { $json.result = 'unchanged'; $lines.Add('nothing to change'); Done 0 $json }
+if ($state.saveFails) {
+    $code = if ($state.saveFails -eq 'admin') { 4 } else { 5 }
+    $json.result = if ($code -eq 4) { 'needs-admin' } else { 'failed' }
+    $json.exitCode = $code
+    $lines.Add("not changed: $($state.saveFails)")
+    Done $code $json
+}
+$state.app = $value
+Save
+$json.result = 'written'
+$json.written = $value
+$json.after = Val $value
+$lines.Add("wrote $value")
+Done 0 $json
+'@
+
+# A stand-in helper of its own for one case, with its driver settings.
+function New-FakeDrs([string]$Name, $App = $null, $GlobalApis = $null, [string]$Profile = 'Assetto Corsa', [string]$SaveFails = '',
+    [switch]$NoDriver) {
+    $dir = Join-Path $FakeRoot "drs\$Name"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $path = Join-Path $dir 'ac-dlssg-drs.ps1'
+    Write-Text $path $fakeDrsScript
+    Set-FakeDrsState $path ([ordered]@{ profile = $Profile; app = $App; global = $GlobalApis; saveFails = $SaveFails; noDriver = [bool]$NoDriver })
+    return $path
+}
+function Get-FakeDrsState([string]$Fake) { return Read-Manifest (Join-Path (Split-Path -Parent $Fake) 'state.json') }
+function Set-FakeDrsState([string]$Fake, $State) { Write-Text (Join-Path (Split-Path -Parent $Fake) 'state.json') ($State | ConvertTo-Json) }
+# The commands the helper ran, in order: "status,off".
+function Get-FakeDrsCalls([string]$Fake) {
+    $p = Join-Path (Split-Path -Parent $Fake) 'calls.txt'
+    if (-not (Test-Path -LiteralPath $p)) { return '' }
+    return (@([IO.File]::ReadAllLines($p) | Where-Object { $_ } | ForEach-Object { ($_ -split ' ')[1] }) -join ',')
+}
+function Get-DrsArgs([string]$Gpu, [string]$Fake) { return @('-GpuDeviceIds', $Gpu, '-NoSpoof', '-NoMfgUnlocker', '-DrsHelper', $Fake) }
+function Get-DrsRecord([string]$Game) {
+    if (-not (Test-Path -LiteralPath (Get-ManifestPath $Game))) { return $null }
+    return Get-ManifestDriverProfile (Get-Manifest $Game)
+}
+
+$smNoticePatterns = @('driver''s own frame generation', 'takes over the game''s window', 'even when the NVIDIA App shows it off',
+    'turns it off for Assetto Corsa only', '0xB0CC0875', 'DX11 bit', 'restores it on uninstall', 'install\.bat -KeepSmoothMotion')
+
+Invoke-Case 'DR0: the helper as a tool, the package guard, the RTX 40/50 test and the texts (static)' {
+    Check (Test-ToolRelPath 'ac-dlssg\ac-dlssg-drs.exe') 'ac-dlssg\ac-dlssg-drs.exe is a tool'
+    Check (-not (Test-ToolRelPath 'ac-dlssg\other.exe') -and -not (Test-ToolRelPath 'ac-dlssg\mfg\ac-dlssg-drs.exe')) 'no other program is'
+    Check (@(Test-DrsHelperExe $drsFakeExe).Count -eq 0) 'an x64 program that imports only KERNEL32.dll passes the helper check'
+    Check ((@(Test-DrsHelperExe $dllV1) -match 'a DLL').Count -eq 1) 'a DLL is refused as the helper'
+    $user32 = Join-Path $fakeBuild 'user32\ac-dlssg-drs.exe'
+    New-FakePeDll $user32 @() -Salt '-u32' -Imports @('KERNEL32.dll', 'USER32.dll') -Exe
+    Check ((@(Test-DrsHelperExe $user32) -match 'USER32').Count -eq 1) 'a helper that imports USER32.dll is refused'
+    foreach ($c in @(@('10DE:2684', $true), @('10DE:2B85', $true), @('8086:9A49,10DE:2684', $true), @('10DE:2206,10DE:2B85', $true),
+            @('10DE:2206', $false), @('8086:9A49', $false), @('10DE:1E84=NVIDIA GeForce RTX 2070 SUPER', $false))) {
+        Check ((Test-SmoothMotionGpu (Get-GpuAdapters $c[0])) -eq $c[1]) "Smooth Motion GPU for $($c[0]): $($c[1])"
+    }
+    Check ((Format-SmoothMotionValue ([pscustomobject]@{ present = $false; value = $null })) -eq 'not set') 'an absent value is "not set"'
+    Check ((Format-SmoothMotionValue ([pscustomobject]@{ present = $true; value = 7 })) -eq '7 (DX12, DX11, Vulkan)') '7 is DX12, DX11, Vulkan'
+    Check ((Format-SmoothMotionValue ([pscustomobject]@{ present = $true; value = 5 })) -eq '5 (DX12, Vulkan)') '5 is DX12, Vulkan'
+    $byHand = Get-SmoothMotionManualRestore ([pscustomobject]@{ profile = 'Assetto Corsa'; before = [pscustomobject]@{ present = $false } })
+    Check ($byHand -match 'NVIDIA Profile Inspector' -and $byHand -match '"Assetto Corsa"' -and $byHand -match '0xB0CC0875' -and $byHand -match 'Delete user-defined value') "the steps by hand for a setting the install created ($byHand)"
+    $byHand = Get-SmoothMotionManualRestore ([pscustomobject]@{ profile = 'Assetto Corsa'; before = [pscustomobject]@{ present = $true; value = 7 } })
+    Check ($byHand -match 'set it back to 7') "and for one it changed ($byHand)"
+    $out = Join-Path $FakeRoot 'package-badhelper'
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $text = @(& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $packageScript -Dll $dllV1 -DrsHelper $dllV1 `
+                -OutDir $out -Version '9.8.7' 2>&1 | ForEach-Object { "$_" }) -join "`n"
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $eap
+    }
+    Check ($code -ne 0 -and $text -match 'cannot be packaged') 'make-test-package refuses a DLL as the driver-profile helper'
+    $install = [IO.File]::ReadAllText((Join-Path $tools 'package\install.ps1'))
+    Check ($install -match '\.PARAMETER KeepSmoothMotion' -and $install -notmatch '\.PARAMETER SmoothMotionAnyGpu') 'install.ps1 documents -KeepSmoothMotion; -SmoothMotionAnyGpu is only in a developer note'
+}
+
+Invoke-Case 'DR1: RTX 40: the notice, the change and its record; a re-run keeps them; the uninstall restores it' {
+    $pkg = New-PackageCopy 'DR1'
+    $game = New-FakeGame 'DR1' -NoDxgi
+    $fake = New-FakeDrs 'DR1'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0) 'install.ps1 exits 0'
+    foreach ($p in $smNoticePatterns) { Check ($r.Text -match $p) "the notice says $p" }
+    Check ((Get-FakeDrsCalls $fake) -eq 'status,off') "the helper reads, then changes ($(Get-FakeDrsCalls $fake))"
+    Check ((Get-FakeDrsState $fake).app -eq 5) 'the "Assetto Corsa" profile gets 5 (DX12, Vulkan)'
+    $m = Get-Manifest $game
+    $rec = Get-ManifestDriverProfile $m
+    Check ($m.schema -eq 7 -and $rec) 'the manifest (schema 7) records the change'
+    Check ($rec -and $rec.profile -eq 'Assetto Corsa' -and $rec.settingId -eq '0xB0CC0875' -and -not $rec.before.present -and
+        [long]$rec.written -eq 5 -and $rec.writtenUtc) 'driverProfile: the profile, the setting, before (not set), written 5, when'
+    Check ($r.Text -match 'NVIDIA Smooth Motion: turned off for Assetto Corsa' -and $r.Text -match 'uninstall\.bat restores it') 'it says what it did, and that the uninstall restores it'
+    Check ($r.Text -match 'administrator rights') 'it says that Windows asks for administrator rights'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0 -and $r.Text -match 'off for Assetto Corsa since an earlier install') 'a re-run finds it off since the earlier install'
+    Check ((Get-FakeDrsCalls $fake) -eq 'status,off,status') 'and only reads'
+    $rec = Get-DrsRecord $game
+    Check ($rec -and -not $rec.before.present -and [long]$rec.written -eq 5) 'the first record stays, with its "before"'
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: restored') 'the uninstall restores it'
+    Check ($null -eq (Get-FakeDrsState $fake).app) 'the setting the install created is gone again'
+    Check ((Get-FakeDrsCalls $fake) -eq 'status,off,status,status,restore') 'the uninstall reads, then restores'
+    Check (-not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'the manifest is gone'
+}
+
+Invoke-Case 'DR2: an app value of its own over a global one: written over, and written back' {
+    $pkg = New-PackageCopy 'DR2'
+    $game = New-FakeGame 'DR2' -NoDxgi
+    $fake = New-FakeDrs 'DR2' -App 7 -GlobalApis 5
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2B85' $fake)
+    Check ($r.Code -eq 0 -and (Get-FakeDrsState $fake).app -eq 5) 'RTX 50: the app profile''s 7 becomes 5'
+    $rec = Get-DrsRecord $game
+    Check ($rec -and $rec.before.present -and [long]$rec.before.value -eq 7 -and [long]$rec.written -eq 5) 'the record has the old 7'
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and (Get-FakeDrsState $fake).app -eq 7 -and $r.Text -match 'Enabled APIs in "Assetto Corsa" is 7 again') 'the uninstall writes 7 back'
+}
+
+Invoke-Case 'DR3: a declined Windows prompt is a warning; the install goes on and records nothing' {
+    $pkg = New-PackageCopy 'DR3'
+    $game = New-FakeGame 'DR3' -NoDxgi
+    $fake = New-FakeDrs 'DR3'
+    $r = Invoke-PackageInstall $pkg $game ((Get-DrsArgs '10DE:2684' $fake) + '-DrsDeclineUac')
+    Check ($r.Code -eq 0) 'install.ps1 exits 0'
+    Check ($r.Text -match 'WARNING: NVIDIA Smooth Motion was not turned off: the Windows prompt for administrator rights was declined') 'it warns that the prompt was declined'
+    Check ($r.Text -match 'mode: standalone' -and (Test-SlMatches $game $slReal) -and (Test-ToolsInstalled $game)) 'everything else is installed'
+    Check ($r.Text -match 'installed\. Nothing in the game folder needs this unpacked folder') 'and the install ends as usual'
+    Check (-not (Get-DrsRecord $game)) 'no driver profile change is recorded'
+    Check ($null -eq (Get-FakeDrsState $fake).app -and (Get-FakeDrsCalls $fake) -eq 'status') 'the helper only read'
+    $r = Invoke-PackageUninstall $pkg $game
+    Check ($r.Code -eq 0 -and (Get-FakeDrsCalls $fake) -eq 'status') 'the uninstall has nothing to restore'
+}
+
+Invoke-Case 'DR4: -KeepSmoothMotion skips the step and keeps an earlier record, which the uninstall still restores' {
+    $pkg = New-PackageCopy 'DR4'
+    $game = New-FakeGame 'DR4' -NoDxgi
+    $fake = New-FakeDrs 'DR4'
+    $r = Invoke-PackageInstall $pkg $game ((Get-DrsArgs '10DE:2684' $fake) + '-KeepSmoothMotion')
+    Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: skipped \(-KeepSmoothMotion\)') '-KeepSmoothMotion: skipped'
+    Check ((Get-FakeDrsCalls $fake) -eq '' -and -not (Get-DrsRecord $game)) 'the helper is not run, nothing recorded'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0 -and (Get-DrsRecord $game)) 'without it the next install turns Smooth Motion off'
+    $r = Invoke-PackageInstall $pkg $game ((Get-DrsArgs '10DE:2684' $fake) + '-KeepSmoothMotion')
+    Check ($r.Code -eq 0 -and $r.Text -match 'stays recorded; uninstall\.bat restores it' -and (Get-DrsRecord $game)) 'then -KeepSmoothMotion keeps the record (dev-install.ps1 carries it over)'
+    Check ((Get-FakeDrsState $fake).app -eq 5 -and (Get-FakeDrsCalls $fake) -eq 'status,off') 'and does not touch the driver profile'
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $null -eq (Get-FakeDrsState $fake).app) 'the uninstall restores it'
+}
+
+Invoke-Case 'DR5: no RTX 40 or 50: nothing is read or changed; -SmoothMotionAnyGpu (a developer switch) runs the step anyway' {
+    $pkg = New-PackageCopy 'DR5'
+    $i = 0
+    foreach ($gpu in @('10DE:2206', '8086:9A49', '10DE:1E84=NVIDIA GeForce RTX 2070 SUPER', '10DE:1F82')) {
+        $i++
+        $game = New-FakeGame "DR5-$i" -NoDxgi
+        $fake = New-FakeDrs "DR5-$i"
+        $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs $gpu $fake)
+        Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: not checked; it runs only on RTX 40 and RTX 50') "$gpu`: not checked"
+        Check ((Get-FakeDrsCalls $fake) -eq '' -and -not (Get-DrsRecord $game)) "$gpu`: the helper is not run, nothing recorded"
+    }
+    $game = New-FakeGame 'DR5-dev' -NoDxgi
+    $fake = New-FakeDrs 'DR5-dev'
+    $r = Invoke-PackageInstall $pkg $game ((Get-DrsArgs '10DE:2206' $fake) + '-SmoothMotionAnyGpu')
+    Check ($r.Code -eq 0 -and $r.Text -match 'developer test \(-SmoothMotionAnyGpu\)') 'RTX 30 with -SmoothMotionAnyGpu: the step runs and says why'
+    Check ((Get-FakeDrsState $fake).app -eq 5 -and (Get-DrsRecord $game)) 'and changes and records as on an RTX 40'
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $null -eq (Get-FakeDrsState $fake).app) 'the uninstall restores it there too'
+}
+
+Invoke-Case 'DR6: a value changed since the install is left as it is, without asking for administrator rights' {
+    $pkg = New-PackageCopy 'DR6'
+    $game = New-FakeGame 'DR6' -NoDxgi
+    $fake = New-FakeDrs 'DR6'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0 -and (Get-DrsRecord $game)) 'installed, Smooth Motion off'
+    $state = Get-FakeDrsState $fake
+    $state.app = 7
+    Set-FakeDrsState $fake $state
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake, '-DrsDeclineUac')
+    Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: left as it is' -and $r.Text -match 'changed since') 'the uninstall leaves the 7 and says why'
+    Check ((Get-FakeDrsState $fake).app -eq 7 -and (Get-FakeDrsCalls $fake) -eq 'status,off,status') 'the helper only read: no prompt (it would have been declined)'
+    Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'the rest is uninstalled'
+}
+
+Invoke-Case 'DR7: a failed helper or one that finds nothing to do is a note; the install goes on' {
+    $pkg = New-PackageCopy 'DR7'
+    $cases = @(
+        @{ Name = 'admin'; Fake = @{ SaveFails = 'admin' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: saving the driver settings needs administrator rights'; Calls = 'status,off' },
+        @{ Name = 'error'; Fake = @{ SaveFails = 'error' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: the driver settings could not be changed'; Calls = 'status,off' },
+        @{ Name = 'global'; Fake = @{ GlobalApis = 5 }; Says = 'NVIDIA Smooth Motion: already kept away from Assetto Corsa .*from the global profile, without DX11\); nothing to change'; Calls = 'status' },
+        @{ Name = 'nodriver'; Fake = @{ NoDriver = $true }; Says = 'WARNING: NVIDIA Smooth Motion was not checked: the NVIDIA driver settings could not be read'; Calls = 'status' },
+        @{ Name = 'noprofile'; Fake = @{ Profile = '' }; Says = 'WARNING: NVIDIA Smooth Motion was not checked: no NVIDIA driver profile holds'; Calls = 'status' }
+    )
+    foreach ($c in $cases) {
+        $game = New-FakeGame "DR7-$($c.Name)" -NoDxgi
+        $f = $c.Fake
+        $fake = New-FakeDrs "DR7-$($c.Name)" @f
+        $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+        Check ($r.Code -eq 0 -and $r.Text -match $c.Says) "$($c.Name): it says so ($($c.Says))"
+        Check ((Get-FakeDrsCalls $fake) -eq $c.Calls -and -not (Get-DrsRecord $game)) "$($c.Name): the helper ran $($c.Calls), nothing recorded"
+        Check ((Test-SlMatches $game $slReal) -and (Test-ToolsInstalled $game)) "$($c.Name): everything else is installed"
+    }
+    $game = New-FakeGame 'DR7-missing' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' (Join-Path $FakeRoot 'drs\missing\ac-dlssg-drs.ps1'))
+    Check ($r.Code -eq 0 -and $r.Text -match 'WARNING: NVIDIA Smooth Motion was not checked: the driver-profile helper .* is missing') 'a missing helper is a warning'
+}
+
+Invoke-Case 'DR8: a declined prompt at the uninstall is a warning with the steps by hand; the uninstall goes on' {
+    $pkg = New-PackageCopy 'DR8'
+    $game = New-FakeGame 'DR8' -NoDxgi
+    $fake = New-FakeDrs 'DR8'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0 -and (Get-DrsRecord $game)) 'installed, Smooth Motion off'
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake, '-DrsDeclineUac')
+    Check ($r.Code -eq 0) 'uninstall.ps1 exits 0'
+    Check ($r.Text -match 'WARNING: NVIDIA Smooth Motion was not restored: the Windows prompt for administrator rights was declined') 'it warns that the prompt was declined'
+    Check ($r.Text -match 'NVIDIA Profile Inspector' -and $r.Text -match 'Delete user-defined value') 'and says how to restore it by hand'
+    Check ((Get-FakeDrsState $fake).app -eq 5) 'the driver profile is as the install left it'
+    Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game)) -and -not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'the rest is uninstalled'
+}
+
+Invoke-Case 'DR9: the uninstaller in the game folder restores it with the helper there, then removes the helper with itself' {
+    $pkg = New-PackageCopy 'DR9'
+    $game = New-FakeGame "DR9 $cyrName & co" -NoDxgi
+    $fake = New-FakeDrs 'DR9'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0 -and (Get-DrsRecord $game) -and (Test-ToolsInstalled $game)) 'installed with the tools, the helper among them'
+    Check ([string](Get-DrsRecord $game).exe -eq (Join-Path $game 'acs.exe')) 'the record names the game''s acs.exe (Cyrillic and & in its path)'
+    Check (Remove-PackageFolder $pkg) 'the unpacked package is deleted'
+    $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate', '-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: restored') '<game>\ac-dlssg\uninstall.bat restores it'
+    Check ($null -eq (Get-FakeDrsState $fake).app) 'the setting is gone again'
+    Check (Test-NoTools $game) 'the tools, the helper among them, are gone'
+}
+
+Invoke-Case 'DR10: an upgrade of a schema 6 install becomes schema 7 and gets the step' {
+    $pkg = New-PackageCopy 'DR10'
+    $game = New-FakeGame 'DR10' -NoDxgi
+    $fake = New-FakeDrs 'DR10'
+    $r = Invoke-PackageInstall $pkg $game ((Get-DrsArgs '10DE:2684' $fake) + '-KeepSmoothMotion')
+    $m = Get-Manifest $game
+    $m.schema = 6
+    $m.PSObject.Properties.Remove('driverProfile')
+    Set-Manifest $game $m
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    $m = Get-Manifest $game
+    Check ($r.Code -eq 0 -and $m.schema -eq 7 -and (Get-ManifestDriverProfile $m)) 'the manifest becomes schema 7 with the record'
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $null -eq (Get-FakeDrsState $fake).app) 'and the uninstall restores it'
 }
 
 # ---------------------------------------------------------------------------

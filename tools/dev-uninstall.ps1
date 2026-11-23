@@ -51,10 +51,22 @@
   -MfgRemove, which install.bat -NoMfgUnlocker and a GPU change use), and no
   other copy of it is left in the game folder.
 
+  After the bridge is gone (both modes) and before the other files, when the
+  package install turned NVIDIA Smooth Motion off for
+  Assetto Corsa (the manifest's driverProfile, schema 7), the driver-profile
+  helper it put into <game>\ac-dlssg (ac-dlssg-drs.exe, while it is the
+  version installed) restores that: it reads the profile without
+  administrator rights, and only while "Smooth Motion - Enabled APIs"
+  (0xB0CC0875) there still holds the value the install wrote does it delete
+  the setting (it had none before) or write the old value back, with
+  administrator rights (Windows asks, UAC). Changed since, it is left as it
+  is and said so; a declined prompt or a failed helper is a warning with
+  the steps to do it by hand, and the uninstall goes on.
+
   Last come the uninstaller and the log collector that the package install
   put into <game>\ac-dlssg (the manifest's tools: uninstall.bat,
-  collect-logs.bat and scripts\), each only if it is the version installed,
-  then scripts\ when it is empty; not with -KeepTools.
+  collect-logs.bat, ac-dlssg-drs.exe and scripts\), each only if it is the
+  version installed, then scripts\ when it is empty; not with -KeepTools.
 
 .PARAMETER GameDir
   The Assetto Corsa folder (the one with acs.exe). Default: found through
@@ -74,6 +86,18 @@
   with -RemoveData. The copy of uninstall.ps1 in <game>\ac-dlssg\scripts
   passes it: that copy is one of them and removes them itself at its end.
 
+.PARAMETER NoElevate
+  For tests: the restore of the driver profile does not ask Windows for
+  administrator rights (it warns instead when it would need them).
+
+.PARAMETER DrsHelper
+  For tests: a stand-in for the driver-profile helper, a .ps1 that runs in
+  this console and is never elevated.
+
+.PARAMETER DrsDeclineUac
+  For tests: the restore acts as if the Windows prompt for administrator
+  rights was declined.
+
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\dev-uninstall.ps1
 #>
@@ -81,7 +105,10 @@ param(
     [string]$GameDir,
     [switch]$RemoveData,
     [switch]$Force,
-    [switch]$KeepTools
+    [switch]$KeepTools,
+    [switch]$NoElevate,
+    [string]$DrsHelper,
+    [switch]$DrsDeclineUac
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,6 +117,74 @@ Set-StrictMode -Version 2.0
 
 function Say([string]$Message) { Write-Host "dev-uninstall: $Message" }
 function Step([string]$Message) { Write-Host "  $Message" }
+
+# NVIDIA Smooth Motion back as it was before the package install (see the
+# description). Never throws: every problem is a warning, and the uninstall
+# goes on.
+function Restore-SmoothMotion([string]$Game, $Manifest) {
+    $rec = Get-ManifestDriverProfile $Manifest
+    if (-not $rec) { return }
+    $byHand = Get-SmoothMotionManualRestore $rec
+    $helperRel = "$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)"
+    $helper = if ($DrsHelper) { $DrsHelper } else { Join-Path $Game $helperRel }
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        Step "WARNING: NVIDIA Smooth Motion was not restored: the driver-profile helper $helper is missing. To restore it by hand: $byHand."
+        return
+    }
+    # Run elevated only while it is the file the install put there.
+    if (-not $DrsHelper) {
+        $tool = @()
+        if ($Manifest.PSObject.Properties['tools'] -and $Manifest.tools) { $tool = @($Manifest.tools.files | Where-Object { [string]$_.path -ieq $helperRel }) }
+        if ($tool.Count -ne 1 -or (Get-Sha256OfFile $helper) -ne [string]$tool[0].sha256) {
+            Step "WARNING: NVIDIA Smooth Motion was not restored: $helper is not the driver-profile helper the install put there. To restore it by hand: $byHand."
+            return
+        }
+    }
+    $acs = if ($rec.exe) { [string]$rec.exe } else { Join-Path $Game $script:AcdbGameExe }
+    $work = $null
+    try {
+        $work = New-DrsWorkDir
+        # Read without administrator rights first: a value changed since
+        # needs no prompt to be left alone.
+        $statusJson = Join-Path $work 'status.json'
+        $run = Invoke-DrsHelper $helper @('smooth-motion', 'status', '--exe', $acs, '--json', $statusJson) $work
+        $status = Read-DrsJson $statusJson
+        if ($run.Code -eq $script:AcdbDrsExit.Ok -and $status -and [string]$status.profile -eq [string]$rec.profile -and
+            -not ($status.app -and $status.app.present -and [long]$status.app.value -eq [long]$rec.written)) {
+            Step ("NVIDIA Smooth Motion: left as it is: Smooth Motion - Enabled APIs in the `"$($rec.profile)`" profile is " +
+                "$(Format-SmoothMotionValue $status.app) now, not the $([long]$rec.written) the install wrote; it was changed since.")
+            return
+        }
+        $recordJson = Join-Path $work 'record.json'
+        Write-Utf8NoBom $recordJson ($rec | ConvertTo-Json -Depth 5)
+        Step "NVIDIA Smooth Motion: restoring the `"$($rec.profile)`" driver profile as it was before the install; Windows asks for administrator rights for this one change."
+        try {
+            $run = Invoke-DrsHelper $helper @('smooth-motion', 'restore', '--json', $recordJson) $work -Elevate -NoElevate:$NoElevate -DeclineUac:$DrsDeclineUac
+        } catch {
+            Step "WARNING: NVIDIA Smooth Motion was not restored: $(Get-DrsStartFailure $_). To restore it by hand: $byHand."
+            return
+        }
+        foreach ($line in $run.Log) { Step "  $line" }
+        if ($run.Code -eq $script:AcdbDrsExit.Ok) {
+            $was = if ($rec.before -and $rec.before.present) {
+                "Smooth Motion - Enabled APIs in `"$($rec.profile)`" is $([long]$rec.before.value) again"
+            } else {
+                "the install's Smooth Motion - Enabled APIs value is gone from `"$($rec.profile)`" again (the profile had none of its own)"
+            }
+            Step "NVIDIA Smooth Motion: restored: $was."
+        } elseif ($run.Code -eq $script:AcdbDrsExit.Changed) {
+            Step "NVIDIA Smooth Motion: left as it is: the setting was changed since the install (see above)."
+        } elseif ($run.Code -eq $script:AcdbDrsExit.NoProfile) {
+            Step "NVIDIA Smooth Motion: nothing to restore: the driver profile `"$($rec.profile)`" is gone."
+        } else {
+            Step "WARNING: NVIDIA Smooth Motion was not restored: $(Get-DrsExitText $run.Code $acs) (see above). To restore it by hand: $byHand."
+        }
+    } catch {
+        Step "WARNING: NVIDIA Smooth Motion was not restored: $($_.Exception.Message). To restore it by hand: $byHand."
+    } finally {
+        if ($work -and (Test-Path -LiteralPath $work)) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
 
 $exitCode = 0
 $game = $null
@@ -211,6 +306,10 @@ try {
             Step "$target is already gone"
         }
     }
+
+    # 3b. The driver profile: past every refusal above, and while the helper
+    #     is still there (the tools go in 4d).
+    Restore-SmoothMotion $game $manifest
 
     # 4. The Streamline files, each only while it is the version installed.
     if ($manifest.PSObject.Properties['streamline'] -and $manifest.streamline) {

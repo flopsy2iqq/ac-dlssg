@@ -12,7 +12,10 @@
   The zip must be named ac-dlssg-<Version>.zip. The DLL's SHA-256 is that of
   <folder>/files/ac-dlssg.dll inside the zip, the file the installer puts
   into the game; with -Dll, that file must have the same SHA-256 (the
-  release workflow attests the build's ac-dlssg.dll next to the zip).
+  release workflow attests the build's ac-dlssg.dll next to the zip). When
+  the zip holds the driver-profile helper
+  <folder>/files/ac-dlssg/ac-dlssg-drs.exe (1.3.0 and later), its SHA-256 is
+  listed too, and -Helper must match it the same way.
 
   Without -Zip it only checks that the section exists and is not empty, and
   prints it; CI runs it that way on every push. With -Tag the tag must be
@@ -31,6 +34,10 @@
 
 .PARAMETER Dll
   The bridge DLL that is attested next to the zip.
+
+.PARAMETER Helper
+  The driver-profile helper ac-dlssg-drs.exe that is attested next to the
+  zip; the zip must hold it.
 
 .PARAMETER OutFile
   Where the notes go (UTF-8 without BOM). Default:
@@ -56,6 +63,7 @@ param(
     [string]$Tag,
     [string]$Zip,
     [string]$Dll,
+    [string]$Helper,
     [string]$OutFile,
     [string]$Changelog,
     [string]$CMakeLists,
@@ -121,12 +129,19 @@ try {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $entryName = "ac-dlssg-$Version/files/ac-dlssg.dll"
+    $helperEntryName = "ac-dlssg-$Version/files/ac-dlssg/ac-dlssg-drs.exe"
+    $helperSha = $null
     $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
     try {
         $entry = @($archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $entryName })
         if ($entry.Count -ne 1) { throw "$zipName holds no $entryName" }
         $stream = $entry[0].Open()
         try { $dllSha = Get-Sha256OfStream $stream } finally { $stream.Dispose() }
+        $helperEntry = @($archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $helperEntryName })
+        if ($helperEntry.Count -eq 1) {
+            $stream = $helperEntry[0].Open()
+            try { $helperSha = Get-Sha256OfStream $stream } finally { $stream.Dispose() }
+        }
     } finally {
         $archive.Dispose()
     }
@@ -135,6 +150,14 @@ try {
         $given = (Get-FileHash -Algorithm SHA256 -LiteralPath $Dll).Hash.ToLowerInvariant()
         if ($given -ne $dllSha) { throw "$Dll (SHA-256 $given) differs from $entryName in the zip ($dllSha)" }
     }
+    if ($Helper) {
+        if (-not (Test-Path -LiteralPath $Helper -PathType Leaf)) { throw "helper not found: $Helper" }
+        if (-not $helperSha) { throw "$zipName holds no $helperEntryName" }
+        $given = (Get-FileHash -Algorithm SHA256 -LiteralPath $Helper).Hash.ToLowerInvariant()
+        if ($given -ne $helperSha) { throw "$Helper (SHA-256 $given) differs from $helperEntryName in the zip ($helperSha)" }
+    }
+    $helperRow = @()
+    if ($helperSha) { $helperRow = @("| ``ac-dlssg-drs.exe`` (``files\ac-dlssg\ac-dlssg-drs.exe`` in the zip) | ``$helperSha`` |") }
 
     $notes = @(
         $section
@@ -145,8 +168,9 @@ try {
         '|---|---|'
         "| ``$zipName`` | ``$zipSha`` |"
         "| ``ac-dlssg.dll`` (``files\ac-dlssg.dll`` in the zip) | ``$dllSha`` |"
+        $helperRow
         ''
-        'Both files have a GitHub build provenance attestation from the release workflow of this repository.'
+        "$(if ($helperSha) { 'These files have' } else { 'Both files have' }) a GitHub build provenance attestation from the release workflow of this repository."
         'The installed bridge is the same file, so it verifies too: <game>\ac-dlssg.dll in ReShade mode, <game>\dxgi.dll in standalone mode.'
         ''
         "Verify with: ``gh attestation verify <file> --repo $Repo``"
