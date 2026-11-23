@@ -121,6 +121,23 @@ TEST(DrsExe_StatusWritesItsResultAndItsLog) {
     CHECK_EQ(ReadAll(log), r.out);
 }
 
+// Review finding A-3: a reader that holds the --json file open (a virus
+// scanner, an indexer) does not keep the helper from writing its result,
+// which it opens sharing read access. status only reads the driver.
+TEST(DrsExe_WritesItsJsonWhileAReaderHoldsTheFile) {
+    TempDir dir(L"drs_exe");
+    const std::wstring json = dir.Write(L"held.json", "").wstring();
+    const HANDLE held = CreateFileW(json.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(held != INVALID_HANDLE_VALUE);
+    const Ran r =
+        RunExe(kExe, L"smooth-motion status --exe \"C:\\Games\\assettocorsa\\acs.exe\" --json \"" + json + L"\"");
+    CloseHandle(held);
+    CHECK(r.code != kDrsExitFile);
+    CHECK(r.out.find("could not be written") == std::string::npos);
+    CHECK_EQ(Member(ReadAll(json), "command"), std::string("status"));
+}
+
 // The bridge never changes driver settings (driver_profile.h): the
 // nvapi_QueryInterface ids of NvAPI_DRS_SetSetting, DeleteProfileSetting
 // and SaveSettings are in the helper, never in ac-dlssg.dll.

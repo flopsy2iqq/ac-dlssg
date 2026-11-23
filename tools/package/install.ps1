@@ -520,6 +520,34 @@ function Get-MfgInstallArgs([string]$Game) {
     return @{ MfgInstall = $staged }
 }
 
+# The manifest's record of the change (driverProfile): the helper, profile,
+# acs.exe and setting of $From (the helper's off or status result), the
+# profile's own value before the change, and the value written.
+function New-SmoothMotionRecord($From, $Before, [long]$Written) {
+    return [ordered]@{
+        tool       = [string]$From.tool
+        profile    = [string]$From.profile
+        exe        = [string]$From.exe
+        settingId  = [string]$From.settingId
+        before     = [ordered]@{ present = [bool]$Before.present; value = $Before.value; predefined = [bool]$Before.predefined }
+        written    = $Written
+        writtenUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+}
+
+# Writes $Record into the manifest. $false, with a warning and the steps to
+# restore the setting by hand, when it cannot.
+function Save-SmoothMotionRecord([string]$ManifestPath, $Record) {
+    try {
+        Set-ManifestDriverProfile $ManifestPath $Record
+        return $true
+    } catch {
+        Say ("WARNING: NVIDIA Smooth Motion was turned off, but the record of it could not be written into $ManifestPath " +
+            "($($_.Exception.Message)); the uninstaller will not restore it. To restore it by hand: $(Get-SmoothMotionManualRestore $Record).")
+        return $false
+    }
+}
+
 # Printed before the helper turns Smooth Motion off; then Windows asks.
 function Write-SmoothMotionNotice($Status) {
     Say ('NVIDIA Smooth Motion is the driver''s own frame generation; it takes over the game''s window and frame ' +
@@ -614,22 +642,8 @@ function Invoke-SmoothMotionStep([string]$Game) {
         foreach ($line in $run.Log) { Write-Host "  $line" }
         $rec = Read-DrsJson $offJson
         if ($run.Code -eq $script:AcdbDrsExit.Ok -and $rec -and [string]$rec.result -eq 'written') {
-            $record = [ordered]@{
-                tool       = [string]$rec.tool
-                profile    = [string]$rec.profile
-                exe        = [string]$rec.exe
-                settingId  = [string]$rec.settingId
-                before     = [ordered]@{ present = [bool]$rec.before.present; value = $rec.before.value; predefined = [bool]$rec.before.predefined }
-                written    = [long]$rec.written
-                writtenUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-            }
-            try {
-                Set-ManifestDriverProfile $manifestPath $record
-            } catch {
-                Say ("WARNING: NVIDIA Smooth Motion was turned off, but the record of it could not be written into $manifestPath " +
-                    "($($_.Exception.Message)); the uninstaller will not restore it. To restore it by hand: $(Get-SmoothMotionManualRestore $record).")
-                return
-            }
+            $record = New-SmoothMotionRecord $rec $rec.before ([long]$rec.written)
+            if (-not (Save-SmoothMotionRecord $manifestPath $record)) { return }
             Say ("NVIDIA Smooth Motion: turned off for Assetto Corsa (`"$($record.profile)`" profile, Smooth Motion - Enabled APIs " +
                 "$(Format-SmoothMotionValue $rec.before) -> $([long]$rec.written)). uninstall.bat restores it.")
             return
@@ -637,6 +651,24 @@ function Invoke-SmoothMotionStep([string]$Game) {
         if ($run.Code -eq $script:AcdbDrsExit.Ok -and $rec -and [string]$rec.result -eq 'unchanged') {
             Say 'NVIDIA Smooth Motion: already kept away from Assetto Corsa; nothing to change.'
             return
+        }
+        if ($run.Code -ne $script:AcdbDrsExit.Ok) {
+            # Review finding A-3: off can fail after it saved the change (its
+            # read-back, or its final record file). When the profile now holds
+            # the planned value, that change is the install's: it is recorded,
+            # so that the uninstall restores it.
+            $againJson = Join-Path $work 'status-again.json'
+            [void](Invoke-DrsHelper $helper @('smooth-motion', 'status', '--exe', $acs, '--json', $againJson) $work)
+            $again = Read-DrsJson $againJson
+            if ($again -and [string]$again.profile -eq [string]$status.profile -and $again.app -and $again.app.present -and
+                [long]$again.app.value -eq [long]$status.plan.value) {
+                $record = New-SmoothMotionRecord $status $status.app ([long]$status.plan.value)
+                if (-not (Save-SmoothMotionRecord $manifestPath $record)) { return }
+                Say ("NVIDIA Smooth Motion: turned off for Assetto Corsa (`"$($record.profile)`" profile, Smooth Motion - Enabled APIs " +
+                    "$(Format-SmoothMotionValue $status.app) -> $(Format-SmoothMotionValue $again.app), read back again after the helper " +
+                    "ended with exit code $($run.Code): $(Get-DrsExitText $run.Code $acs)). uninstall.bat restores it.")
+                return
+            }
         }
         Say ("WARNING: NVIDIA Smooth Motion was not turned off: $(Get-DrsExitText $run.Code $acs) (see above). The rest of the install stays. If frame " +
             'generation does not start, the AC DLSS-G window names Smooth Motion; the README has the manual steps.')

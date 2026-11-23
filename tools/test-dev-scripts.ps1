@@ -3595,7 +3595,8 @@ $fakeDrsScript = @'
 # settings are state.json next to it (profile: the profile that holds
 # acs.exe, empty for none; app and global: their values of 0xB0CC0875, null
 # for not set; saveFails: admin, error or empty; noDriver; foreign: the
-# profile is another game's predefined one), and each call is
+# profile is another game's predefined one; offFails: readback or json, a
+# failure of off after the change was saved), and each call is
 # a line of calls.txt. Its JSON results and exit codes are those of
 # src/drs_tool.h.
 $ErrorActionPreference = 'Stop'
@@ -3668,6 +3669,21 @@ if ($state.saveFails) {
 }
 $state.app = $value
 Save
+# Saved, then failed (review finding A-3): the read-back (exit 5), or the
+# final record file, which keeps the record written before the change (7).
+if ($state.offFails -eq 'readback') {
+    $json.result = 'failed'
+    $json.exitCode = 5
+    $json.written = $value
+    $lines.Add("failed: wrote $value, but the driver settings could not be read back")
+    Done 5 $json
+}
+if ($state.offFails -eq 'json') {
+    $json.result = 'planned'
+    $json.exitCode = 5
+    $lines.Add("wrote $value; the result could not be written")
+    Done 7 $json
+}
 $json.result = 'written'
 $json.written = $value
 $json.after = Val $value
@@ -3677,13 +3693,13 @@ Done 0 $json
 
 # A stand-in helper of its own for one case, with its driver settings.
 function New-FakeDrs([string]$Name, $App = $null, $GlobalApis = $null, [string]$Profile = 'Assetto Corsa', [string]$SaveFails = '',
-    [switch]$NoDriver, [switch]$Foreign) {
+    [switch]$NoDriver, [switch]$Foreign, [string]$OffFails = '') {
     $dir = Join-Path $FakeRoot "drs\$Name"
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $path = Join-Path $dir 'ac-dlssg-drs.ps1'
     Write-Text $path $fakeDrsScript
     Set-FakeDrsState $path ([ordered]@{ profile = $Profile; app = $App; global = $GlobalApis; saveFails = $SaveFails; noDriver = [bool]$NoDriver;
-        foreign = [bool]$Foreign })
+        foreign = [bool]$Foreign; offFails = $OffFails })
     return $path
 }
 function Get-FakeDrsState([string]$Fake) { return Read-Manifest (Join-Path (Split-Path -Parent $Fake) 'state.json') }
@@ -3846,8 +3862,9 @@ Invoke-Case 'DR6: a value changed since the install is left as it is, without as
 Invoke-Case 'DR7: a failed helper or one that finds nothing to do is a note; the install goes on' {
     $pkg = New-PackageCopy 'DR7'
     $cases = @(
-        @{ Name = 'admin'; Fake = @{ SaveFails = 'admin' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: saving the driver settings needs administrator rights'; Calls = 'status,off' },
-        @{ Name = 'error'; Fake = @{ SaveFails = 'error' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: the driver settings could not be changed'; Calls = 'status,off' },
+        # A failed off is followed by a second status (review finding A-3).
+        @{ Name = 'admin'; Fake = @{ SaveFails = 'admin' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: saving the driver settings needs administrator rights'; Calls = 'status,off,status' },
+        @{ Name = 'error'; Fake = @{ SaveFails = 'error' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: the driver settings could not be changed'; Calls = 'status,off,status' },
         @{ Name = 'global'; Fake = @{ GlobalApis = 5 }; Says = 'NVIDIA Smooth Motion: already kept away from Assetto Corsa .*from the global profile, without DX11\); nothing to change'; Calls = 'status' },
         @{ Name = 'nodriver'; Fake = @{ NoDriver = $true }; Says = 'WARNING: NVIDIA Smooth Motion was not checked: the NVIDIA driver settings could not be read'; Calls = 'status' },
         @{ Name = 'noprofile'; Fake = @{ Profile = '' }; Says = 'WARNING: NVIDIA Smooth Motion was not checked: no NVIDIA driver profile holds'; Calls = 'status' }
@@ -3929,6 +3946,27 @@ Invoke-Case 'DR11: another game''s predefined profile holds acs.exe: a warning w
     $fake = New-FakeDrs 'DR11-user' -Profile 'ACS'
     $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
     Check ($r.Code -eq 0 -and (Get-FakeDrsState $fake).app -eq 5 -and (Get-DrsRecord $game).profile -eq 'ACS') 'a user-made "ACS" profile is changed and recorded'
+}
+
+# Review finding A-3: off saved the change and failed after it (its read-back,
+# exit 5, or its final record file, exit 7). The install reads the profile
+# again, records the change it finds there, and the uninstall restores it.
+Invoke-Case 'DR12: a change off saved before it failed is read again, recorded and restored' {
+    $pkg = New-PackageCopy 'DR12'
+    foreach ($mode in @('readback', 'json')) {
+        $game = New-FakeGame "DR12-$mode" -NoDxgi
+        $fake = New-FakeDrs "DR12-$mode" -OffFails $mode
+        $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+        Check ($r.Code -eq 0) "$mode`: install.ps1 exits 0"
+        Check ((Get-FakeDrsCalls $fake) -eq 'status,off,status') "$mode`: the helper reads the profile again after off ($(Get-FakeDrsCalls $fake))"
+        $rec = Get-DrsRecord $game
+        Check ($rec -and $rec.profile -eq 'Assetto Corsa' -and $rec.settingId -eq '0xB0CC0875' -and -not $rec.before.present -and
+            [long]$rec.written -eq 5) "$mode`: the change is recorded: before not set, written 5"
+        Check ($r.Text -match 'NVIDIA Smooth Motion: turned off for Assetto Corsa' -and $r.Text -match 'read back again after the helper ended with exit code') "$mode`: it says what it found"
+        Check ($r.Text -notmatch 'WARNING: NVIDIA Smooth Motion was not turned off') "$mode`: no warning that it is not off"
+        $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+        Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: restored' -and $null -eq (Get-FakeDrsState $fake).app) "$mode`: the uninstall restores it"
+    }
 }
 
 # ---------------------------------------------------------------------------

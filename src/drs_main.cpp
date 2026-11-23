@@ -65,9 +65,11 @@ bool ReadUtf8(const std::wstring& path, std::string* text, std::string* error) {
     return ok;
 }
 
+// Shares read access (review finding A-3): a reader that holds the file
+// open, such as a virus scanner, must not cost the record of a change.
 bool WriteUtf8(const std::wstring& path, const std::string& text, std::string* error) {
-    const HANDLE f =
-        CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         *error = Win32Error(GetLastError());
         return false;
