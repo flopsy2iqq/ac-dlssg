@@ -741,10 +741,14 @@ TEST(LuaApp_LogsTheTripleConfigurationInTripleScreenModeOnly) {
     const std::string update = function("triple.update = function ()");
     const std::string log = function("triple.log = function (why)");
     REQUIRE(!update.empty() && !log.empty());
+    // The subscription too runs in pcall (review finding B-9): a CSP build
+    // whose call fails must not stop the app's update.
     CHECK(InOrder(update, {"if not (simHas.isTripleMode and sim.isTripleMode) then return end",
                            "if not triple.started then", "pcall(triple.log, 'at start')",
-                           "if ac.onTripleConfigurationChanged then", "ac.onTripleConfigurationChanged(function ()",
+                           "if ac.onTripleConfigurationChanged then",
+                           "pcall(ac.onTripleConfigurationChanged,", "triple.subscription = ",
                            "simHas.isTripleScreenAvailable and sim.isTripleScreenAvailable"}));
+    CHECK(update.find("= ac.onTripleConfigurationChanged(") == std::string::npos);
     CHECK(InOrder(log, {"if not ac.getTripleConfiguration then", "ac.getTripleConfiguration()", "for i = 0, 2 do",
                         "xFrom", "xTo", "xWidth", "ac.log("}));
     CHECK(lua.find("'isTripleScreenAvailable'") != std::string::npos);

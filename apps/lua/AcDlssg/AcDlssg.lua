@@ -1454,7 +1454,14 @@ triple.update = function ()
     local ok, err = pcall(triple.log, 'at start')
     if not ok then ac.warn('AcDlssg: triple: ' .. tostring(err)) end
     if ac.onTripleConfigurationChanged then
-      triple.subscription = ac.onTripleConfigurationChanged(function () pcall(triple.log, 'configuration changed') end)
+      -- In pcall too: a CSP build whose call fails must not stop the update.
+      local subscribed, subscription = pcall(ac.onTripleConfigurationChanged,
+        function () pcall(triple.log, 'configuration changed') end)
+      if subscribed then
+        triple.subscription = subscription
+      else
+        ac.warn('AcDlssg: triple: ' .. tostring(subscription))
+      end
     end
   end
   local available = simHas.isTripleScreenAvailable and sim.isTripleScreenAvailable or false
