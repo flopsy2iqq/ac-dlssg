@@ -230,6 +230,13 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
             if (deps_.onFirstEvaluate) deps_.onFirstEvaluate();
             LOGT_ONCE_N(12, "trace: capture OnEvaluate: markers done");
         }
+        // The triple-screen diagnostics keep frame generation off, so nothing
+        // is captured (review finding B-1): CSP's evaluates of several sizes
+        // in one frame would recreate the frame's slot at every evaluate.
+        if (deps_.tripleDiag) {
+            frame_.reason = "no capture: triple-screen diagnostics";
+            return;
+        }
         Capture(in);
     } catch (...) {
     }

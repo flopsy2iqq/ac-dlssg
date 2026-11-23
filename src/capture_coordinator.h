@@ -102,7 +102,8 @@ public:
         std::function<void()> onFirstEvaluate;  // called under the coordinator's lock
         // The triple-screen diagnostics (triple_diag.h): every counted
         // create and evaluate is reported to it first, the evaluate with
-        // what it reads of CSP's block. nullptr: none.
+        // what it reads of CSP's block. While it is set nothing is captured;
+        // the markers and the camera latch stay. nullptr: none.
         TripleDiagLog* tripleDiag = nullptr;
     };
     explicit CaptureCoordinator(const Deps& deps);

@@ -214,7 +214,9 @@ $scenarios = @(
            ' INFO triple-diag: window 1 of 4: ', ' INFO triple-diag: frame 1 evaluate 1: feature 0x[0-9A-F]+; create ',
            ' INFO triple-diag: frame 300: [1-9][0-9]* DLSS evaluates; swap chain 1280x720 format 28',
            ' INFO triple-diag: window 1 done after 300 frames', 'triple-screen diagnostics \(\[debug\] triple_diag=1\)');
-       LogMustNot = @('fg: DLSS-G on', 'camera mode TRIPLE \(triple screen\) is not supported') }
+       # Nothing is captured while the diagnostics run (review finding B-1).
+       LogMustNot = @('fg: DLSS-G on', 'camera mode TRIPLE \(triple screen\) is not supported', ' capture: slot ',
+           ' capture: first counted evaluate') }
 )
 if ($Scenario.Count) {
     $unknown = @($Scenario | Where-Object { $n = $_; -not ($scenarios | Where-Object { $_.Name -eq $n }) })

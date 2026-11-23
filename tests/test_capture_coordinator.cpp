@@ -557,6 +557,57 @@ TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
     CHECK(Has(all, "triple-diag: frame 1: 2 DLSS evaluates; swap chain 128x72 format 28"));
 }
 
+// Review finding B-1: with the triple-screen diagnostics on, the coordinator
+// captures nothing. A frame with evaluates of two sizes would otherwise
+// recreate its capture slot at every turn. The markers and the camera latch
+// of the first evaluate stay, and the diagnostics still see every evaluate.
+TEST(Coordinator_TripleDiagnosticsCaptureNothing) {
+    std::vector<std::string> lines;
+    TripleDiagLog diag([&lines](const std::string& l) { lines.push_back(l); }, 3, 1);
+    Rig r;
+    r.tripleDiag = &diag;
+    if (!r.Create()) return;
+    CspSources narrow = MakeSources(r.d.device11.Get(), 64, 36);
+    CspSources wide = MakeSources(r.d.device11.Get(), 96, 54);
+    REQUIRE(narrow.depth && narrow.mvec && wide.depth && wide.mvec);
+    acdb_test::TempDir dir(L"coordinator_triple_diag");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    constexpr int kFrames = 6;
+    for (int i = 0; i < kFrames; ++i) {
+        r.coord->OnEvaluate(r.Inputs(narrow));
+        r.coord->OnEvaluate(r.Inputs(wide));
+        const FrameCapture f = r.coord->EndFrame();
+        CHECK(!f.captured);
+        CHECK(!f.forcedOff);
+        CHECK(Has(f.reason, "no capture: triple-screen diagnostics"));
+        diag.EndFrame(128, 72, 28);
+    }
+    LogClose();
+    for (uint32_t slot = 0; slot < CaptureSlots::kSlots; ++slot) CHECK(!r.slots->HasTextures(slot));
+    CHECK_EQ(r.markers, kFrames);
+    const std::string log = acdb_test::ReadAll(logPath);
+    // Neither the coordinator's "capture: ..." lines nor the slots' "capture
+    // slot N: ..." lines of a recreate.
+    CHECK_EQ(Count(log, " capture"), static_cast<size_t>(0));
+    if (Count(log, " capture") != 0) std::printf("  log:\n%s\n", log.c_str());
+    std::string all;
+    for (const std::string& l : lines) all += l + "\n";
+    CHECK(Has(all, "triple-diag: frame 3: 2 DLSS evaluates"));
+
+    // Without the diagnostics the same frames capture.
+    Rig plain;
+    if (!plain.Create()) return;
+    CspSources ps = MakeSources(plain.d.device11.Get(), 64, 36);
+    CspSources pl = MakeSources(plain.d.device11.Get(), 96, 54);
+    REQUIRE(ps.depth && ps.mvec && pl.depth && pl.mvec);
+    plain.coord->OnEvaluate(plain.Inputs(ps));
+    plain.coord->OnEvaluate(plain.Inputs(pl));
+    const FrameCapture f = plain.coord->EndFrame();
+    CHECK(f.captured);
+    CHECK(plain.slots->HasTextures(f.slot));
+}
+
 TEST(Coordinator_SubrectZeroFallsBackAndMvScaleZeroIsFlagged) {
     Rig r;
     if (!r.Create()) return;
