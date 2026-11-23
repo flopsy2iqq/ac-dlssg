@@ -138,6 +138,15 @@ add_library(ac-dlssg SHARED
 )
 target_link_libraries(ac-dlssg PRIVATE acdb_core)
 
+# The installer's driver-profile helper ac-dlssg-drs.exe (NVIDIA Smooth Motion
+# off for acs.exe, and back at uninstall): the only code of this project that
+# writes NVIDIA driver settings. The bridge DLL never links it.
+add_library(acdb_drs STATIC
+    src/smooth_motion.cpp
+)
+target_include_directories(acdb_drs PUBLIC src)
+target_include_directories(acdb_drs SYSTEM PRIVATE "${ACDB_NVAPI_INCLUDE_DIR}")
+
 enable_testing()
 add_executable(acdb_tests
     tests/test_main.cpp
@@ -176,11 +185,12 @@ add_executable(acdb_tests
     tests/test_dxgi_export_coverage.cpp
     tests/test_diag_util.cpp
     tests/test_nvpresent.cpp
+    tests/test_smooth_motion.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
 # version: only the tests compare against VERSION.dll; the bridge never imports it.
-target_link_libraries(acdb_tests PRIVATE acdb_core d3d11 d3d12 dxgi version)
+target_link_libraries(acdb_tests PRIVATE acdb_core acdb_drs d3d11 d3d12 dxgi version)
 # The DLL-level test loads the built bridge DLL.
 target_compile_definitions(acdb_tests PRIVATE ACDB_DLL_PATH="$<TARGET_FILE:ac-dlssg>")
 # The camera tests read the CSP Lua app (apps/lua/AcDlssg) from the source tree.
