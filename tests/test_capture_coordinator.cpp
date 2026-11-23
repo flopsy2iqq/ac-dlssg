@@ -23,6 +23,7 @@
 #include "log.h"
 #include "temp_dir.h"
 #include "test_framework.h"
+#include "triple_diag.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace acdb;
@@ -66,6 +67,7 @@ struct Rig {
     std::unique_ptr<CameraChannel> camera;
     std::unique_ptr<CaptureCoordinator> coord;
     int markers = 0;  // onFirstEvaluate calls
+    TripleDiagLog* tripleDiag = nullptr;  // set before Create
 
     bool Create() {
         if (!acdb_test::CreateGpuTestDevices(&d)) return false;
@@ -84,6 +86,7 @@ struct Rig {
         deps.fences = fences.get();
         deps.camera = camera.get();
         deps.onFirstEvaluate = [this] { ++markers; };
+        deps.tripleDiag = tripleDiag;
         coord = std::make_unique<CaptureCoordinator>(deps);
         return true;
     }
@@ -517,6 +520,41 @@ TEST(Coordinator_CreateFeatureTurnsTheFrameOffAndRecreatesEverySlot) {
     }
     r.coord->OnEvaluate(r.Inputs(s));
     CHECK(!r.coord->EndFrame().forcedOff);
+}
+
+// The triple-screen diagnostics see every counted create and evaluate, the
+// evaluate with its textures and its create, whatever the capture makes of it.
+TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
+    std::vector<std::string> lines;
+    TripleDiagLog diag([&lines](const std::string& l) { lines.push_back(l); }, 1, 1);
+    Rig r;
+    r.tripleDiag = &diag;
+    if (!r.Create()) return;
+    CspSources s = MakeSources(r.d.device11.Get(), 64, 36);
+    REQUIRE(s.depth && s.mvec);
+    NgxCreateInfo info;
+    info.featureId = 1;
+    info.width = 64;
+    info.height = 36;
+    info.outWidth = 128;
+    info.outHeight = 72;
+    info.createFlags = 2;
+    r.coord->OnCreateFeature(0x5000, info);
+    r.coord->OnEvaluate(r.Inputs(s));
+    NgxEvaluateInputs nulls = r.Inputs(CspSources());
+    r.coord->OnEvaluate(nulls);
+    r.coord->EndFrame();
+    diag.EndFrame(128, 72, 28);
+    std::string all;
+    for (const std::string& l : lines) all += l + "\n";
+    std::printf("%s", all.c_str());
+    CHECK(Has(all, "triple-diag: DLSS feature 0x5000 created: render 64x36, output 128x72"));
+    CHECK(Has(all, "triple-diag: frame 1 evaluate 1: feature 0x5000; create render 64x36 output 128x72 flags 0x2"));
+    CHECK(Has(all, "Depth 64x36 format 39"));          // DXGI_FORMAT_R32_TYPELESS
+    CHECK(Has(all, "MotionVectors 64x36 format 34"));  // DXGI_FORMAT_R16G16_FLOAT
+    CHECK(Has(all, "frame 1 evaluate 2: feature 0x5000"));
+    CHECK(Has(all, "Depth none; MotionVectors none"));
+    CHECK(Has(all, "triple-diag: frame 1: 2 DLSS evaluates; swap chain 128x72 format 28"));
 }
 
 TEST(Coordinator_SubrectZeroFallsBackAndMvScaleZeroIsFlagged) {

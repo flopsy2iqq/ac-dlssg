@@ -32,6 +32,10 @@ struct CompatInputs {
     // NVIDIA Smooth Motion creates the game's swap chain: NvPresentInCallStack()
     // at its CreateSwapChainForHwnd (FactoryHook sets it per swap chain).
     bool nvpresent_caller = false;
+    // ac-dlssg.ini [debug] triple_diag=1 (the bootstrap sets it from the
+    // config): triple-screen mode is let through for the diagnostics of
+    // triple_diag.h.
+    bool triple_diag = false;
 };
 
 struct CompatResult {
@@ -42,7 +46,8 @@ struct CompatResult {
 // Rules in this order; the first that fails is reported:
 //  0. nvpresent_caller                 -> "NVIDIA Smooth Motion (the driver's own frame generation) is active for
 //                                         Assetto Corsa, even if the NVIDIA App shows it off. It cannot run with
-//                                         DLSS-G. Turn it off: see the AC DLSS-G help or the README."
+//                                         DLSS-G. Run install.bat again to turn it off for AC (or see the README),
+//                                         then restart the game."
 //  1. old_swapchain == 1               -> "OLD_SWAPCHAIN=1 is not supported"
 //  2. exclusive_fullscreen == 1        -> "EXCLUSIVE_FULLSCREEN=1 is not supported"
 //  3. hdr_enabled == 1                 -> "HDR output is not supported"
@@ -51,7 +56,8 @@ struct CompatResult {
 //  5. aasamples > 1                    -> "MSAA is on: AASAMPLES=<n> in <video_ini_path, else video.ini> (read at
 //                                         game start); set Anti-aliasing to Off in Content Manager > Settings >
 //                                         Assetto Corsa > Video" (in every DLSS mode, not only DLAA)
-//  6. camera_mode present and not DEFAULT (case-insensitive)
+//  6. camera_mode present and not DEFAULT (case-insensitive), and not TRIPLE
+//     with triple_diag (the diagnostics of triple_diag.h)
 //                                      -> VrRefusal for a VR mode; "camera mode TRIPLE (triple screen) is not
 //                                         supported"; "custom rendering mode <MODE> (360, fisheye or split
 //                                         screen) is not supported" for CSP's __EXT_ modes; else "camera mode

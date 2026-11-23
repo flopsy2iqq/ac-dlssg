@@ -76,8 +76,8 @@ bool AspectMismatch(double videoW, double videoH, double swapW, double swapH) {
 CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned swapHeight) {
     if (in.nvpresent_caller)
         return Refuse("NVIDIA Smooth Motion (the driver's own frame generation) is active for Assetto Corsa, even if "
-                      "the NVIDIA App shows it off. It cannot run with DLSS-G. Turn it off: see the AC DLSS-G help or "
-                      "the README.");
+                      "the NVIDIA App shows it off. It cannot run with DLSS-G. Run install.bat again to turn it off "
+                      "for AC (or see the README), then restart the game.");
     if (in.old_swapchain == 1) return Refuse("OLD_SWAPCHAIN=1 is not supported");
     if (in.exclusive_fullscreen == 1) return Refuse("EXCLUSIVE_FULLSCREEN=1 is not supported");
     if (in.hdr_enabled == 1) return Refuse("HDR output is not supported");
@@ -88,7 +88,10 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
                       (in.video_ini_path.empty() ? std::string("video.ini") : in.video_ini_path) +
                       " (read at game start); set Anti-aliasing to Off in Content Manager > Settings > Assetto Corsa > "
                       "Video");
-    if (in.camera_mode && !EqualsNoCase(*in.camera_mode, "DEFAULT")) {
+    // Triple-screen mode with [debug] triple_diag=1 goes on to the next
+    // rules: the diagnostics of triple_diag.h.
+    if (in.camera_mode && !EqualsNoCase(*in.camera_mode, "DEFAULT") &&
+        !(in.triple_diag && EqualsNoCase(*in.camera_mode, "TRIPLE"))) {
         const std::string vr = VrRefusal(in.camera_mode);
         if (!vr.empty()) return Refuse(vr);
         const std::string& mode = *in.camera_mode;

@@ -33,7 +33,8 @@ CompatInputs GoodInputs() {
 
 const char* kSmooth =
     "NVIDIA Smooth Motion (the driver's own frame generation) is active for Assetto Corsa, even if the NVIDIA App "
-    "shows it off. It cannot run with DLSS-G. Turn it off: see the AC DLSS-G help or the README.";
+    "shows it off. It cannot run with DLSS-G. Run install.bat again to turn it off for AC (or see the README), then "
+    "restart the game.";
 const char* kOld = "OLD_SWAPCHAIN=1 is not supported";
 const char* kExcl = "EXCLUSIVE_FULLSCREEN=1 is not supported";
 const char* kHdr = "HDR output is not supported";
@@ -231,6 +232,43 @@ TEST(Compat_OtherCameraModesNameWhatTheyAre) {
     CHECK_EQ(Reason(in), "custom rendering mode __ext_splitscreen (360, fisheye or split screen) is not supported");
     in.camera_mode = "SOMETHING";
     CHECK_EQ(Reason(in), "camera mode SOMETHING is not supported");
+}
+
+// [debug] triple_diag=1 (1.3.0, diagnostics only): triple-screen mode is
+// let through, so that the bridge proxies the swap chain (frame generation
+// stays off, fg_policy.h) and logs CSP's DLSS calls; every other rule still
+// applies, and the other camera modes stay refused.
+TEST(Compat_TripleDiagLetsTripleScreenThrough) {
+    auto in = GoodInputs();
+    in.camera_mode = "TRIPLE";
+    in.triple_diag = true;
+    CHECK(Reason(in).empty());
+    in.camera_mode = "triple";
+    CHECK(Reason(in).empty());
+    in.aasamples = 4;
+    CHECK_EQ(Reason(in), kMsaa);
+    in = GoodInputs();
+    in.camera_mode = "TRIPLE";
+    in.triple_diag = true;
+    in.hags_on = false;
+    CHECK_EQ(Reason(in), "hardware-accelerated GPU scheduling is off");
+}
+
+TEST(Compat_TripleDiagKeepsTheOtherModesRefused) {
+    for (const char* mode : {"OPENVR", "OCULUS", "__EXT_OPENXR"}) {
+        auto in = GoodInputs();
+        in.camera_mode = mode;
+        in.triple_diag = true;
+        CHECK_EQ(Reason(in), VrReason(mode));
+    }
+    auto in = GoodInputs();
+    in.triple_diag = true;
+    in.camera_mode = "__EXT_360";
+    CHECK_EQ(Reason(in), "custom rendering mode __EXT_360 (360, fisheye or split screen) is not supported");
+    in.camera_mode = "SOMETHING";
+    CHECK_EQ(Reason(in), "camera mode SOMETHING is not supported");
+    in.camera_mode = "DEFAULT";
+    CHECK(Reason(in).empty());
 }
 
 // The MSAA reason names the video.ini the bridge read (MSAA blocks frame

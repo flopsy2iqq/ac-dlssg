@@ -27,6 +27,7 @@ FgGateResult Off(std::string reason, bool perFrame) {
 }  // namespace
 
 FgGateResult DecideFg(const FgGateInputs& in) {
+    if (in.tripleDiag) return Off(kTripleDiagFgReason, false);
     if (!in.supported) return Off("not supported on this adapter", false);
     if (!in.userOn) return Off(UserOffReason(in.userSource), false);
     if (!in.stateFailure.empty()) return Off("DLSS-G status " + in.stateFailure, false);

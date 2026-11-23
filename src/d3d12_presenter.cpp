@@ -16,6 +16,7 @@
 
 #include "camera_channel.h"
 #include "capture_coordinator.h"
+#include "triple_diag.h"
 #include "capture_slots.h"
 #include "compat.h"
 #include "diag_util.h"
@@ -327,6 +328,9 @@ struct D3D12Presenter::Impl {
     PresenterEnvironment env;
     bool fg_supported = false;  // slIsFeatureSupported and the DLSS-G functions
     std::unique_ptr<CaptureSlots> slots;
+    // The triple-screen diagnostics (env.triple_diag); before the
+    // coordinator, which reports to it, so that it outlives it.
+    std::unique_ptr<TripleDiagLog> triple_diag;
     std::unique_ptr<CaptureCoordinator> coordinator;
     bool ngx_attached = false;
     uint32_t ngx_modules_logged = UINT32_MAX;
@@ -683,6 +687,14 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
         deps.fences = fences.get();
         deps.camera = env.camera ? env.camera : &CameraChannel::Get();
         deps.onFirstEvaluate = [this] { OnFirstEvaluate(); };
+        if (env.triple_diag) {
+            triple_diag = std::make_unique<TripleDiagLog>([](const std::string& line) { LOGI("%s", line.c_str()); });
+            deps.tripleDiag = triple_diag.get();
+            LOGI("triple-diag: on ([debug] triple_diag=1 and video.ini [CAMERA] MODE=TRIPLE): frame generation stays "
+                 "off; from the first DLSS evaluate, %u frames of CSP's DLSS evaluates are logged (up to %u times, "
+                 "when a DLSS feature is created again)",
+                 kTripleDiagFrames, kTripleDiagWindows);
+        }
         coordinator = std::make_unique<CaptureCoordinator>(deps);
     }
     if (!CreateSharedTexture(width, height, err)) return false;
@@ -979,6 +991,7 @@ DlssgSizeHints D3D12Presenter::Impl::Hints() const {
 D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapture& cap) {
     FrameDecision d;
     FgGateInputs g;
+    g.tripleDiag = env.triple_diag;
     g.userOn = fg_user_on;
     g.userSource = user_source;
     g.supported = fg_supported;
@@ -1591,6 +1604,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     // M3: this Present ends the bridge frame; its capture pairs with it.
     FrameCapture cap;
     if (coordinator) cap = coordinator->EndFrame();
+    if (triple_diag) triple_diag->EndFrame(width, height, DXGI_FORMAT_R8G8B8A8_UNORM);
     if (cap.evaluates > 1) {
         ++stats_double;
         ++totals.double_evaluates;

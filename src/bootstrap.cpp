@@ -23,6 +23,7 @@
 #include "panel_status.h"
 #include "streamline_runtime.h"
 #include "system_dxgi.h"
+#include "triple_diag.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -315,6 +316,7 @@ void Run(BootstrapState* s) {
          c.tag_without_fg ? 1 : 0,
          c.fg_vram_headroom_auto ? "auto" : std::to_string(c.fg_vram_headroom_mib).c_str(),
          c.spoof_load_any ? 1 : 0, c.fg_multiplier, c.mfg_unlocker ? 1 : 0);
+    LOGI("config: [debug] triple_diag=%d", c.triple_diag ? 1 : 0);
     for (const auto& w : c.warnings) LOGW("config: %s", w.c_str());
 
     const PredictedAdapter renderAdapter = PredictRenderAdapter(LogAdapters());
@@ -326,7 +328,17 @@ void Run(BootstrapState* s) {
     LOGI("game dir: %s", ToUtf8(s->game_dir).c_str());
     LOGI("documents dir: %s", s->docs_ac_dir.empty() ? "(not found)" : ToUtf8(s->docs_ac_dir).c_str());
     s->compat = ReadCompatInputs(s->game_dir, s->docs_ac_dir);
+    s->compat.triple_diag = c.triple_diag;
     LogCompatInputs(s->compat);
+    if (c.triple_diag) {
+        if (TripleDiagActive(c.triple_diag, s->compat.camera_mode)) {
+            LOGI("triple-diag: [debug] triple_diag=1 in triple-screen mode: the game's swap chain is proxied with "
+                 "frame generation off, and CSP's DLSS evaluates are logged");
+        } else {
+            LOGI("triple-diag: [debug] triple_diag=1, but video.ini [CAMERA] MODE is %s, not TRIPLE: nothing to log",
+                 s->compat.camera_mode ? s->compat.camera_mode->c_str() : "unset");
+        }
+    }
     // In VR the bridge starts nothing (Streamline, MFG-Unlocker, the camera
     // section), as when it is disabled.
     const BridgeStart plan = PlanBridgeStart(c.enabled, s->compat);

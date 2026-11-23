@@ -36,6 +36,9 @@ struct NgxEvaluateInputs {
     bool reset = false;
     uint64_t featureKey = 0;    // the returned NVSDK_NGX_Handle* value
     bool createObserved = false;  // false when the create was never seen
+    // CSP's parameter block, as raw as ctx: valid only during the sink call.
+    // The triple-screen diagnostics read more of it (triple_diag.h).
+    const NgxParameter* params = nullptr;
 };
 
 // The sink is called only for counted calls, after the original returned.

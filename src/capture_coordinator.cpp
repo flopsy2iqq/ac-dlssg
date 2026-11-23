@@ -9,6 +9,7 @@
 #include "diag_util.h"
 #include "fence_pair.h"
 #include "log.h"
+#include "triple_diag.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -165,6 +166,8 @@ void CaptureCoordinator::OnCreateFeature(uint64_t featureKey, const NgxCreateInf
     try {
         std::lock_guard<std::mutex> lock(mu_);
         creates_[featureKey] = info;
+        if (deps_.tripleDiag)
+            deps_.tripleDiag->OnCreate(featureKey, info.width, info.height, info.outWidth, info.outHeight);
         for (bool& f : force_) f = true;
         create_off_ = true;
         LOGI("capture: DLSS feature created: render %ux%u, output %ux%u, create flags 0x%X; capture slots are "
@@ -178,6 +181,13 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
     try {
         std::lock_guard<std::mutex> lock(mu_);
         ++frame_.allEvaluates;
+        // The triple-screen diagnostics see every counted evaluate; CSP's
+        // block is read only while they log.
+        if (deps_.tripleDiag && deps_.tripleDiag->WantsEvaluates()) {
+            const auto create = creates_.find(in.featureKey);
+            deps_.tripleDiag->OnEvaluate(
+                ReadTripleDiagEvaluate(in, create != creates_.end() ? &create->second : nullptr));
+        }
         if (!in.ctx) return;
         if (in.ctx->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) {
             if (frame_.evaluates == 0) frame_.reason = "no capture: DLSS evaluate on a deferred context";

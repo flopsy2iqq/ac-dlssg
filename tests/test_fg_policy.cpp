@@ -100,6 +100,21 @@ TEST(FgGate_EachConditionTurnsItOffWithItsReason) {
     }
 }
 
+// The triple-screen diagnostics ([debug] triple_diag=1 in triple-screen
+// mode) keep DLSS-G off for the whole session, before every other reason.
+TEST(FgGate_TripleDiagnosticsKeepItOffFirst) {
+    FgGateInputs in;  // everything false
+    in.tripleDiag = true;
+    FgGateResult r = DecideFg(in);
+    CHECK(!r.on && !r.perFrame);
+    CHECK_EQ(r.reason, std::string(kTripleDiagFgReason));
+    in = AllowAll();
+    in.tripleDiag = true;
+    r = DecideFg(in);
+    CHECK(!r.on && Contains(r.reason, "triple_diag=1"));
+    CHECK(std::string(kTripleDiagFgReason).size() < 160);
+}
+
 TEST(FgGate_ReplayAndCameraJumpDoNotTurnItOff) {
     FgGateInputs in = AllowAll();
     in.cameraFlags = kCamReplay | kCamJumped;

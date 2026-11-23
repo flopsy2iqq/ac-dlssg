@@ -123,6 +123,7 @@ add_library(acdb_core STATIC
     src/panel_control.cpp
     src/diag_util.cpp
     src/nvpresent.cpp
+    src/triple_diag.cpp
     ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
@@ -203,6 +204,7 @@ add_executable(acdb_tests
     tests/test_drs_tool.cpp
     tests/test_drs_store.cpp
     tests/test_drs_exe.cpp
+    tests/test_triple_diag.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )

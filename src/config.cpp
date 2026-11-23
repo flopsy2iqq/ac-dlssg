@@ -141,6 +141,7 @@ Config ParseConfig(const IniFile& ini) {
                                  "' (expected error, warn, info or debug); using default");
         }
     }
+    ParseBool(ini.Get("debug", "triple_diag"), "triple_diag", &c.triple_diag, &c.warnings);
     // A repeated key is a trap (a hand-added line above an older default
     // block): say which value won.
     for (const auto& [key, values] : ini.Repeats(kSection)) {

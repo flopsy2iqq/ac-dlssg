@@ -61,6 +61,7 @@ namespace acdb {
 
 class CaptureSlots;
 class FencePair;
+class TripleDiagLog;
 
 // A CameraChannel::ReadResult in words, for the frame's DLSS-G-off reason.
 const char* CameraReadResultText(CameraChannel::ReadResult r);
@@ -99,6 +100,10 @@ public:
         FencePair* fences = nullptr;
         const CameraChannel* camera = nullptr;
         std::function<void()> onFirstEvaluate;  // called under the coordinator's lock
+        // The triple-screen diagnostics (triple_diag.h): every counted
+        // create and evaluate is reported to it first, the evaluate with
+        // what it reads of CSP's block. nullptr: none.
+        TripleDiagLog* tripleDiag = nullptr;
     };
     explicit CaptureCoordinator(const Deps& deps);
     ~CaptureCoordinator() override;

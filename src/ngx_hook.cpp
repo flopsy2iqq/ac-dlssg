@@ -990,6 +990,7 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         in.ctx = ctx;
         in.featureKey = key;
         in.createObserved = observed;
+        in.params = params;
         if (observed) {
             if (!supersampling) return r;  // another feature: forwarded, not counted
             in.createFlags = recFlags;

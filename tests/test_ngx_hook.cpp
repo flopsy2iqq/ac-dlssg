@@ -141,6 +141,8 @@ TEST(NgxHook_HooksForwardsAndReads) {
     CHECK_EQ(in.createFlags, kNgxDlssFlagMVLowRes);
     CHECK(in.createObserved);
     CHECK_EQ(in.featureKey, static_cast<uint64_t>(0x120000));
+    // CSP's block itself, for the triple-screen diagnostics.
+    CHECK(in.params == &ep);
 
     // The original's result is returned unchanged; a failed original is not
     // counted (our decision, spec 6.5).

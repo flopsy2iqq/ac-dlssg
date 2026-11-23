@@ -40,6 +40,9 @@ struct PresenterEnvironment {
     uint32_t spoof_panel = 0;       // the panel's spoofLoaded (SpoofPanelCode); 0 in the unit tests
     bool mfg_loaded = false;        // MFG-Unlocker is in the process (BootstrapState::mfg_loaded)
     bool allow_stretching = false;  // dxgi_tweaks.ini ALLOW_STRETCHING=1 (runtime aspect test)
+    // The triple-screen diagnostics run (TripleDiagActive, triple_diag.h):
+    // DLSS-G stays off, and CSP's DLSS evaluates are logged.
+    bool triple_diag = false;
     const CameraChannel* camera = nullptr;  // nullptr: CameraChannel::Get()
     // Spec 6.9, the in-game panel: the status section the presenter publishes
     // into and the control section it reads the Lua app's requests from, and

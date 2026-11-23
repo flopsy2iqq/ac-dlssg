@@ -25,6 +25,7 @@
 #include "panel_status.h"
 #include "proxy_swapchain.h"
 #include "streamline_runtime.h"
+#include "triple_diag.h"
 #include "vtable_patch.h"
 
 using Microsoft::WRL::ComPtr;
@@ -306,9 +307,11 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         if (in.is_main_window && nvPresentCaller) {
             LOGW("smooth motion: NvPresent64.dll (NVIDIA Smooth Motion, the driver's own frame generation) creates "
                  "the game window's swap chain; DLSS-G cannot run on top of it, so the bridge passes the game "
-                 "through. The NVIDIA App can show Smooth Motion off while it is on. Fix: in NVIDIA Profile "
-                 "Inspector, open the \"Assetto Corsa\" profile, set \"Smooth Motion - Enabled APIs\" (0xB0CC0875) "
-                 "to 5 (its DX11 bit, 2, cleared), apply and restart the game; check the global profile too");
+                 "through. The NVIDIA App can show Smooth Motion off while it is on. Fix: run install.bat again, "
+                 "which turns it off for Assetto Corsa (Windows asks for administrator rights), and restart the "
+                 "game; or in NVIDIA Profile Inspector, open the \"Assetto Corsa\" profile, set \"Smooth Motion - "
+                 "Enabled APIs\" (0xB0CC0875) to 5 (its DX11 bit, 2, cleared), apply and restart the game; check the "
+                 "global profile too");
         }
         if (in.is_main_window) PublishPassThrough(reason, adapter);
         return false;
@@ -330,6 +333,7 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         env.spoof_panel = bs.spoof_panel;
         env.mfg_loaded = bs.mfg_loaded;
         env.allow_stretching = bs.compat.allow_stretching.value_or(0) == 1;
+        env.triple_diag = TripleDiagActive(bs.config.triple_diag, bs.compat.camera_mode);
         // Spec 6.9: only a process that owns the panel's status reads its requests.
         if (PanelStatusChannel::Get().Owned()) {
             env.status = &PanelStatusChannel::Get();

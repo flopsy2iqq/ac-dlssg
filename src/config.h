@@ -57,6 +57,11 @@ struct Config {
     // (ChooseFgMultiplier, DecideVramMultiplier); SetFgMultiplier changes it
     // at runtime.
     unsigned fg_multiplier = 2;  // fg_multiplier=2|3|4
+    // Section [debug]. The triple-screen diagnostics of 1.3.0
+    // (triple_diag.h): in triple-screen mode the bridge proxies the swap
+    // chain with frame generation off and logs CSP's DLSS evaluates; 0 keeps
+    // triple-screen mode refused.
+    bool triple_diag = false;  // [debug] triple_diag=0|1
     std::vector<std::string> warnings;    // human-readable parse problems
 };
 

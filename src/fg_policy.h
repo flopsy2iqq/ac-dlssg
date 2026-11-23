@@ -38,7 +38,12 @@ struct FgGateInputs {
     bool constantsOk = false;     // BuildFrameConstants returned true
     std::string constantsWhy;     // its why otherwise
     std::string vramRefusal;      // non-empty: the video memory guard keeps DLSS-G off
+    bool tripleDiag = false;      // the triple-screen diagnostics run (triple_diag.h)
 };
+
+// Why DLSS-G stays off while the triple-screen diagnostics run.
+constexpr char kTripleDiagFgReason[] =
+    "triple-screen diagnostics ([debug] triple_diag=1): frame generation stays off; the DLSS calls are logged";
 
 struct FgGateResult {
     bool on = false;
@@ -51,6 +56,7 @@ struct FgGateResult {
 };
 
 // The first failing condition, in this order:
+//  0. tripleDiag       kTripleDiagFgReason
 //  1. !supported       "not supported on this adapter"
 //  2. !userOn          UserOffReason(userSource)
 //  3. stateFailure     "DLSS-G status <stateFailure>"

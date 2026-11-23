@@ -526,6 +526,20 @@ TEST(Config_SpoofLoadAny) {
     CHECK(c.warnings[0].find("spoof_load_any") != std::string::npos);
 }
 
+// [debug] triple_diag=1 (1.3.0): the triple-screen diagnostics; 0 by
+// default, and only in [debug].
+TEST(Config_TripleDiagIsADebugSwitch) {
+    CHECK(!ParseConfig(IniFile::Parse("")).triple_diag);
+    CHECK(ParseConfig(IniFile::Parse("[debug]\ntriple_diag=1\n")).triple_diag);
+    CHECK(ParseConfig(IniFile::Parse("[bridge]\nenabled=1\n[debug]\ntriple_diag=1\n")).triple_diag);
+    CHECK(!ParseConfig(IniFile::Parse("[debug]\ntriple_diag=0\n")).triple_diag);
+    CHECK(!ParseConfig(IniFile::Parse("[bridge]\ntriple_diag=1\n")).triple_diag);
+    Config c = ParseConfig(IniFile::Parse("[debug]\ntriple_diag=on\n"));
+    CHECK(!c.triple_diag);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("triple_diag") != std::string::npos);
+}
+
 // mfg_unlocker=0 keeps the bridge from loading the MFG-Unlocker that the
 // installer put into ac-dlssg\mfg on an RTX 40; a missing key loads it.
 TEST(Config_MfgUnlockerIsOnUnlessSetToZero) {
