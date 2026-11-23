@@ -29,6 +29,15 @@ bool EqualsNoCase(const std::string& a, const char* b) {
     return i == a.size() && b[i] == '\0';
 }
 
+std::string ToUtf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
 CompatResult Refuse(std::string reason) {
     CompatResult r;
     r.ok = false;
@@ -62,7 +71,11 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
     if (in.hdr_enabled == 1) return Refuse("HDR output is not supported");
     if (in.fsr_active.value_or(0) != 1 || in.fsr_old_implementation.value_or(0) != 3)
         return Refuse("CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)");
-    if (in.aasamples && *in.aasamples > 1) return Refuse("MSAA (AASAMPLES>1) is not supported");
+    if (in.aasamples && *in.aasamples > 1)
+        return Refuse("MSAA is on: AASAMPLES=" + std::to_string(*in.aasamples) + " in " +
+                      (in.video_ini_path.empty() ? std::string("video.ini") : in.video_ini_path) +
+                      " (read at game start); set Anti-aliasing to Off in Content Manager > Settings > Assetto Corsa > "
+                      "Video");
     if (in.camera_mode && !EqualsNoCase(*in.camera_mode, "DEFAULT")) {
         const std::string vr = VrRefusal(in.camera_mode);
         if (!vr.empty()) return Refuse(vr);
@@ -93,7 +106,8 @@ CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& d
     const auto tweaksOver = IniFile::Load(cspOver + L"dxgi_tweaks.ini");
     const auto gfxBase = IniFile::Load(cspBase + L"graphics_adjustments.ini");
     const auto gfxOver = IniFile::Load(cspOver + L"graphics_adjustments.ini");
-    const auto video = IniFile::Load(Join(docsAcDir, L"cfg\\video.ini"));
+    const std::wstring videoPath = Join(docsAcDir, L"cfg\\video.ini");
+    const auto video = IniFile::Load(videoPath);
 
     CompatInputs in;
     in.old_swapchain = ToInt(LayeredGet(tweaksBase, tweaksOver, "COMPATIBILITY", "OLD_SWAPCHAIN"));
@@ -102,6 +116,7 @@ CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& d
     in.hdr_enabled = ToInt(LayeredGet(tweaksBase, tweaksOver, "HDR", "ENABLED"));
     in.fsr_active = ToInt(LayeredGet(gfxBase, gfxOver, "FSR", "ACTIVE"));
     in.fsr_old_implementation = ToInt(LayeredGet(gfxBase, gfxOver, "FSR", "OLD_IMPLEMENTATION"));
+    in.video_ini_path = ToUtf8(videoPath);
     if (video) {
         in.aasamples = ToInt(video->Get("VIDEO", "AASAMPLES"));
         in.video_width = ToInt(video->Get("VIDEO", "WIDTH"));

@@ -20,6 +20,7 @@ struct CompatInputs {
     std::optional<long long> video_width;            // [VIDEO] WIDTH
     std::optional<long long> video_height;           // [VIDEO] HEIGHT
     std::optional<std::string> camera_mode;          // [CAMERA] MODE
+    std::string video_ini_path;  // that video.ini's full path (UTF-8), for the MSAA reason
     // System state.
     // ReadCompatInputs: the registry value (HwSchMode == 2). Per swap chain
     // FactoryHook replaces it with the render adapter's D3DKMT state and uses
@@ -41,7 +42,9 @@ struct CompatResult {
 //  3. hdr_enabled == 1                 -> "HDR output is not supported"
 //  4. fsr_active != 1 or fsr_old_implementation != 3 (missing counts as 0)
 //                                      -> "CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)"
-//  5. aasamples > 1                    -> "MSAA (AASAMPLES>1) is not supported"
+//  5. aasamples > 1                    -> "MSAA is on: AASAMPLES=<n> in <video_ini_path, else video.ini> (read at
+//                                         game start); set Anti-aliasing to Off in Content Manager > Settings >
+//                                         Assetto Corsa > Video" (in every DLSS mode, not only DLAA)
 //  6. camera_mode present and not DEFAULT (case-insensitive)
 //                                      -> VrRefusal for a VR mode; "camera mode TRIPLE (triple screen) is not
 //                                         supported"; "custom rendering mode <MODE> (360, fisheye or split
@@ -68,7 +71,8 @@ std::string VrRefusal(const std::optional<std::string>& cameraMode);
 // argument is zero.
 bool AspectMismatch(double videoW, double videoH, double swapW, double swapH);
 
-// Reads the four files, the HAGS registry value (the fallback) and the module flags.
+// Reads the four files, the HAGS registry value (the fallback) and the module
+// flags; video_ini_path is set whether or not video.ini exists.
 CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& docsAcDir);
 
 // HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers HwSchMode == 2. The

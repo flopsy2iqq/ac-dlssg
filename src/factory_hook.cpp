@@ -274,9 +274,11 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
     const std::string reason = proxy ? std::string() : PassThroughReason(in, bs.reason, adapterReason, compat.reason);
     const LogLevel level = in.is_main_window ? LogLevel::Info : LogLevel::Debug;
     LogWrite(level,
-             "CreateSwapChainForHwnd: hwnd %p%s, %ux%u format %d, %u buffers, swap effect %d, flags 0x%X, %s: %s%s",
+             "CreateSwapChainForHwnd: hwnd %p%s, %ux%u format %d, %u buffers, swap effect %d, flags 0x%X, samples %u, "
+             "%s: %s%s",
              static_cast<void*>(hwnd), in.is_main_window ? " (main window)" : "", desc.Width, desc.Height,
              static_cast<int>(desc.Format), desc.BufferCount, static_cast<int>(desc.SwapEffect), desc.Flags,
+             desc.SampleDesc.Count,
              fullscreenDesc ? "fullscreen desc" : "no fullscreen desc", proxy ? "proxy" : "pass-through: ",
              reason.c_str());
     if (!proxy) {
@@ -326,9 +328,13 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChain(IDXGIFactory* self, IUnknown* devi
     if (!original) return DXGI_ERROR_INVALID_CALL;
     const bool external = !IsInternalCall();
     if (external && desc) {
-        LOGD("CreateSwapChain (legacy): hwnd %p, %ux%u, windowed %d: pass-through",
-             static_cast<void*>(desc->OutputWindow), desc->BufferDesc.Width, desc->BufferDesc.Height,
-             desc->Windowed ? 1 : 0);
+        // The game's own window at INFO: with MSAA, CSP's chain is not a
+        // flip-model one, and the sample count shows it.
+        LogWrite(IsMainGameWindow(desc->OutputWindow) ? LogLevel::Info : LogLevel::Debug,
+                 "CreateSwapChain (legacy): hwnd %p%s, %ux%u, windowed %d, swap effect %d, samples %u: pass-through",
+                 static_cast<void*>(desc->OutputWindow), IsMainGameWindow(desc->OutputWindow) ? " (main window)" : "",
+                 desc->BufferDesc.Width, desc->BufferDesc.Height, desc->Windowed ? 1 : 0,
+                 static_cast<int>(desc->SwapEffect), desc->SampleDesc.Count);
     }
     const HWND hwnd = desc ? desc->OutputWindow : nullptr;
     DiagCall diag;  // diagnostics (GitHub issue 10)

@@ -35,7 +35,20 @@ const char* kOld = "OLD_SWAPCHAIN=1 is not supported";
 const char* kExcl = "EXCLUSIVE_FULLSCREEN=1 is not supported";
 const char* kHdr = "HDR output is not supported";
 const char* kFsr = "CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)";
-const char* kMsaa = "MSAA (AASAMPLES>1) is not supported";
+// MSAA: the value and the file it came from, that it was read at game
+// start, and where Content Manager turns it off.
+std::string Msaa(long long samples, const std::string& file = "video.ini") {
+    return "MSAA is on: AASAMPLES=" + std::to_string(samples) + " in " + file +
+           " (read at game start); set Anti-aliasing to Off in Content Manager > Settings > Assetto Corsa > Video";
+}
+const std::string kMsaa = Msaa(4);
+
+std::string Utf8(const std::wstring& w) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+    return s;
+}
 const char* kAspect = "video.ini aspect ratio differs from the window; letterboxed output is not supported in v1";
 const char* kDlss5 =
     "DLSS 5 Bridge (dlss5-bridge.addon64) is loaded: ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 "
@@ -84,9 +97,9 @@ TEST(Compat_EachRuleAlone) {
 
     in = GoodInputs();
     in.aasamples = 2;
-    CHECK_EQ(Reason(in), kMsaa);
+    CHECK_EQ(Reason(in), Msaa(2));
     in.aasamples = 8;
-    CHECK_EQ(Reason(in), kMsaa);
+    CHECK_EQ(Reason(in), Msaa(8));
 
     in = GoodInputs();
     in.camera_mode = "TRIPLE";
@@ -201,6 +214,22 @@ TEST(Compat_OtherCameraModesNameWhatTheyAre) {
     CHECK_EQ(Reason(in), "camera mode SOMETHING is not supported");
 }
 
+// The MSAA reason names the video.ini the bridge read (MSAA blocks frame
+// generation in every DLSS mode, not only with DLAA); with a long Documents
+// path it still fits the panel's state reason whole.
+TEST(Compat_MsaaReasonNamesTheValueAndTheFile) {
+    auto in = GoodInputs();
+    in.aasamples = 4;
+    in.video_ini_path = "C:\\Users\\Driver\\Documents\\Assetto Corsa\\cfg\\video.ini";
+    CHECK_EQ(Reason(in), Msaa(4, "C:\\Users\\Driver\\Documents\\Assetto Corsa\\cfg\\video.ini"));
+    in.video_ini_path = "C:\\Users\\A Long User Name\\OneDrive - A Company Name\\Documents\\Assetto Corsa\\cfg\\video.ini";
+    CHECK(Reason(in).size() < 256);
+    in.aasamples = 1;
+    CHECK_EQ(Reason(in), "");
+    in.aasamples = 0;
+    CHECK_EQ(Reason(in), "");
+}
+
 TEST(Compat_CameraModeCaseInsensitive) {
     auto in = GoodInputs();
     in.camera_mode = "default";
@@ -274,6 +303,8 @@ TEST(Compat_ReadInputsLayered) {
     CHECK(in.video_width == std::optional<long long>(2560));
     CHECK(in.video_height == std::optional<long long>(1440));
     CHECK(in.camera_mode == std::optional<std::string>("TRIPLE"));
+    // The file the MSAA reason names, as UTF-8.
+    CHECK_EQ(in.video_ini_path, Utf8(docs + L"\\cfg\\video.ini"));
     CHECK_EQ(in.hags_on, ReadHagsEnabled());
     CHECK(!in.dlss5_bridge_loaded);
     CHECK(!in.renodx_dlss5_loaded);
