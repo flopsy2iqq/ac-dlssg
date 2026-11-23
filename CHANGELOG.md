@@ -6,6 +6,10 @@ section of a version as its GitHub release notes.
 
 ## [1.3.0] - unreleased
 
+### Fixed
+
+- **"Cannot find drive. A drive with the name 'F' does not exist."** (GitHub issue 13). `install.bat` stopped when Steam's `libraryfolders.vdf` still listed a library on a drive that no longer exists. Such a library is now skipped and the search goes on with the next one; when the game is found in none of them, the message names the skipped libraries and why (for example `F:\SteamLibrary (drive F: does not exist)`) and asks for `-GameDir`. The same applies to `uninstall.bat`, `collect-logs.bat` and the system report.
+
 ### Changed
 
 - `bridge.log` keeps the diagnostic lines of the 1.2.1 test build for GitHub issue 10: `diag:` lines say who creates the swap chains and who calls Present and NGX, describe the devices, windows and modules involved and list the driver profile's settings, and the stats line ends with `no_evaluate=<n>`.

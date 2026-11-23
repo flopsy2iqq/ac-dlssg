@@ -158,6 +158,17 @@ function Invoke-Case([string]$Name, [scriptblock]$Body) {
     }
 }
 
+# A drive letter that no drive and no PowerShell drive uses, from Z: down
+# to D:, or $null: a path on it stands for a drive that no longer exists.
+function Get-FreeDriveLetter {
+    $used = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1).ToUpperInvariant() }) +
+        @(Get-PSDrive | ForEach-Object { $_.Name.ToUpperInvariant() })
+    foreach ($c in [char[]]'ZYXWVUTSRQPONMLKJIHGFED') {
+        if ($used -notcontains [string]$c) { return [string]$c }
+    }
+    return $null
+}
+
 function Test-UnderFakeRoot([string]$Path) {
     if (-not $Path) { return $false }
     $full = [IO.Path]::GetFullPath($Path)
@@ -3586,6 +3597,44 @@ Invoke-Case 'Q: helpers (Steam library discovery, PE check on real builds)' {
     Write-Text (Join-Path $steam 'steamapps\libraryfolders.vdf') $vdfOld
     $found = Find-AssettoCorsaDir -SteamPath $steam
     Check ($found -and ([IO.Path]::GetFullPath($found) -eq [IO.Path]::GetFullPath($acDir))) 'libraryfolders.vdf (old format)'
+
+    # GitHub issue 13: libraryfolders.vdf still lists a library on a drive
+    # that no longer exists. That library is skipped; the search goes on.
+    $letter = Get-FreeDriveLetter
+    if (-not $letter) {
+        Write-Host '    skip  no free drive letter for a library on a missing drive'
+    } else {
+        $gone = "${letter}:\SteamLibrary"
+        $vdfGone = "`"libraryfolders`"`n{`n`t`"0`"`n`t{`n`t`t`"path`"`t`t`"$($gone.Replace('\', '\\'))`"`n`t}`n" +
+            "`t`"1`"`n`t{`n`t`t`"path`"`t`t`"$($lib1.Replace('\', '\\'))`"`n`t}`n}`n"
+        Write-Text (Join-Path $steam 'steamapps\libraryfolders.vdf') $vdfGone
+        $found = $null
+        $err = ''
+        try { $found = Find-AssettoCorsaDir -SteamPath $steam } catch { $err = $_.Exception.Message }
+        Check ($err -eq '') "a library on the missing drive ${letter}: is no error ($err)"
+        Check ($found -and ([IO.Path]::GetFullPath($found) -eq [IO.Path]::GetFullPath($acDir))) 'the library listed after it is still searched and found'
+        $vdfOnlyGone = "`"libraryfolders`"`n{`n`t`"1`"`n`t{`n`t`t`"path`"`t`t`"$($gone.Replace('\', '\\'))`"`n`t}`n}`n"
+        Write-Text (Join-Path $steam 'steamapps\libraryfolders.vdf') $vdfOnlyGone
+        $found = 'not called'
+        $err = ''
+        try { $found = Find-AssettoCorsaDir -SteamPath $steam } catch { $err = $_.Exception.Message }
+        Check ($err -eq '' -and $null -eq $found) "only the library on ${letter}: listed: nothing found, no error ($err)"
+        $refusal = ''
+        try { Resolve-GameDir '' -SteamPath $steam | Out-Null } catch { $refusal = $_.Exception.Message }
+        Write-Host "      | $refusal"
+        Check ($refusal -match [regex]::Escape("$gone (drive ${letter}: does not exist)") -and $refusal -match '-GameDir') `
+            'the refusal names the skipped library and why, and asks for -GameDir'
+        # A library entry that is no usable path at all is skipped the same way.
+        $vdfBad = "`"libraryfolders`"`n{`n`t`"1`"`n`t{`n`t`t`"path`"`t`t`"C:\\bad|name`"`n`t}`n" +
+            "`t`"2`"`n`t{`n`t`t`"path`"`t`t`"$($lib1.Replace('\', '\\'))`"`n`t}`n}`n"
+        Write-Text (Join-Path $steam 'steamapps\libraryfolders.vdf') $vdfBad
+        $found = $null
+        $err = ''
+        try { $found = Find-AssettoCorsaDir -SteamPath $steam } catch { $err = $_.Exception.Message }
+        Check ($err -eq '' -and $found -and ([IO.Path]::GetFullPath($found) -eq [IO.Path]::GetFullPath($acDir))) `
+            "a library path with an invalid character is skipped ($err)"
+        Write-Text (Join-Path $steam 'steamapps\libraryfolders.vdf') $vdfOld
+    }
     Remove-Item -LiteralPath (Join-Path $acDir 'acs.exe')
     Check (-not (Find-AssettoCorsaDir -SteamPath $steam)) 'nothing found when no library has acs.exe'
     $defaultSteam = Join-Path ${env:ProgramFiles(x86)} 'Steam'

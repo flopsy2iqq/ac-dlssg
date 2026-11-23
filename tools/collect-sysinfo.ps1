@@ -117,8 +117,15 @@ if ($steam) {
     $vdf = Join-Path $libs[0] 'steamapps\libraryfolders.vdf'
     if (Test-Path $vdf) { Select-String -Path $vdf -Pattern '"path"\s+"([^"]+)"' | ForEach-Object { $libs += ($_.Matches[0].Groups[1].Value -replace '\\\\', '\') } }
     foreach ($l in ($libs | Select-Object -Unique)) {
-        $cand = Join-Path $l 'steamapps\common\assettocorsa'
-        if (Test-Path (Join-Path $cand 'acs.exe')) { $acDir = $cand; break }
+        # A library on a drive that no longer exists is skipped: Join-Path
+        # would fail on it (GitHub issue 13).
+        try {
+            if (-not (Test-Path -LiteralPath $l -PathType Container)) { Add "skipped Steam library $l (not found)"; continue }
+            $cand = [IO.Path]::Combine($l, 'steamapps\common\assettocorsa')
+            if (Test-Path -LiteralPath ([IO.Path]::Combine($cand, 'acs.exe'))) { $acDir = $cand; break }
+        } catch {
+            Add "skipped Steam library $l ($($_.Exception.Message))"
+        }
     }
 }
 if (-not $acDir) {

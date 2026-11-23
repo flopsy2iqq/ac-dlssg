@@ -225,8 +225,10 @@ function Get-SteamLibraries([string]$SteamRoot) {
     return $libraries
 }
 
+# [IO.Path]::Combine, not Join-Path: Join-Path throws for a drive that does
+# not exist (GitHub issue 13).
 function Get-AppInstallDirName([string]$Library) {
-    $acf = Join-Path $Library "steamapps\appmanifest_$($script:AcdbSteamAppId).acf"
+    $acf = [IO.Path]::Combine($Library, 'steamapps', "appmanifest_$($script:AcdbSteamAppId).acf")
     if (Test-Path -LiteralPath $acf -PathType Leaf) {
         $m = [regex]::Match([System.IO.File]::ReadAllText($acf), '(?m)^\s*"installdir"\s+"((?:[^"\\]|\\.)*)"')
         if ($m.Success -and $m.Groups[1].Value) { return ($m.Groups[1].Value -replace '\\(.)', '$1') }
@@ -234,27 +236,56 @@ function Get-AppInstallDirName([string]$Library) {
     return 'assettocorsa'
 }
 
+# The libraries the last Find-AssettoCorsaDir could not search, as
+# "<library> (<why>)"; Resolve-GameDir names them when the game is not found.
+$script:AcdbSkippedLibraries = @()
+
+# Why a library folder that Test-Path does not find is missing.
+function Get-MissingLibraryReason([string]$Library) {
+    $root = [IO.Path]::GetPathRoot($Library)
+    if ($root -match '^[A-Za-z]:\\?$' -and -not (Test-Path -LiteralPath ($root.Substring(0, 2) + '\'))) {
+        return "drive $($root.Substring(0, 2)) does not exist"
+    }
+    return 'folder not found'
+}
+
 # With -SteamPath only that Steam folder is searched; otherwise the Steam
-# folders from the registry. Returns $null when acs.exe is not found.
+# folders from the registry. Returns $null when acs.exe is not found. A
+# library that cannot be searched (its drive no longer exists, GitHub issue
+# 13, or its path is not usable) is skipped and recorded in
+# $script:AcdbSkippedLibraries, so that the search goes on with the next one.
 function Find-AssettoCorsaDir([string]$SteamPath) {
+    $script:AcdbSkippedLibraries = @()
     $roots = if ($SteamPath) { @($SteamPath) } else { @(Get-SteamRoots) }
     foreach ($root in $roots) {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
         foreach ($library in @(Get-SteamLibraries $root)) {
-            $candidate = Join-Path $library ('steamapps\common\' + (Get-AppInstallDirName $library))
-            if (Test-Path -LiteralPath (Join-Path $candidate $script:AcdbGameExe) -PathType Leaf) {
-                return Get-NormalizedPath $candidate
+            try {
+                if (-not (Test-Path -LiteralPath $library -PathType Container)) {
+                    $script:AcdbSkippedLibraries += "$library ($(Get-MissingLibraryReason $library))"
+                    continue
+                }
+                $candidate = [IO.Path]::Combine($library, 'steamapps', 'common', (Get-AppInstallDirName $library))
+                if (Test-Path -LiteralPath ([IO.Path]::Combine($candidate, $script:AcdbGameExe)) -PathType Leaf) {
+                    return Get-NormalizedPath $candidate
+                }
+            } catch {
+                $script:AcdbSkippedLibraries += "$library ($($_.Exception.Message))"
+                continue
             }
         }
     }
     return $null
 }
 
-function Resolve-GameDir([string]$GameDir) {
+# -SteamPath: search only that Steam folder (see Find-AssettoCorsaDir).
+function Resolve-GameDir([string]$GameDir, [string]$SteamPath = '') {
     if (-not $GameDir) {
-        $found = Find-AssettoCorsaDir
+        $found = Find-AssettoCorsaDir $SteamPath
         if (-not $found) {
-            Stop-Refused 'Assetto Corsa was not found through Steam''s libraryfolders.vdf. Pass -GameDir <folder that contains acs.exe>.'
+            $skipped = @($script:AcdbSkippedLibraries)
+            $why = if ($skipped.Count) { " Skipped Steam libraries: $($skipped -join '; ')." } else { '' }
+            Stop-Refused "Assetto Corsa was not found through Steam's libraryfolders.vdf.$why Pass -GameDir <folder that contains acs.exe>."
         }
         return $found
     }
