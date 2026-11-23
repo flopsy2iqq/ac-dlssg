@@ -24,19 +24,25 @@ It takes about 5 minutes.
 5. **Turn on DLSS before you start the game.** Frame generation needs it.
    - In Content Manager, open Settings, then Custom Shaders Patch, and click **ADJUSTMENTS** (under Graphics) in the list on the left.
    - Under **Upscaling**, tick **Active** and set **Method** to **NVIDIA DLSS**. **EXTRA FX** (also under Graphics) must be active too.
-   - **Using DLAA** (Quality: **DLAA (100%)**)? Then also turn off MSAA and FXAA, or moving things leave a ghost trail. In Content Manager, open Settings, then Assetto Corsa, then Video, set **MSAA** to **Off** and untick **FXAA**. Keep **Enable post-processing effects** ticked, DLSS needs it.
+   - Turn **MSAA off**, in every DLSS mode: in Content Manager, open Settings, then Assetto Corsa, then Video, and set **Anti-aliasing** (MSAA) to **Off**. With MSAA on, frame generation does not start.
+   - **Using DLAA** (Quality: **DLAA (100%)**)? Then also untick **FXAA** there, or moving things leave a ghost trail. Keep **Enable post-processing effects** ticked, DLSS needs it.
 6. **Start the game** as usual and drive. Frame generation turns on by itself.
 
 ## Check that it works
 
 - Press **Ctrl+F10** while driving. Frame generation switches off, and pressing it again switches it back on.
-- Open the **AC DLSS-G** window from CSP's app bar. It shows whether frame generation is on and your FPS, and it has the settings.
+- Open the **AC DLSS-G** window from CSP's app bar: in the game, move the mouse to the right edge of the screen, the app bar slides out, and click the AC DLSS-G logo. The window opens by itself the first time. It shows whether frame generation is on and your FPS, and it has the settings.
 - CSP's own FPS counter shows only the real frames. The NVIDIA overlay (Alt+R) shows the frames on screen.
 
 ## Something is wrong?
 
 - **No FPS gain:** check that DLSS is on (step 5), then open the **AC DLSS-G** window. It says why frame generation is off.
-- **Ghosting** (a trail behind moving things) **with DLAA:** turn off MSAA and FXAA (step 5).
+- **Ghosting** (a trail behind moving things) **with DLAA:** untick FXAA (step 5).
+- **Ghosting at night or behind lights:** set CSP's DLSS preset to **M** (Content Manager: Settings, Custom Shaders Patch, ADJUSTMENTS, Upscaling, DLSS preset). The tested setup uses M.
+- **The window says "NVIDIA Smooth Motion ... is active"** (RTX 40 and RTX 50): the NVIDIA driver's own frame generation took over the game, even if the NVIDIA App shows it off. In [NVIDIA Profile Inspector](https://github.com/Orbmu2k/nvidiaProfileInspector), choose the profile **Assetto Corsa**, set **Smooth Motion - Enabled APIs** (`0xB0CC0875`) to **5**, click **Apply changes** and restart the game. If it still says so, set the same in the global profile (**_GLOBAL_DRIVER_PROFILE**). See the README for details.
+- **VR** is not supported and not planned: ac-dlssg switches itself off in VR. Use SteamVR Motion Smoothing, Meta ASW or your OpenXR runtime's reprojection instead.
+- **DLSS 5 Bridge** cannot run together with ac-dlssg yet: remove it (or untick it in ReShade's Add-ons tab) for frame generation.
+- **Streamline warnings** in the logs, such as `Invalid backbuffer resource extent` once at start or `Out of order frame` after frame generation switches off, are harmless.
 - **Stutter on a G-Sync or FreeSync monitor:** in NVIDIA Control Panel, open Manage 3D settings > Program settings > Assetto Corsa (`acs.exe`): **Vertical sync = On**, and keep G-Sync on. It matters when the frames on screen are above your monitor's refresh rate.
 - **On a laptop:** in Windows Settings, open System, then Display, then Graphics, and set `acs.exe` to **High performance**.
 - **The game does not start:** first double-click **`collect-logs.bat`** in `ac-dlssg` (see the next point) and keep the zip it makes. Then uninstall the mod (see [Uninstall](#uninstall)). The game is back to how it was, and the zip stays in `ac-dlssg`.

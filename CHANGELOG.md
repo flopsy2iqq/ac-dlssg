@@ -23,6 +23,11 @@ section of a version as its GitHub release notes.
 - The "DLSS-G provider" line of `bridge.log` names the NVIDIA App's DLSS-G from NGX's cache (`\NGX\models\dlssg\versions\<n>\files\*.bin`, with its version, for example 310.9.16) and the driver's own `nvngx_dlssg.dll` from the DriverStore, which NVIDIA Smooth Motion loads, instead of saying "nvngx_dlssg.dll is not loaded".
 - `bridge.log` keeps the diagnostic lines of the 1.2.1 test build for GitHub issue 10: `diag:` lines say who creates the swap chains and who calls Present and NGX, describe the devices, windows and modules involved and list the driver profile's settings, and the stats line ends with `no_evaluate=<n>`.
 
+### Documentation
+
+- The READMEs, the install guides and the test package's `README-test.txt` say that MSAA must be off in every DLSS mode (before, they asked for it only with DLAA), that CSP's DLSS preset M removes ghost trails at night and behind lights, and where CSP's app bar and the AC DLSS-G window are (move the mouse to the right edge of the screen).
+- New entries under "If something goes wrong": NVIDIA Smooth Motion, with the steps in NVIDIA Profile Inspector ("Smooth Motion - Enabled APIs", 0xB0CC0875, set to 5 in the "Assetto Corsa" profile, and the global profile checked too); VR, which is not supported and not planned, with SteamVR Motion Smoothing, Meta ASW or OpenXR reprojection instead; DLSS 5 Bridge, which cannot run together with ac-dlssg yet; and the Streamline warnings that appear once at start or after frame generation switches off and are harmless. `OLD_SWAPCHAIN=1` is listed as not supported.
+
 ## [1.2.0] - 2026-10-22
 
 ### Added

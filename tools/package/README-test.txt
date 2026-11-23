@@ -105,10 +105,16 @@ ac-dlssg {VERSION} для Assetto Corsa
      списке слева (группа Graphics) выберите ADJUSTMENTS, в блоке Upscaling
      поставьте галочку Active и в Method выберите NVIDIA DLSS. EXTRA FX
      (там же, в группе Graphics) тоже должен быть включён.
-     Если в Quality выбран DLAA (100%), выключите ещё MSAA и FXAA:
-     Настройки, Assetto Corsa, Графика: Сглаживание «Выкл.», галочку
-     «Быстрое сглаживание (FXAA)» снять, постобработку оставить
+     MSAA выключите в любом режиме DLSS: Настройки, Assetto Corsa,
+     Графика: Сглаживание «Выкл.». С включённым MSAA генерация не
+     запускается. Если в Quality выбран DLAA (100%), снимите там ещё
+     галочку «Быстрое сглаживание (FXAA)», постобработку оставьте
      включённой. Иначе за движущимися объектами будет шлейф (гостинг).
+     Шлейф ночью или за фарами убирает пресет DLSS M: Настройки, Custom
+     Shaders Patch, ADJUSTMENTS, Upscaling, DLSS preset.
+     Окно «AC DLSS-G»: в игре подведите мышь к правому краю экрана,
+     выедет панель приложений CSP, нажмите на логотип AC DLSS-G. В первый
+     раз окно открывается само.
      Запустите игру как обычно (через Steam или Content Manager).
      Генерация кадров включается сама. Ctrl+F10 в игре (или переключатель
      в окне «AC DLSS-G») включает и выключает её — так удобно сравнить FPS
@@ -149,6 +155,27 @@ ac-dlssg {VERSION} для Assetto Corsa
   Сначала запустите ac-dlssg\collect-logs.bat из папки игры и сохраните
   zip, затем ac-dlssg\uninstall.bat (игра вернётся в прежнее состояние), и
   пришлите zip.
+
+Если окно пишет "NVIDIA Smooth Motion ... is active" (RTX 40 и RTX 50)
+  Игру захватила собственная генерация кадров драйвера NVIDIA (Smooth
+  Motion), даже если приложение NVIDIA показывает её выключенной. В NVIDIA
+  Profile Inspector (https://github.com/Orbmu2k/nvidiaProfileInspector)
+  выберите профиль Assetto Corsa, поставьте Smooth Motion - Enabled APIs
+  (0xB0CC0875) в 5, нажмите Apply changes и перезапустите игру. Если окно
+  пишет то же, поставьте то же значение в глобальном профиле
+  (_GLOBAL_DRIVER_PROFILE).
+
+Что ещё нужно знать
+  - VR не поддерживается и не планируется: в VR мост сам выключается.
+    Для плавности используйте SteamVR Motion Smoothing, Meta ASW или
+    перепроекцию рантайма OpenXR.
+  - DLSS 5 Bridge (dlss5-bridge.addon64) пока не может работать вместе с
+    мостом: для генерации кадров уберите его.
+  - Не поддерживаются тройные мониторы, HDR, MSAA, EXCLUSIVE_FULLSCREEN=1
+    и OLD_SWAPCHAIN=1.
+  - Разовые предупреждения Streamline в логах (Invalid backbuffer resource
+    extent при запуске, Out of order frame после выключения генерации)
+    безвредны.
 
 Что меняется в папке игры
   Появляются dxgi.dll (это и есть мост), папка ac-dlssg (Streamline,
