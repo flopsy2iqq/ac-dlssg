@@ -94,6 +94,34 @@ TEST(TripleDiagLog_LogsEveryEvaluateOfTheWindow) {
     CHECK(!log.WantsEvaluates());
 }
 
+// Review finding B-4: a window whose frames never end (no Present ends them
+// once the presenter stopped) still stops, at the cap of evaluate lines per
+// window; and every window together stops at the cap for the session.
+TEST(TripleDiagLog_EvaluatesWithoutAnEndStopAtTheCaps) {
+    static_assert(kTripleDiagMaxEvaluateLinesPerWindow == 3000 && kTripleDiagMaxEvaluateLines == 6000);
+    Lines lines;
+    TripleDiagLog log(lines.Sink(), 300, 4, 10, 15);
+    for (int i = 0; i < 50; ++i) log.OnEvaluate(Evaluate(1));
+    CHECK_EQ(lines.Count(": feature 0x1;"), 10u);
+    CHECK_EQ(lines.Count("triple-diag: window 1 stopped at frame 1 after 10 evaluate lines, the most for one window; "
+                         "a DLSS feature created later starts window 2"),
+             1u);
+    CHECK(!log.WantsEvaluates());
+    log.OnCreate(2, 1920, 1080, 5760, 1080);
+    CHECK(log.WantsEvaluates());
+    for (int i = 0; i < 50; ++i) log.OnEvaluate(Evaluate(2));
+    lines.Print();
+    CHECK_EQ(lines.Count(": feature 0x2;"), 5u);
+    CHECK_EQ(lines.Count("triple-diag: 15 evaluate lines in this session, the most; nothing more is logged"), 1u);
+    CHECK(!log.WantsEvaluates());
+    log.OnCreate(3, 1920, 1080, 5760, 1080);
+    CHECK(!log.WantsEvaluates());
+    log.OnEvaluate(Evaluate(3));
+    log.EndFrame(1920, 1080, 28);
+    CHECK_EQ(lines.Count(": feature 0x3;"), 0u);
+    CHECK_EQ(lines.Count("triple-diag: frame "), 15u);  // the evaluate lines only, no frame line after the stop
+}
+
 TEST(TripleDiagLog_ANewFeatureStartsAnotherWindowUpToTheLimit) {
     Lines lines;
     TripleDiagLog log(lines.Sink(), 1, 2);

@@ -1582,7 +1582,11 @@ HRESULT D3D12Presenter::PresentFrame(ID3D11DeviceContext* ctx, ID3D11Texture2D* 
 HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceContext* ctx, ID3D11Texture2D* source,
                                            UINT cspSync, UINT cspFlags) {
     if (ngx_attached) ProcessNgx();
-    if (self.stopped_) return stop_error;
+    if (self.stopped_) {
+        // The diagnostics' window still ends (review finding B-4).
+        if (triple_diag) triple_diag->EndFrame(width, height, DXGI_FORMAT_R8G8B8A8_UNORM);
+        return stop_error;
+    }
     if (!ctx) return E_INVALIDARG;
     if (panel_control) PollPanel(self);
     ++stats_presents;

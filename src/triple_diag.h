@@ -10,8 +10,10 @@
 // keys, jitter, MV scale, and the Color, Output, Depth and MotionVectors
 // textures; and for each frame the number of evaluates and the swap chain's
 // size. A DLSS feature created later (a resolution change) starts another
-// such window, at most kTripleDiagWindows in a session. Without the switch,
-// triple-screen mode stays refused (compat.h).
+// such window, at most kTripleDiagWindows in a session; a window stops early
+// at kTripleDiagMaxEvaluateLinesPerWindow evaluate lines, and the session
+// at kTripleDiagMaxEvaluateLines. Without the switch, triple-screen mode
+// stays refused (compat.h).
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -24,6 +26,11 @@ namespace acdb {
 
 constexpr uint32_t kTripleDiagFrames = 300;
 constexpr uint32_t kTripleDiagWindows = 4;
+// Caps on the evaluate lines (review finding B-4), so that a window whose
+// frames never end (no Present after the presenter stopped) still stops:
+// per window (10 a frame on average), and in the whole session.
+constexpr uint32_t kTripleDiagMaxEvaluateLinesPerWindow = 3000;
+constexpr uint32_t kTripleDiagMaxEvaluateLines = 6000;
 
 // Pure: the switch is set and the camera mode is TRIPLE (case-insensitive).
 bool TripleDiagActive(bool configured, const std::optional<std::string>& cameraMode);
@@ -79,7 +86,9 @@ std::string TripleDiagFrameLine(uint32_t frame, uint32_t evaluates, uint32_t swa
 class TripleDiagLog {
 public:
     explicit TripleDiagLog(std::function<void(const std::string&)> log, uint32_t frames = kTripleDiagFrames,
-                           uint32_t windows = kTripleDiagWindows);
+                           uint32_t windows = kTripleDiagWindows,
+                           uint32_t maxLinesPerWindow = kTripleDiagMaxEvaluateLinesPerWindow,
+                           uint32_t maxLines = kTripleDiagMaxEvaluateLines);
     // A counted CreateFeature: logged, and the next evaluate starts a new
     // window while windows remain.
     void OnCreate(uint64_t featureKey, uint32_t width, uint32_t height, uint32_t outWidth, uint32_t outHeight);
@@ -95,7 +104,7 @@ private:
     void Log(const std::string& line);
 
     std::function<void(const std::string&)> log_;
-    const uint32_t frames_, windows_;
+    const uint32_t frames_, windows_, maxLinesPerWindow_, maxLines_;
     mutable std::mutex mu_;
     uint32_t windowsUsed_ = 0;
     uint32_t framesLeft_ = 0;  // > 0 while a window is open
@@ -103,6 +112,8 @@ private:
     uint32_t frame_ = 0;       // the frame in the open window, from 1
     uint32_t evaluates_ = 0;   // counted evaluates of that frame
     uint32_t creates_ = 0;     // creates logged in this session
+    uint32_t windowLines_ = 0;  // evaluate lines of the open window
+    uint32_t lines_ = 0;        // evaluate lines of the session
 };
 
 }  // namespace acdb

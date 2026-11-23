@@ -179,8 +179,13 @@ std::string TripleDiagFrameLine(uint32_t frame, uint32_t evaluates, uint32_t swa
     return buf;
 }
 
-TripleDiagLog::TripleDiagLog(std::function<void(const std::string&)> log, uint32_t frames, uint32_t windows)
-    : log_(std::move(log)), frames_(frames), windows_(windows) {}
+TripleDiagLog::TripleDiagLog(std::function<void(const std::string&)> log, uint32_t frames, uint32_t windows,
+                             uint32_t maxLinesPerWindow, uint32_t maxLines)
+    : log_(std::move(log)),
+      frames_(frames),
+      windows_(windows),
+      maxLinesPerWindow_(maxLinesPerWindow),
+      maxLines_(maxLines) {}
 
 void TripleDiagLog::Log(const std::string& line) {
     if (log_) log_(line);
@@ -222,12 +227,31 @@ void TripleDiagLog::OnEvaluate(const TripleDiagEvaluate& e) {
             framesLeft_ = frames_;
             frame_ = 1;
             evaluates_ = 0;
+            windowLines_ = 0;
             lines.push_back("triple-diag: window " + std::to_string(windowsUsed_) + " of " +
                             std::to_string(windows_) + ": logging every DLSS evaluate of the next " +
                             std::to_string(frames_) + " frames (frame generation stays off)");
         }
         ++evaluates_;
+        ++windowLines_;
+        ++lines_;
         lines.push_back(TripleDiagEvaluateLine(frame_, evaluates_, e));
+        // The caps (review finding B-4): the window, or every window, ends.
+        if (lines_ >= maxLines_) {
+            lines.push_back("triple-diag: " + std::to_string(lines_) +
+                            " evaluate lines in this session, the most; nothing more is logged");
+            framesLeft_ = 0;
+            armed_ = false;
+            windowsUsed_ = windows_;
+        } else if (windowLines_ >= maxLinesPerWindow_) {
+            lines.push_back("triple-diag: window " + std::to_string(windowsUsed_) + " stopped at frame " +
+                            std::to_string(frame_) + " after " + std::to_string(windowLines_) +
+                            " evaluate lines, the most for one window; " +
+                            (windowsUsed_ < windows_ ? "a DLSS feature created later starts window " +
+                                                           std::to_string(windowsUsed_ + 1)
+                                                     : std::string("that was the last window")));
+            framesLeft_ = 0;
+        }
     }
     for (const std::string& l : lines) Log(l);
 }
