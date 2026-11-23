@@ -144,6 +144,7 @@ target_link_libraries(ac-dlssg PRIVATE acdb_core)
 add_library(acdb_drs STATIC
     src/smooth_motion.cpp
     src/drs_json.cpp
+    src/drs_tool.cpp
 )
 target_include_directories(acdb_drs PUBLIC src)
 target_include_directories(acdb_drs SYSTEM PRIVATE "${ACDB_NVAPI_INCLUDE_DIR}")
@@ -188,6 +189,7 @@ add_executable(acdb_tests
     tests/test_nvpresent.cpp
     tests/test_smooth_motion.cpp
     tests/test_drs_json.cpp
+    tests/test_drs_tool.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
