@@ -1370,7 +1370,8 @@ function Set-ManifestDriverProfile([string]$ManifestPath, $Record) {
 # What to do by hand when the helper could not restore the setting: the
 # steps in NVIDIA Profile Inspector for that record.
 function Get-SmoothMotionManualRestore($Record) {
-    $what = if ($Record.before -and $Record.before.present) {
+    $predefined = $Record.before -and $Record.before.PSObject.Properties['predefined'] -and $Record.before.predefined
+    $what = if ($Record.before -and $Record.before.present -and -not $predefined) {
         "set it back to $([long]$Record.before.value)"
     } else {
         'delete the value (right-click it, "Delete user-defined value"), or set it to 7'

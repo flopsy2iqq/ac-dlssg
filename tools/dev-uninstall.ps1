@@ -166,7 +166,9 @@ function Restore-SmoothMotion([string]$Game, $Manifest) {
         }
         foreach ($line in $run.Log) { Step "  $line" }
         if ($run.Code -eq $script:AcdbDrsExit.Ok) {
-            $was = if ($rec.before -and $rec.before.present) {
+            $was = if ($rec.before -and $rec.before.present -and $rec.before.PSObject.Properties['predefined'] -and $rec.before.predefined) {
+                "NVIDIA's own Smooth Motion - Enabled APIs value ($([long]$rec.before.value)) is back in `"$($rec.profile)`""
+            } elseif ($rec.before -and $rec.before.present) {
                 "Smooth Motion - Enabled APIs in `"$($rec.profile)`" is $([long]$rec.before.value) again"
             } else {
                 "the install's Smooth Motion - Enabled APIs value is gone from `"$($rec.profile)`" again (the profile had none of its own)"
