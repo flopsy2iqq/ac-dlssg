@@ -33,11 +33,19 @@ struct TripleDiagTexture {
     bool present = false;    // the key holds a resource
     bool texture2d = false;  // ... and it is a Texture2D, whose description follows
     uint32_t width = 0, height = 0, format = 0, samples = 0, arraySize = 0, mipLevels = 0;
+    const void* resource = nullptr;  // the resource, to tell textures apart (only logged)
 };
 
 // One counted evaluate; an unset optional is a key the block does not set.
 struct TripleDiagEvaluate {
     uint64_t featureKey = 0;
+    // The evaluate's D3D11 context (only logged), whether it is an immediate
+    // one, and whether it belongs to the game's D3D11 device, the device of
+    // the proxied swap chain (unset: not known). The coordinator sets
+    // gameDevice, since the diagnostics run before its own device check.
+    const void* context = nullptr;
+    bool immediate = false;
+    std::optional<bool> gameDevice;
     bool createObserved = false;
     uint32_t createWidth = 0, createHeight = 0, createOutWidth = 0, createOutHeight = 0, createFlags = 0;
     std::optional<uint32_t> width, height, outWidth, outHeight;  // Width, Height, OutWidth, OutHeight
@@ -58,7 +66,8 @@ struct TripleDiagEvaluate {
 // observed. Only reads, and never keeps a pointer.
 TripleDiagEvaluate ReadTripleDiagEvaluate(const NgxEvaluateInputs& in, const NgxCreateInfo* create);
 
-// Pure: "triple-diag: frame <f> evaluate <i>: feature 0x<key> ...".
+// Pure: "triple-diag: frame <f> evaluate <i>: feature 0x<key>; context <ptr>
+// immediate, on the game's device; ...", each texture with its pointer.
 std::string TripleDiagEvaluateLine(uint32_t frame, uint32_t index, const TripleDiagEvaluate& e);
 // Pure: "triple-diag: frame <f>: <n> DLSS evaluates; swap chain <w>x<h> format <fmt>".
 std::string TripleDiagFrameLine(uint32_t frame, uint32_t evaluates, uint32_t swapWidth, uint32_t swapHeight,

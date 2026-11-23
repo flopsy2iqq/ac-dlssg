@@ -40,6 +40,7 @@ TripleDiagTexture TextureOf(ID3D11Resource* r) {
     TripleDiagTexture t;
     if (!r) return t;
     t.present = true;
+    t.resource = r;
     D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     r->GetType(&dim);
     if (dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) return t;
@@ -70,13 +71,27 @@ std::string Base(const std::optional<uint32_t>& x, const std::optional<uint32_t>
     return Opt(x) + "," + Opt(y);
 }
 
+// "<name> <pointer> 1920x360 format 10 ...": the pointer tells the textures
+// of the evaluates apart (review finding B-2).
 std::string TextureText(const char* name, const TripleDiagTexture& t) {
     if (!t.present) return std::string(name) + " none";
-    if (!t.texture2d) return std::string(name) + " not a 2D texture";
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "%s %ux%u format %u samples %u array %u mips %u", name, t.width, t.height,
-                  t.format, t.samples, t.arraySize, t.mipLevels);
+    char buf[160];
+    if (!t.texture2d) {
+        std::snprintf(buf, sizeof(buf), "%s %p not a 2D texture", name, t.resource);
+        return buf;
+    }
+    std::snprintf(buf, sizeof(buf), "%s %p %ux%u format %u samples %u array %u mips %u", name, t.resource, t.width,
+                  t.height, t.format, t.samples, t.arraySize, t.mipLevels);
     return buf;
+}
+
+// "context <pointer> immediate, on the game's device".
+std::string ContextText(const TripleDiagEvaluate& e) {
+    if (!e.context) return "context none";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "context %p %s, ", e.context, e.immediate ? "immediate" : "deferred");
+    return buf + std::string(!e.gameDevice ? "device unknown" : *e.gameDevice ? "on the game's device"
+                                                                               : "not on the game's device");
 }
 
 }  // namespace
@@ -88,6 +103,8 @@ bool TripleDiagActive(bool configured, const std::optional<std::string>& cameraM
 TripleDiagEvaluate ReadTripleDiagEvaluate(const NgxEvaluateInputs& in, const NgxCreateInfo* create) {
     TripleDiagEvaluate e;
     e.featureKey = in.featureKey;
+    e.context = in.ctx;
+    if (in.ctx) e.immediate = in.ctx->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE;
     if (create) {
         e.createObserved = true;
         e.createWidth = create->width;
@@ -131,7 +148,7 @@ std::string TripleDiagEvaluateLine(uint32_t frame, uint32_t index, const TripleD
     char buf[256];
     std::snprintf(buf, sizeof(buf), "triple-diag: frame %u evaluate %u: feature 0x%llX; ", frame, index,
                   static_cast<unsigned long long>(e.featureKey));
-    std::string line = buf;
+    std::string line = buf + ContextText(e) + "; ";
     if (e.createObserved) {
         std::snprintf(buf, sizeof(buf), "create render %ux%u output %ux%u flags 0x%X; ", e.createWidth,
                       e.createHeight, e.createOutWidth, e.createOutHeight, e.createFlags);

@@ -543,18 +543,29 @@ TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
     r.coord->OnEvaluate(r.Inputs(s));
     NgxEvaluateInputs nulls = r.Inputs(CspSources());
     r.coord->OnEvaluate(nulls);
+    // Review finding B-2: an evaluate on another device is reported as such,
+    // although the coordinator ignores it.
+    acdb_test::GpuTestDevices other;
+    REQUIRE(acdb_test::CreateGpuTestDevices(&other));
+    CspSources os = MakeSources(other.device11.Get(), 64, 36);
+    REQUIRE(os.depth && os.mvec);
+    r.coord->OnEvaluate(r.Inputs(os, other.ctx11.Get()));
     r.coord->EndFrame();
     diag.EndFrame(128, 72, 28);
     std::string all;
     for (const std::string& l : lines) all += l + "\n";
     std::printf("%s", all.c_str());
     CHECK(Has(all, "triple-diag: DLSS feature 0x5000 created: render 64x36, output 128x72"));
-    CHECK(Has(all, "triple-diag: frame 1 evaluate 1: feature 0x5000; create render 64x36 output 128x72 flags 0x2"));
-    CHECK(Has(all, "Depth 64x36 format 39"));          // DXGI_FORMAT_R32_TYPELESS
-    CHECK(Has(all, "MotionVectors 64x36 format 34"));  // DXGI_FORMAT_R16G16_FLOAT
+    CHECK(Has(all, "triple-diag: frame 1 evaluate 1: feature 0x5000; context " + Ptr(r.d.ctx11.Get()) +
+                       " immediate, on the game's device; create render 64x36 output 128x72 flags 0x2"));
+    CHECK(Has(all, "Depth " + Ptr(s.depth.Get()) + " 64x36 format 39"));         // DXGI_FORMAT_R32_TYPELESS
+    CHECK(Has(all, "MotionVectors " + Ptr(s.mvec.Get()) + " 64x36 format 34"));  // DXGI_FORMAT_R16G16_FLOAT
     CHECK(Has(all, "frame 1 evaluate 2: feature 0x5000"));
     CHECK(Has(all, "Depth none; MotionVectors none"));
-    CHECK(Has(all, "triple-diag: frame 1: 2 DLSS evaluates; swap chain 128x72 format 28"));
+    CHECK(Has(all, "frame 1 evaluate 3: feature 0x5000; context " + Ptr(other.ctx11.Get()) +
+                       " immediate, not on the game's device; "));
+    CHECK(Has(all, "Depth " + Ptr(os.depth.Get()) + " 64x36 format 39"));
+    CHECK(Has(all, "triple-diag: frame 1: 3 DLSS evaluates; swap chain 128x72 format 28"));
 }
 
 // Review finding B-1: with the triple-screen diagnostics on, the coordinator

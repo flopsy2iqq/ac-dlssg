@@ -39,6 +39,13 @@ TripleDiagEvaluate Evaluate(uint64_t key) {
 }
 
 bool Has(const std::string& s, const char* piece) { return s.find(piece) != std::string::npos; }
+bool Has(const std::string& s, const std::string& piece) { return Has(s, piece.c_str()); }
+
+std::string Ptr(const void* p) {
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%p", p);
+    return buf;
+}
 
 }  // namespace
 
@@ -140,14 +147,40 @@ TEST(TripleDiagLines_NameTheSizesTheSubrectsAndTheTextures) {
     CHECK(Has(l, "bases color 1920,0 depth unset mv unset output unset"));
     CHECK(Has(l, "output subrects 1"));
     CHECK(Has(l, "jitter -0.2500,0.1250 mv scale 1920.0,360.0 reset 0"));
-    CHECK(Has(l, "Color 1920x360 format 10 samples 1"));
-    CHECK(Has(l, "Output 5760x1080 format 28 samples 1"));
-    CHECK(Has(l, "Depth not a 2D texture"));
+    CHECK(Has(l, "Color " + Ptr(nullptr) + " 1920x360 format 10 samples 1"));
+    CHECK(Has(l, "Output " + Ptr(nullptr) + " 5760x1080 format 28 samples 1"));
+    CHECK(Has(l, "Depth " + Ptr(nullptr) + " not a 2D texture"));
     CHECK(Has(l, "MotionVectors none"));
     TripleDiagEvaluate bare = Evaluate(9);
     CHECK(Has(TripleDiagEvaluateLine(1, 1, bare), "create not seen"));
     CHECK_EQ(TripleDiagFrameLine(7, 3, 5760, 1080, 28),
              std::string("triple-diag: frame 7: 3 DLSS evaluates; swap chain 5760x1080 format 28"));
+}
+
+// Review finding B-2: the line identifies each texture by its pointer, and
+// says on which context the evaluate ran and whether that context belongs
+// to the game's D3D11 device (the device of the proxied swap chain).
+TEST(TripleDiagLines_IdentifyTheResourcesAndTheDevice) {
+    TripleDiagEvaluate e = Evaluate(0x10);
+    int ctx = 0, color = 0, depth = 0;
+    e.context = &ctx;
+    e.immediate = true;
+    e.gameDevice = true;
+    e.color = TripleDiagTexture{true, true, 1920, 360, 10, 1, 1, 1, &color};
+    e.depth = TripleDiagTexture{true, false, 0, 0, 0, 0, 0, 0, &depth};
+    std::string l = TripleDiagEvaluateLine(1, 1, e);
+    std::printf("    | %s\n", l.c_str());
+    CHECK(Has(l, "feature 0x10; context " + Ptr(&ctx) + " immediate, on the game's device; "));
+    CHECK(Has(l, "Color " + Ptr(&color) + " 1920x360 format 10 samples 1"));
+    CHECK(Has(l, "Depth " + Ptr(&depth) + " not a 2D texture"));
+    CHECK(Has(l, "Output none"));
+    e.immediate = false;
+    e.gameDevice = false;
+    CHECK(Has(TripleDiagEvaluateLine(1, 1, e), "context " + Ptr(&ctx) + " deferred, not on the game's device; "));
+    e.gameDevice.reset();
+    CHECK(Has(TripleDiagEvaluateLine(1, 1, e), " deferred, device unknown; "));
+    e.context = nullptr;
+    CHECK(Has(TripleDiagEvaluateLine(1, 1, e), "feature 0x10; context none; "));
 }
 
 // What NgxEvaluateInputs carries plus CSP's block, read during the evaluate.
@@ -191,4 +224,5 @@ TEST(TripleDiag_ReadsTheEvaluateBlock) {
     none.featureKey = 7;
     const TripleDiagEvaluate n = ReadTripleDiagEvaluate(none, nullptr);
     CHECK(n.featureKey == 7u && !n.createObserved && !n.width && !n.subrectWidth);
+    CHECK(n.context == nullptr && !n.gameDevice);
 }

@@ -185,8 +185,11 @@ void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
         // block is read only while they log.
         if (deps_.tripleDiag && deps_.tripleDiag->WantsEvaluates()) {
             const auto create = creates_.find(in.featureKey);
-            deps_.tripleDiag->OnEvaluate(
-                ReadTripleDiagEvaluate(in, create != creates_.end() ? &create->second : nullptr));
+            TripleDiagEvaluate e = ReadTripleDiagEvaluate(in, create != creates_.end() ? &create->second : nullptr);
+            // For the line (review finding B-2): the device check below
+            // comes after the diagnostics.
+            if (in.ctx) e.gameDevice = SameDevice(in.ctx);
+            deps_.tripleDiag->OnEvaluate(e);
         }
         if (!in.ctx) return;
         if (in.ctx->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) {
