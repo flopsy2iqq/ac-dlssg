@@ -638,6 +638,89 @@ TEST(LuaApp_OpenXrIsVrAndCustomVideoModesAreFlagged) {
           std::string::npos);
 }
 
+namespace {
+
+// From `notice.<name> = function (` to the first line that is exactly `end`.
+std::string NoticeFunction(const std::string& lua, const std::string& name) {
+    const size_t begin = lua.find("notice." + name + " = function (");
+    if (begin == std::string::npos) return {};
+    const size_t end = lua.find("\nend", begin);
+    return end == std::string::npos ? std::string() : lua.substr(begin, end - begin);
+}
+
+bool InOrder(const std::string& text, std::initializer_list<const char*> parts) {
+    size_t at = 0;
+    for (const char* p : parts) {
+        const size_t found = text.find(p, at);
+        if (found == std::string::npos) {
+            std::printf("  not found in order: %s\n", p);
+            return false;
+        }
+        at = found + std::strlen(p);
+    }
+    return true;
+}
+
+}  // namespace
+
+// Nexus: "the UI does not pop up". On the first run (a flag in ac.storage)
+// the window opens by itself once, after AC's start menu closed, and a toast
+// says where the app lives. ui.toast is missing in older CSP builds: guarded,
+// with ac.setMessage instead.
+TEST(LuaApp_TheFirstRunOpensTheWindowOnceAndSaysWhereTheAppIs) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string step = NoticeFunction(lua, "step");
+    REQUIRE(!step.empty());
+    CHECK(InOrder(step, {"if sim.isInMainMenu then return end", "if not notice.welcomeDone then",
+                         "ac.storage({ welcomeShown = false }, 'acdlssg.')",
+                         "if notice.stored and not notice.stored.welcomeShown then",
+                         "notice.stored.welcomeShown = true", "notice.open()",
+                         "notice.toast(ui.Icons.Info, notice.WELCOME, false)"}));
+    std::smatch m;
+    REQUIRE(std::regex_search(
+        lua, m, std::regex(R"(notice\.WELCOME = ('(?:[^'\\]|\\.)*'(?:\s*\.\.\s*'(?:[^'\\]|\\.)*')*))")));
+    const std::string welcome = m[1];
+    CHECK(welcome.find("right edge of the screen") != std::string::npos);
+    CHECK(welcome.find("app bar") != std::string::npos);
+    CHECK(welcome.find("AC DLSS-G logo") != std::string::npos);
+    // Our window by its title, made visible through CSP's window accessor.
+    CHECK(NoticeFunction(lua, "find").find("if w.title == WORDS.title then return w end") != std::string::npos);
+    CHECK(InOrder(NoticeFunction(lua, "open"), {"ac.accessAppWindow(w.name)", "accessor:valid()",
+                                                 "accessor:setVisible(true)"}));
+    CHECK(InOrder(NoticeFunction(lua, "toast"), {"if ui.toast then", "ui.toast(icon, text)", "else",
+                                                  "ac.setMessage(WORDS.title, text, nil, 10)"}));
+}
+
+// While the bridge passes the game through or does not run, a toast says
+// why, once per session (GitHub issue 11: another mod had replaced the
+// install), unless the window is open and shows it anyway. A bridge that has
+// not decided yet is asked again; any other state ends the check.
+TEST(LuaApp_APassThroughOrAMissingBridgeGetsOneToastPerSession) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string step = NoticeFunction(lua, "step");
+    REQUIRE(!step.empty());
+    CHECK(InOrder(step, {"if notice.reasonShown then return end", "refreshStatus(now)",
+                         "local problem = bridgeProblem(now)", "if problem == 1 then",
+                         "text = TEXT_NOT_RUNNING .. '. ' .. TEXT_NOT_RUNNING_HINT",
+                         "elseif status.bridgeState == STATE_PASS_THROUGH then", "text = texts.state",
+                         "elseif status.bridgeState == STATE_NOT_LOADED then", "return",
+                         "notice.reasonShown = true", "if w and w.visible then return end",
+                         "notice.toast(ui.Icons.Warning, WORDS.title .. ': ' .. text, true)"}));
+    // The toast's button opens the window.
+    CHECK(NoticeFunction(lua, "toast").find("t:button(ui.Icons.Settings, 'Open', notice.open)") != std::string::npos);
+    // Every frame asks the clock only; the steps run at most once per second,
+    // inside pcall, and stop once both notices are done.
+    CHECK(InOrder(NoticeFunction(lua, "update"), {"if now < notice.nextCheck then return end",
+                                                   "notice.nextCheck = now + 1.0",
+                                                   "if notice.welcomeDone and notice.reasonShown then return end",
+                                                   "pcall(notice.step, now)"}));
+    // script.update runs them before the camera writer's early return.
+    const std::string update = lua.substr(lua.find("function script.update(dt)"));
+    CHECK(InOrder(update, {"if notice.update then notice.update() end", "if not opened or sceneReadyFired then return end"}));
+}
+
 TEST(LuaApp_TheMainChunkStaysUnderLuaJitsLocalLimit) {
     const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
     REQUIRE(!lua.empty());

@@ -240,7 +240,13 @@ if opened then
   end
 end
 
+-- The notices outside the window: their functions are set at the end of
+-- this file, where the window's status functions exist (see there).
+local notice = { welcomeDone = false, reasonShown = false, started = nil, nextCheck = 0, stored = nil }
+
 function script.update(dt)
+  -- The first-run and pass-through notices, at most once per second.
+  if notice.update then notice.update() end
   -- Fallback only while render.onSceneReady has never fired.
   if not opened or sceneReadyFired then return end
   publish()
@@ -1301,4 +1307,91 @@ function script.windowMain(dt)
 
   saveButton(now)
   detailsSection(ctl ~= nil)
+end
+
+-- ---------------------------------------------------------------------------
+-- Notices outside the window. On the first run (a flag in ac.storage) the
+-- window opens by itself once and a toast says where the app lives. While
+-- the bridge passes the game through or does not run, a toast says why, once
+-- per session, unless the window is open and shows it anyway. Both wait until
+-- AC's start menu has closed. ui.toast is missing in older CSP builds, so it
+-- is guarded, with ac.setMessage instead.
+
+notice.WELCOME = 'AC DLSS-G shows the status and settings of frame generation. To open it again, move the mouse'
+  .. ' to the right edge of the screen: CSP\'s app bar slides out; click the AC DLSS-G logo there.'
+notice.DELAY = 2.0 -- seconds after the start menu closed
+
+-- Our window in ac.getAppWindows(), by its title (the manifest's NAME).
+notice.find = function ()
+  local windows = ac.getAppWindows()
+  if type(windows) ~= 'table' then return nil end
+  for _, w in ipairs(windows) do
+    if w.title == WORDS.title then return w end
+  end
+  return nil
+end
+
+notice.open = function ()
+  local w = notice.find()
+  local accessor = w and ac.accessAppWindow(w.name)
+  if accessor and accessor:valid() then accessor:setVisible(true) end
+end
+
+notice.toast = function (icon, text, openButton)
+  if ui.toast then
+    local t = ui.toast(icon, text)
+    if openButton and t and t.button then t:button(ui.Icons.Settings, 'Open', notice.open) end
+  else
+    ac.setMessage(WORDS.title, text, nil, 10)
+  end
+end
+
+notice.step = function (now)
+  if sim.isInMainMenu then return end
+  notice.started = notice.started or now
+  if now - notice.started < notice.DELAY then return end
+  if not notice.welcomeDone then
+    notice.welcomeDone = true
+    if ac.storage then notice.stored = ac.storage({ welcomeShown = false }, 'acdlssg.') end
+    if notice.stored and not notice.stored.welcomeShown then
+      notice.stored.welcomeShown = true
+      notice.open()
+      notice.toast(ui.Icons.Info, notice.WELCOME, false)
+      -- The window is open now and shows the state itself.
+      notice.reasonShown = true
+      return
+    end
+  end
+  if notice.reasonShown then return end
+  refreshStatus(now)
+  local problem = bridgeProblem(now)
+  local text
+  if problem == 1 then
+    text = TEXT_NOT_RUNNING .. '. ' .. TEXT_NOT_RUNNING_HINT
+  elseif problem == 2 then
+    text = texts.stopped
+  elseif problem == 3 then
+    text = TEXT_VERSIONS_DIFFER .. '. ' .. texts.versions
+  elseif status.bridgeState == STATE_PASS_THROUGH then
+    text = texts.state
+  elseif status.bridgeState == STATE_NOT_LOADED then
+    return -- the bridge has not decided yet: asked again in a second
+  end
+  notice.reasonShown = true
+  if not text then return end
+  local w = notice.find()
+  if w and w.visible then return end
+  notice.toast(ui.Icons.Warning, WORDS.title .. ': ' .. text, true)
+end
+
+notice.update = function ()
+  local now = os.preciseClock()
+  if now < notice.nextCheck then return end
+  notice.nextCheck = now + 1.0
+  if notice.welcomeDone and notice.reasonShown then return end
+  local ok, err = pcall(notice.step, now)
+  if not ok then
+    notice.welcomeDone, notice.reasonShown = true, true
+    ac.error('AcDlssg: the notices failed: ' .. tostring(err))
+  end
 end
