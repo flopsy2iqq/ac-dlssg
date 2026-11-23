@@ -107,7 +107,7 @@ ac-dlssg {VERSION} для Assetto Corsa
      (там же, в группе Graphics) тоже должен быть включён.
      MSAA выключите в любом режиме DLSS: Настройки, Assetto Corsa,
      Графика: Сглаживание «Выкл.». С включённым MSAA генерация не
-     запускается. Если в Quality выбран DLAA (100%), снимите там ещё
+     включается. Если в Quality выбран DLAA (100%), снимите там ещё
      галочку «Быстрое сглаживание (FXAA)», постобработку оставьте
      включённой. Иначе за движущимися объектами будет шлейф (гостинг).
      Шлейф ночью или за фарами убирает пресет DLSS M: Настройки, Custom
@@ -159,7 +159,7 @@ ac-dlssg {VERSION} для Assetto Corsa
 Если окно пишет "NVIDIA Smooth Motion ... is active" (RTX 40 и RTX 50)
   Игру захватила собственная генерация кадров драйвера NVIDIA (Smooth
   Motion), даже если приложение NVIDIA показывает её выключенной. В NVIDIA
-  Profile Inspector (https://github.com/Orbmu2k/nvidiaProfileInspector)
+  Profile Inspector (ссылка на него есть в docs\README.ru.md)
   выберите профиль Assetto Corsa, поставьте Smooth Motion - Enabled APIs
   (0xB0CC0875) в 5, нажмите Apply changes и перезапустите игру. Если окно
   пишет то же, поставьте то же значение в глобальном профиле

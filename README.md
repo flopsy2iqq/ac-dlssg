@@ -62,7 +62,7 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 
 - **Assetto Corsa** from Steam with a **Custom Shaders Patch preview build** (0.3.0-preview or newer). It was tested with preview622 and preview634. CSP preview builds are available from CSP's author on [Patreon](https://www.patreon.com/c/x4fab/home).
 - **CSP's DLSS upscaling turned on**, in any quality mode including DLAA. Frame generation takes its depth and motion vectors from it.
-- **MSAA off**, in every DLSS mode: Content Manager, Settings, Assetto Corsa, Video: Anti-aliasing (MSAA) Off. With MSAA on, frame generation does not start, and the AC DLSS-G window names the value and the `video.ini` it was read from. With DLAA, also untick FXAA there (keep post-processing on), or moving things ghost.
+- **MSAA off**, in every DLSS mode: Content Manager, Settings, Assetto Corsa, Video: Anti-aliasing (MSAA) Off. With MSAA on, frame generation stays off, and the AC DLSS-G window names the value and the `video.ini` it was read from. With DLAA, also untick FXAA there (keep post-processing on), or moving things ghost.
 - **An NVIDIA RTX GPU:**
   - RTX 50 supports DLSS-G 2X, 3X and 4X itself.
   - RTX 40 supports DLSS-G itself, but NVIDIA allows only 2X there: 3X and 4X are for RTX 50. On a PC whose NVIDIA GPUs are all RTX 40, the installer downloads the third-party [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker), which lifts that limit (unofficial). See [RTX 40 and MFG-Unlocker](#rtx-40-and-mfg-unlocker).

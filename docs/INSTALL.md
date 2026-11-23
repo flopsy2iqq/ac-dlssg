@@ -24,7 +24,7 @@ It takes about 5 minutes.
 5. **Turn on DLSS before you start the game.** Frame generation needs it.
    - In Content Manager, open Settings, then Custom Shaders Patch, and click **ADJUSTMENTS** (under Graphics) in the list on the left.
    - Under **Upscaling**, tick **Active** and set **Method** to **NVIDIA DLSS**. **EXTRA FX** (also under Graphics) must be active too.
-   - Turn **MSAA off**, in every DLSS mode: in Content Manager, open Settings, then Assetto Corsa, then Video, and set **Anti-aliasing** (MSAA) to **Off**. With MSAA on, frame generation does not start.
+   - Turn **MSAA off**, in every DLSS mode: in Content Manager, open Settings, then Assetto Corsa, then Video, and set **Anti-aliasing** (MSAA) to **Off**. With MSAA on, frame generation stays off.
    - **Using DLAA** (Quality: **DLAA (100%)**)? Then also untick **FXAA** there, or moving things leave a ghost trail. Keep **Enable post-processing effects** ticked, DLSS needs it.
 6. **Start the game** as usual and drive. Frame generation turns on by itself.
 
