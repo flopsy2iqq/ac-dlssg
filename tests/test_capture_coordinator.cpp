@@ -556,7 +556,7 @@ TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
     deferred.deferred = true;
     r.coord->OnUncountedEvaluate(deferred);
     r.coord->EndFrame();
-    diag.EndFrame(128, 72, 28);
+    diag.EndFrame(128, 72);
     std::string all;
     for (const std::string& l : lines) all += l + "\n";
     std::printf("%s", all.c_str());
@@ -570,8 +570,7 @@ TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
     CHECK(Has(all, "frame 1 evaluate 3: feature 0x5000; context " + Ptr(other.ctx11.Get()) +
                        " immediate, not on the game's device; "));
     CHECK(Has(all, "Depth " + Ptr(os.depth.Get()) + " 64x36 format 39"));
-    CHECK(Has(all, "triple-diag: frame 1: 3 DLSS evaluates; not counted: 1 on a deferred context; swap chain 128x72 "
-                   "format 28"));
+    CHECK(Has(all, "triple-diag: frame 1: 3 DLSS evaluates; not counted: 1 on a deferred context; swap chain 128x72"));
 }
 
 // Review finding B-1: with the triple-screen diagnostics on, the coordinator
@@ -598,7 +597,7 @@ TEST(Coordinator_TripleDiagnosticsCaptureNothing) {
         CHECK(!f.captured);
         CHECK(!f.forcedOff);
         CHECK(Has(f.reason, "no capture: triple-screen diagnostics"));
-        diag.EndFrame(128, 72, 28);
+        diag.EndFrame(128, 72);
     }
     LogClose();
     for (uint32_t slot = 0; slot < CaptureSlots::kSlots; ++slot) CHECK(!r.slots->HasTextures(slot));

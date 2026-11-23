@@ -190,14 +190,13 @@ std::string UncountedText(const TripleDiagFrameCounts& c) {
 
 }  // namespace
 
-std::string TripleDiagFrameLine(const TripleDiagFrameCounts& c, uint32_t swapWidth, uint32_t swapHeight,
-                                uint32_t swapFormat) {
+std::string TripleDiagFrameLine(const TripleDiagFrameCounts& c, uint32_t swapWidth, uint32_t swapHeight) {
     char buf[160];
     std::snprintf(buf, sizeof(buf), "triple-diag: frame %u: %u DLSS evaluates; ", c.frame, c.evaluates);
     std::string line = buf;
     const std::string uncounted = UncountedText(c);
     if (!uncounted.empty()) line += uncounted + "; ";
-    std::snprintf(buf, sizeof(buf), "swap chain %ux%u format %u", swapWidth, swapHeight, swapFormat);
+    std::snprintf(buf, sizeof(buf), "swap chain %ux%u", swapWidth, swapHeight);
     return line + buf;
 }
 
@@ -279,7 +278,7 @@ void TripleDiagLog::OnEvaluate(const TripleDiagEvaluate& e) {
     for (const std::string& l : lines) Log(l);
 }
 
-void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t swapFormat) {
+void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight) {
     std::vector<std::string> lines;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -297,7 +296,7 @@ void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t s
             }
         } else {
             counts_.frame = frame_;
-            lines.push_back(TripleDiagFrameLine(counts_, swapWidth, swapHeight, swapFormat));
+            lines.push_back(TripleDiagFrameLine(counts_, swapWidth, swapHeight));
             counts_ = TripleDiagFrameCounts();
             ++frame_;
             if (--framesLeft_ == 0) {

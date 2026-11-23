@@ -86,11 +86,11 @@ struct TripleDiagFrameCounts {
     uint32_t frame = 0, evaluates = 0, deferred = 0, failed = 0, lastFailResult = 0;
 };
 
-// Pure: "triple-diag: frame <f>: <n> DLSS evaluates; swap chain <w>x<h> format
-// <fmt>", with "not counted: <d> on a deferred context, <f> failed (last
-// result 0x<r>); " before the swap chain when the frame had any.
-std::string TripleDiagFrameLine(const TripleDiagFrameCounts& counts, uint32_t swapWidth, uint32_t swapHeight,
-                                uint32_t swapFormat);
+// Pure: "triple-diag: frame <f>: <n> DLSS evaluates; swap chain <w>x<h>", with
+// "not counted: <d> on a deferred context, <f> failed (last result 0x<r>); "
+// before the swap chain when the frame had any. No format (review finding
+// B-8): the presenter does not see the format of the game's ResizeBuffers.
+std::string TripleDiagFrameLine(const TripleDiagFrameCounts& counts, uint32_t swapWidth, uint32_t swapHeight);
 
 // The windows of logged frames. The coordinator reports the counted creates
 // and evaluates (render thread), the presenter the Present that ends each
@@ -111,7 +111,7 @@ public:
     // the frame line while a window is open.
     void OnUncountedEvaluate(bool deferred, NgxResult result);
     // The Present that ends the frame: its line while a window is open.
-    void EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t swapFormat);
+    void EndFrame(uint32_t swapWidth, uint32_t swapHeight);
     // True while an evaluate would be logged or would start a window, so
     // that the caller reads the block only then.
     bool WantsEvaluates() const;

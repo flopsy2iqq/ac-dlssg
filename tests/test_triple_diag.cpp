@@ -63,7 +63,7 @@ TEST(TripleDiag_RunsOnlyWithTheSwitchInTripleScreenMode) {
 TEST(TripleDiagLog_NothingBeforeTheFirstEvaluate) {
     Lines lines;
     TripleDiagLog log(lines.Sink(), 3, 2);
-    for (int i = 0; i < 5; ++i) log.EndFrame(5760, 1080, 28);
+    for (int i = 0; i < 5; ++i) log.EndFrame(5760, 1080);
     CHECK(lines.all.empty());
     CHECK(log.WantsEvaluates());
 }
@@ -76,17 +76,20 @@ TEST(TripleDiagLog_LogsEveryEvaluateOfTheWindow) {
     log.OnEvaluate(Evaluate(0xA));
     log.OnEvaluate(Evaluate(0xB));
     log.OnEvaluate(Evaluate(0xC));
-    log.EndFrame(5760, 1080, 28);
-    log.EndFrame(5760, 1080, 28);
+    log.EndFrame(5760, 1080);
+    log.EndFrame(5760, 1080);
     log.OnEvaluate(Evaluate(0xA));
-    log.EndFrame(5760, 1080, 28);
+    log.EndFrame(5760, 1080);
     log.OnEvaluate(Evaluate(0xA));
-    log.EndFrame(5760, 1080, 28);
+    log.EndFrame(5760, 1080);
     lines.Print();
     CHECK_EQ(lines.Count("triple-diag: window 1 of 2"), 1u);
     CHECK_EQ(lines.Count("frame 1 evaluate "), 3u);
     CHECK_EQ(lines.Count("frame 1 evaluate 3: feature 0xC"), 1u);
-    CHECK_EQ(lines.Count("triple-diag: frame 1: 3 DLSS evaluates; swap chain 5760x1080 format 28"), 1u);
+    CHECK_EQ(lines.Count("triple-diag: frame 1: 3 DLSS evaluates; swap chain 5760x1080"), 1u);
+    // Review finding B-8: no format, which the presenter does not know after
+    // the game's ResizeBuffers (its own chain is always R8G8B8A8_UNORM).
+    CHECK_EQ(lines.Count("swap chain 5760x1080 format"), 0u);
     CHECK_EQ(lines.Count("triple-diag: frame 2: 0 DLSS evaluates"), 1u);
     CHECK_EQ(lines.Count("frame 3 evaluate 1: feature 0xA"), 1u);
     CHECK_EQ(lines.Count("triple-diag: window 1 done after 3 frames"), 1u);
@@ -117,7 +120,7 @@ TEST(TripleDiagLog_EvaluatesWithoutAnEndStopAtTheCaps) {
     log.OnCreate(3, 1920, 1080, 5760, 1080);
     CHECK(!log.WantsEvaluates());
     log.OnEvaluate(Evaluate(3));
-    log.EndFrame(1920, 1080, 28);
+    log.EndFrame(1920, 1080);
     CHECK_EQ(lines.Count(": feature 0x3;"), 0u);
     CHECK_EQ(lines.Count("triple-diag: frame "), 15u);  // the evaluate lines only, no frame line after the stop
 }
@@ -131,9 +134,9 @@ TEST(TripleDiagLog_SaysOnceWhenNoEvaluateCame) {
     Lines lines;
     TripleDiagLog log(lines.Sink(), 3, 2, 3000, 6000, 5);
     log.OnUncountedEvaluate(true, kNgxSuccess);
-    for (int i = 0; i < 4; ++i) log.EndFrame(5760, 1080, 28);
+    for (int i = 0; i < 4; ++i) log.EndFrame(5760, 1080);
     CHECK(lines.all.empty());
-    for (int i = 0; i < 20; ++i) log.EndFrame(5760, 1080, 28);
+    for (int i = 0; i < 20; ++i) log.EndFrame(5760, 1080);
     lines.Print();
     CHECK_EQ(lines.all.size(), 1u);
     CHECK_EQ(lines.Count("triple-diag: no counted DLSS evaluate in 5 frames (not counted: 1 on a deferred context): "), 1u);
@@ -145,7 +148,7 @@ TEST(TripleDiagLog_SaysOnceWhenNoEvaluateCame) {
     // Without uncounted evaluates the line has no count of them.
     Lines quiet;
     TripleDiagLog none(quiet.Sink(), 3, 2, 3000, 6000, 2);
-    for (int i = 0; i < 3; ++i) none.EndFrame(5760, 1080, 28);
+    for (int i = 0; i < 3; ++i) none.EndFrame(5760, 1080);
     CHECK_EQ(quiet.Count("triple-diag: no counted DLSS evaluate in 2 frames: "), 1u);
 }
 
@@ -161,27 +164,27 @@ TEST(TripleDiagLog_TheFrameLineCountsTheUncountedEvaluates) {
     log.OnUncountedEvaluate(true, kNgxSuccess);
     log.OnUncountedEvaluate(false, static_cast<NgxResult>(0xBAD00001u));
     log.OnUncountedEvaluate(false, static_cast<NgxResult>(0xBAD00005u));
-    log.EndFrame(5760, 1080, 28);
-    log.EndFrame(5760, 1080, 28);
+    log.EndFrame(5760, 1080);
+    log.EndFrame(5760, 1080);
     lines.Print();
     CHECK_EQ(lines.Count("triple-diag: frame 1: 1 DLSS evaluates; not counted: 2 on a deferred context, 2 failed "
-                         "(last result 0xBAD00005); swap chain 5760x1080 format 28"),
+                         "(last result 0xBAD00005); swap chain 5760x1080"),
              1u);
-    CHECK_EQ(lines.Count("triple-diag: frame 2: 0 DLSS evaluates; swap chain 5760x1080 format 28"), 1u);
+    CHECK_EQ(lines.Count("triple-diag: frame 2: 0 DLSS evaluates; swap chain 5760x1080"), 1u);
 }
 
 TEST(TripleDiagLog_ANewFeatureStartsAnotherWindowUpToTheLimit) {
     Lines lines;
     TripleDiagLog log(lines.Sink(), 1, 2);
     log.OnEvaluate(Evaluate(1));
-    log.EndFrame(1920, 1080, 28);
+    log.EndFrame(1920, 1080);
     log.OnCreate(2, 1920, 1080, 5760, 1080);
     CHECK(log.WantsEvaluates());
     log.OnEvaluate(Evaluate(2));
-    log.EndFrame(1920, 1080, 28);
+    log.EndFrame(1920, 1080);
     log.OnCreate(3, 1920, 1080, 5760, 1080);
     log.OnEvaluate(Evaluate(3));
-    log.EndFrame(1920, 1080, 28);
+    log.EndFrame(1920, 1080);
     lines.Print();
     CHECK_EQ(lines.Count("triple-diag: window 2 of 2"), 1u);
     CHECK_EQ(lines.Count("DLSS feature 0x2 created: render 1920x1080, output 5760x1080"), 1u);
@@ -229,15 +232,15 @@ TEST(TripleDiagLines_NameTheSizesTheSubrectsAndTheTextures) {
     CHECK(Has(l, "MotionVectors none"));
     TripleDiagEvaluate bare = Evaluate(9);
     CHECK(Has(TripleDiagEvaluateLine(1, 1, bare), "create not seen"));
-    CHECK_EQ(TripleDiagFrameLine({7, 3}, 5760, 1080, 28),
-             std::string("triple-diag: frame 7: 3 DLSS evaluates; swap chain 5760x1080 format 28"));
+    CHECK_EQ(TripleDiagFrameLine({7, 3}, 5760, 1080),
+             std::string("triple-diag: frame 7: 3 DLSS evaluates; swap chain 5760x1080"));
     // Review finding B-5: the evaluates the hook does not count.
-    CHECK_EQ(TripleDiagFrameLine({7, 0, 0, 2, 0xBAD00005u}, 5760, 1080, 28),
+    CHECK_EQ(TripleDiagFrameLine({7, 0, 0, 2, 0xBAD00005u}, 5760, 1080),
              std::string("triple-diag: frame 7: 0 DLSS evaluates; not counted: 2 failed (last result 0xBAD00005); swap "
-                         "chain 5760x1080 format 28"));
-    CHECK_EQ(TripleDiagFrameLine({7, 1, 3, 0, 0}, 5760, 1080, 28),
+                         "chain 5760x1080"));
+    CHECK_EQ(TripleDiagFrameLine({7, 1, 3, 0, 0}, 5760, 1080),
              std::string("triple-diag: frame 7: 1 DLSS evaluates; not counted: 3 on a deferred context; swap chain "
-                         "5760x1080 format 28"));
+                         "5760x1080"));
 }
 
 // Review finding B-2: the line identifies each texture by its pointer, and

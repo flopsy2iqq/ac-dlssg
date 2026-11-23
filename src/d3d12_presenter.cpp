@@ -691,8 +691,8 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
             triple_diag = std::make_unique<TripleDiagLog>([](const std::string& line) { LOGI("%s", line.c_str()); });
             deps.tripleDiag = triple_diag.get();
             LOGI("triple-diag: on ([debug] triple_diag=1 and video.ini [CAMERA] MODE=TRIPLE): frame generation stays "
-                 "off; from the first DLSS evaluate, %u frames of CSP's DLSS evaluates are logged (up to %u times, "
-                 "when a DLSS feature is created again)",
+                 "off; from the first DLSS evaluate, %u frames of CSP's DLSS evaluates are logged, in up to %u such "
+                 "windows in all: a DLSS feature created later starts the next",
                  kTripleDiagFrames, kTripleDiagWindows);
         }
         coordinator = std::make_unique<CaptureCoordinator>(deps);
@@ -1584,7 +1584,7 @@ HRESULT D3D12Presenter::Impl::PresentFrame(D3D12Presenter& self, ID3D11DeviceCon
     if (ngx_attached) ProcessNgx();
     if (self.stopped_) {
         // The diagnostics' window still ends (review finding B-4).
-        if (triple_diag) triple_diag->EndFrame(width, height, DXGI_FORMAT_R8G8B8A8_UNORM);
+        if (triple_diag) triple_diag->EndFrame(width, height);
         return stop_error;
     }
     if (!ctx) return E_INVALIDARG;
@@ -1608,7 +1608,7 @@ HRESULT D3D12Presenter::Impl::Deliver(D3D12Presenter& self, ID3D11DeviceContext*
     // M3: this Present ends the bridge frame; its capture pairs with it.
     FrameCapture cap;
     if (coordinator) cap = coordinator->EndFrame();
-    if (triple_diag) triple_diag->EndFrame(width, height, DXGI_FORMAT_R8G8B8A8_UNORM);
+    if (triple_diag) triple_diag->EndFrame(width, height);
     if (cap.evaluates > 1) {
         ++stats_double;
         ++totals.double_evaluates;
