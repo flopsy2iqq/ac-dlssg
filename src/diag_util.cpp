@@ -192,12 +192,9 @@ bool IsWindowsModulePath(const std::wstring& path, const std::wstring& windowsDi
     return lower.find(L"\\driverstore\\") == std::wstring::npos;
 }
 
-std::vector<std::string> NonWindowsModules() {
-    std::vector<std::string> out;
+std::vector<LoadedModule> LoadedModules() {
+    std::vector<LoadedModule> out;
     try {
-        wchar_t winDir[MAX_PATH] = {};
-        const UINT wn = GetWindowsDirectoryW(winDir, MAX_PATH);
-        const std::wstring windows(winDir, wn < MAX_PATH ? wn : 0);
         std::vector<HMODULE> mods(512);
         DWORD needed = 0;
         for (int attempt = 0; attempt < 2; ++attempt) {
@@ -211,9 +208,23 @@ std::vector<std::string> NonWindowsModules() {
             wchar_t path[1024];
             const DWORD n = GetModuleFileNameW(mods[i], path, static_cast<DWORD>(std::size(path)));
             if (n == 0) continue;  // unloaded meanwhile
-            const std::wstring p(path, std::min<DWORD>(n, static_cast<DWORD>(std::size(path))));
-            if (IsWindowsModulePath(p, windows)) continue;
-            out.push_back(PointerText(mods[i]) + " " + ToUtf8(p.c_str(), static_cast<int>(p.size())));
+            out.push_back({mods[i], std::wstring(path, std::min<DWORD>(n, static_cast<DWORD>(std::size(path))))});
+        }
+    } catch (...) {
+        out.clear();
+    }
+    return out;
+}
+
+std::vector<std::string> NonWindowsModules() {
+    std::vector<std::string> out;
+    try {
+        wchar_t winDir[MAX_PATH] = {};
+        const UINT wn = GetWindowsDirectoryW(winDir, MAX_PATH);
+        const std::wstring windows(winDir, wn < MAX_PATH ? wn : 0);
+        for (const LoadedModule& m : LoadedModules()) {
+            if (IsWindowsModulePath(m.path, windows)) continue;
+            out.push_back(PointerText(m.module) + " " + ToUtf8(m.path.c_str(), static_cast<int>(m.path.size())));
         }
     } catch (...) {
     }

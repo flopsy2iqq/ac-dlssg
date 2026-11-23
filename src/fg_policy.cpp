@@ -283,9 +283,40 @@ MfgLogLine MfgUnlockLogLine(bool rtx40, bool mfgLoaded, uint32_t numFramesToGene
     return l;
 }
 
-std::string DlssgProviderLine(bool loaded, const std::string& path, const std::string& version) {
-    if (!loaded) return "DLSS-G provider: nvngx_dlssg.dll is not loaded";
-    return "DLSS-G provider: " + path + ", version " + version;
+namespace {
+
+std::string DlssgModuleText(const DlssgModuleInfo& m) {
+    switch (m.kind) {
+        case NgxDlssgFile::NgxCache:
+            return "the NVIDIA App's DLSS-G " + m.version + " from the NGX cache (DLSS-FG override), " + m.path;
+        case NgxDlssgFile::DriverStore:
+            return "the driver's own nvngx_dlssg.dll (NVIDIA Smooth Motion's), " + m.path + ", version " + m.version;
+        case NgxDlssgFile::Dll:
+        case NgxDlssgFile::None:
+            break;
+    }
+    return m.path + ", version " + m.version;
+}
+
+}  // namespace
+
+std::string DlssgProviderLine(const std::vector<DlssgModuleInfo>& modules) {
+    if (modules.empty()) return "DLSS-G provider: no DLSS-G is loaded (no nvngx_dlssg.dll and no DLSS-G from the NGX cache)";
+    // The provider: an NGX cache copy, else a DLL that is not the driver's own.
+    size_t provider = modules.size();
+    for (size_t i = 0; i < modules.size() && provider == modules.size(); ++i)
+        if (modules[i].kind == NgxDlssgFile::NgxCache) provider = i;
+    for (size_t i = 0; i < modules.size() && provider == modules.size(); ++i)
+        if (modules[i].kind != NgxDlssgFile::DriverStore) provider = i;
+    if (provider == modules.size()) {
+        std::string line = "DLSS-G provider: only " + DlssgModuleText(modules.front());
+        for (size_t i = 1; i < modules.size(); ++i) line += "; also loaded: " + DlssgModuleText(modules[i]);
+        return line;
+    }
+    std::string line = "DLSS-G provider: " + DlssgModuleText(modules[provider]);
+    for (size_t i = 0; i < modules.size(); ++i)
+        if (i != provider) line += "; also loaded: " + DlssgModuleText(modules[i]);
+    return line;
 }
 
 bool DlssgOptionsDue(bool known, bool lastOn, uint32_t lastFrames, bool sameHints, bool on, uint32_t frames) {

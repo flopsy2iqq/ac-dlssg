@@ -15,6 +15,7 @@ namespace acdb {
 
 static_assert(kDrsNgxDlssgMode == static_cast<uint32_t>(NGX_DLSSG_MODE_ID));
 static_assert(kDrsSlDlssOverride == static_cast<uint32_t>(SL_DLSS_OVERRIDE_ID));
+static_assert(kDrsNgxDlssFgOverride == static_cast<uint32_t>(NGX_DLSS_FG_OVERRIDE_ID));
 static_assert(kNgxDlssgModeOff == static_cast<uint32_t>(NGX_DLSSG_MODE_OFF));
 
 namespace {
@@ -247,7 +248,9 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
                 if (!ReadSetting(api, session, appProfile, kDrsNgxDlssgMode, Scope::OwnValueOnly, &r->dlssg_mode_app,
                                  error) ||
                     !ReadSetting(api, session, appProfile, kDrsSlDlssOverride, Scope::OwnValueOnly, &r->sl_override_app,
-                                 error)) {
+                                 error) ||
+                    !ReadSetting(api, session, appProfile, kDrsNgxDlssFgOverride, Scope::OwnValueOnly,
+                                 &r->fg_override_app, error)) {
                     break;
                 }
                 ListSettings(api, session, appProfile, false, &r->app_settings, r);  // diagnostics
@@ -267,6 +270,8 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
         }
         if (!ReadSetting(api, session, base, kDrsNgxDlssgMode, Scope::AnyButDefault, &r->dlssg_mode_base, error) ||
             !ReadSetting(api, session, base, kDrsSlDlssOverride, Scope::AnyButDefault, &r->sl_override_base,
+                         error) ||
+            !ReadSetting(api, session, base, kDrsNgxDlssFgOverride, Scope::AnyButDefault, &r->fg_override_base,
                          error)) {
             break;
         }
@@ -384,31 +389,89 @@ std::string DrsSettingText(const DrsSetting& s) {
     return text;
 }
 
-std::vector<std::string> DriverProfileWarnings(const DriverProfileReport& report) {
-    std::vector<std::string> out;
+namespace {
+
+// A setting as the driver applies it: the app profile's own value, else the
+// global one (Streamline's readOTAOverrideDRS reads them in this order).
+struct EffectiveValue {
+    DrsValue v;
+    const char* where = "";  // "app" or "global"
+};
+
+EffectiveValue Effective(const DrsValue& app, const DrsValue& global) {
+    if (app.found) return {app, "app"};
+    return {global, "global"};
+}
+
+DriverProfileNote Finding(DriverNoteKind kind, const char* text) {
+    DriverProfileNote n;
+    n.kind = kind;
+    n.text = text;
+    return n;
+}
+
+}  // namespace
+
+std::vector<DriverProfileNote> DriverProfileNotes(const DriverProfileReport& report,
+                                                  const DriverProfileContext& context) {
+    std::vector<DriverProfileNote> warnings;
     char buf[256];
     const struct {
         const DrsValue& v;
         const char* where;
-    } dlssg[] = {{report.dlssg_mode_app, "app"}, {report.dlssg_mode_base, "global"}},
-      over[] = {{report.sl_override_app, "app"}, {report.sl_override_base, "global"}};
+    } dlssg[] = {{report.dlssg_mode_app, "app"}, {report.dlssg_mode_base, "global"}};
     for (const auto& d : dlssg) {
         if (!d.v.found || d.v.value != kNgxDlssgModeOff) continue;
         std::snprintf(buf, sizeof(buf),
                       "NVIDIA App DLSS override: frame generation forced off in the %s profile (setting 0x%08X = %u); "
                       "DLSS-G will never interpolate",
                       d.where, static_cast<unsigned>(kDrsNgxDlssgMode), static_cast<unsigned>(d.v.value));
-        out.push_back(buf);
+        warnings.push_back(Finding(DriverNoteKind::Warning, buf));
     }
-    for (const auto& o : over) {
-        if (!o.v.found || o.v.value == 0) continue;
+
+    bool note = false;
+    const EffectiveValue sl = Effective(report.sl_override_app, report.sl_override_base);
+    if (sl.v.found && sl.v.value != 0) {
         std::snprintf(buf, sizeof(buf),
                       "NVIDIA App Streamline override is on in the %s profile (setting 0x%08X = %u); Streamline may "
                       "load plugins from the NGX cache instead of ac-dlssg\\sl",
-                      o.where, static_cast<unsigned>(kDrsSlDlssOverride), static_cast<unsigned>(o.v.value));
-        out.push_back(buf);
+                      sl.where, static_cast<unsigned>(kDrsSlDlssOverride), static_cast<unsigned>(sl.v.value));
+        warnings.push_back(Finding(DriverNoteKind::Warning, buf));
+    } else if (report.sl_override_base.found && report.sl_override_base.value != 0) {
+        // The app profile's 0 wins: Streamline keeps ac-dlssg\sl's plugins.
+        note = true;
     }
-    return out;
+
+    bool fgWarning = false;
+    const EffectiveValue fg = Effective(report.fg_override_app, report.fg_override_base);
+    if (fg.v.found && fg.v.value != 0) {
+        if (!context.pinned_dlssg_user.empty()) {
+            std::snprintf(buf, sizeof(buf),
+                          "NVIDIA App DLSS-FG override is on in the %s profile (setting 0x%08X = %u); NGX may load a "
+                          "newer DLSS-G than %s supports",
+                          fg.where, static_cast<unsigned>(kDrsNgxDlssFgOverride), static_cast<unsigned>(fg.v.value),
+                          context.pinned_dlssg_user.c_str());
+            warnings.push_back(Finding(DriverNoteKind::Warning, buf));
+            fgWarning = true;
+        } else {
+            note = true;
+        }
+    }
+    if (note && !fgWarning) warnings.push_back(Finding(DriverNoteKind::Note, kDriverOverrideNote));
+    return warnings;
+}
+
+uint32_t DriverNotesPanelCode(const std::vector<DriverProfileNote>& notes) {
+    if (notes.empty()) return 0;
+    for (const DriverProfileNote& n : notes)
+        if (n.kind == DriverNoteKind::Warning) return static_cast<uint32_t>(DriverNoteKind::Warning);
+    return static_cast<uint32_t>(DriverNoteKind::Note);
+}
+
+std::string DriverNotesPanelText(const std::vector<DriverProfileNote>& notes) {
+    for (const DriverProfileNote& n : notes)
+        if (n.kind == DriverNoteKind::Warning) return n.text;
+    return notes.empty() ? std::string() : notes.front().text;
 }
 
 }  // namespace acdb

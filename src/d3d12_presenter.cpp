@@ -18,6 +18,7 @@
 #include "capture_coordinator.h"
 #include "capture_slots.h"
 #include "compat.h"
+#include "diag_util.h"
 #include "fg_policy.h"
 #include "frame_constants.h"
 #include "gpu_info.h"
@@ -170,10 +171,19 @@ std::string Utf8(const std::wstring& w) {
 }
 constexpr uint32_t kViewport = 0;
 
-std::wstring ModulePathOf(HMODULE module) {
-    wchar_t path[MAX_PATH * 2] = {};
-    const DWORD n = GetModuleFileNameW(module, path, static_cast<DWORD>(std::size(path)));
-    return n > 0 && n < std::size(path) ? std::wstring(path, n) : std::wstring();
+// Every loaded module that can be NGX's DLSS-G provider, for the "DLSS-G
+// provider" line: NGX may load the NVIDIA App's copy from its cache (the
+// DLSS-FG override), and NVIDIA Smooth Motion loads the driver's own.
+std::vector<DlssgModuleInfo> LoadedDlssgModules() {
+    std::vector<DlssgModuleInfo> out;
+    for (const LoadedModule& m : LoadedModules()) {
+        const NgxDlssgFile kind = NgxClassifyDlssgFile(m.path.c_str());
+        if (kind == NgxDlssgFile::None) continue;
+        std::string version = kind == NgxDlssgFile::NgxCache ? NgxCacheDlssgVersion(m.path.c_str()) : std::string();
+        if (version.empty()) version = ModuleVersionText(m.module);
+        out.push_back({kind, Utf8(m.path), version});
+    }
+    return out;
 }
 
 // NgxHook is installed once per process, by the first presenter that asks.
@@ -1245,10 +1255,7 @@ void D3D12Presenter::Impl::QueryFramesMax() {
     // the versions it knows, and NGX may take another copy than ac-dlssg\sl's.
     if (!provider_logged) {
         provider_logged = true;
-        const HMODULE provider = GetModuleHandleW(L"nvngx_dlssg.dll");
-        LOGI("fg: %s", DlssgProviderLine(provider != nullptr, provider ? Utf8(ModulePathOf(provider)) : std::string(),
-                                         provider ? ModuleVersionText(provider) : std::string())
-                           .c_str());
+        LOGI("fg: %s", DlssgProviderLine(LoadedDlssgModules()).c_str());
     }
     if (newMax) {
         const MfgLogLine line = MfgUnlockLogLine(rtx40, env.mfg_loaded, max);

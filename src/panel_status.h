@@ -50,6 +50,14 @@ enum PanelModeCode : uint32_t {
     kPanelModeStandalone = 2,  // the game folder's dxgi.dll
 };
 
+// StatusLayout::driverWarning (DriverNotesPanelCode). A window of an earlier
+// build shows every value but 0 as a warning.
+enum PanelDriverCode : uint32_t {
+    kPanelDriverNone = 0,
+    kPanelDriverWarning = 1,  // a driver profile setting changes DLSS-G: warning holds the first warning
+    kPanelDriverNote = 2,     // only notes, nothing to fix: warning holds the first note
+};
+
 // StatusLayout::spoofLoaded (SpoofPanelCode). A window of an earlier build
 // reads every value but 0 as "dlssg_for_sm86 loaded".
 enum PanelSpoofCode : uint32_t {
@@ -96,7 +104,7 @@ struct StatusLayout {
     uint32_t spoofLoaded; // a game-folder version.dll is loaded as the spoof: PanelSpoofCode
     uint32_t rtx30;       // the render GPU for dlssg_for_sm86: PanelSpoofGpuCode (RTX 30 and RTX 2050, or RTX 20)
     uint32_t vsyncNote;   // VSync was asked for but is not available with DLSS-G here
-    uint32_t driverWarning;  // a driver profile setting changes DLSS-G (warning holds the text)
+    uint32_t driverWarning;  // PanelDriverCode: a driver profile warning or note (warning holds the text)
     uint32_t cameraFlipHandedness;  // the current camera switches (spec 6.7)
     uint32_t cameraNegateSide;
     uint32_t startWithFg;     // start_with_fg as in ac-dlssg.ini (after the last save)
@@ -113,7 +121,7 @@ struct StatusLayout {
     float taggedPerSec;       // Presents with tags and constants
     char reason[kPanelReasonChars];       // "on", or why DLSS-G is off now
     char stateReason[kPanelStateReasonChars];  // why bridgeState is below kPanelFgAvailable
-    char warning[kPanelReasonChars];      // the first driver-profile warning
+    char warning[kPanelReasonChars];      // the first driver-profile warning, else the first note
     char gpuName[64];                     // the render adapter
     char hotkey[32];                      // e.g. "Ctrl+F10"
     char bridgeVersion[32];               // ACDB_VERSION

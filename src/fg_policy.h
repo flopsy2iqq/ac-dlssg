@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "config.h"
 #include "gpu_info.h"
+#include "ngx_hook.h"
 
 namespace acdb {
 
@@ -293,10 +295,28 @@ struct MfgLogLine {
 };
 MfgLogLine MfgUnlockLogLine(bool rtx40, bool mfgLoaded, uint32_t numFramesToGenerateMax);
 
-// "DLSS-G provider: <path>, version <version>", or "DLSS-G provider:
-// nvngx_dlssg.dll is not loaded": MFG-Unlocker patches only the provider
-// versions it knows, and NGX may load another copy than ac-dlssg\sl's.
-std::string DlssgProviderLine(bool loaded, const std::string& path, const std::string& version);
+// One loaded module that can be NGX's DLSS-G provider (NgxClassifyDlssgFile
+// is not None): its UTF-8 path and version (an NGX cache copy's from its
+// folder, NgxCacheDlssgVersion).
+struct DlssgModuleInfo {
+    NgxDlssgFile kind = NgxDlssgFile::None;
+    std::string path;
+    std::string version;
+};
+
+// The "DLSS-G provider:" line: MFG-Unlocker patches only the provider
+// versions it knows, and NGX may load another DLSS-G than ac-dlssg\sl's. The
+// provider is an NGX cache copy (the NVIDIA App's, DLSS-FG override), else
+// another nvngx_dlssg.dll than the driver's own:
+//   "DLSS-G provider: the NVIDIA App's DLSS-G <version> from the NGX cache (DLSS-FG override), <path>"
+//   "DLSS-G provider: <path>, version <version>"
+// followed by "; also loaded: <each other one in the same form>", where the
+// driver's own is "the driver's own nvngx_dlssg.dll (NVIDIA Smooth Motion's),
+// <path>, version <version>". With only the driver's own: "DLSS-G provider:
+// only the driver's own nvngx_dlssg.dll (NVIDIA Smooth Motion's), <path>,
+// version <version>"; with none: "DLSS-G provider: no DLSS-G is loaded (no
+// nvngx_dlssg.dll and no DLSS-G from the NGX cache)".
+std::string DlssgProviderLine(const std::vector<DlssgModuleInfo>& modules);
 
 // Spec 6.8: slDLSSGSetOptions only when something Streamline has would
 // change. known: options were sent before, with lastOn and lastFrames

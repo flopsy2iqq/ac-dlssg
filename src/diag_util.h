@@ -52,6 +52,14 @@ bool IsWindowsModulePath(const std::wstring& path, const std::wstring& windowsDi
 // does not skip, in the loader's order.
 std::vector<std::string> NonWindowsModules();
 
+// Every loaded module with its full path, in the loader's order; a module
+// unloaded meanwhile is left out. Empty when the list cannot be read.
+struct LoadedModule {
+    HMODULE module = nullptr;
+    std::wstring path;
+};
+std::vector<LoadedModule> LoadedModules();
+
 // The devices of the swap chains the factory hook passed through, so that
 // the capture coordinator can say whether a DLSS evaluate's device is one of
 // them. call is the factory hook's number of the call ("#<call>" in its log

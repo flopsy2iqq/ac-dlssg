@@ -11,6 +11,7 @@ namespace acdb {
 
 constexpr uint32_t kDrsNgxDlssgMode = 0x10308298;  // NGX_DLSSG_MODE_ID ("Override DLSSG mode")
 constexpr uint32_t kDrsSlDlssOverride = 0x10E41E06;  // SL_DLSS_OVERRIDE_ID ("Enable Streamline override")
+constexpr uint32_t kDrsNgxDlssFgOverride = 0x10E41E03;  // NGX_DLSS_FG_OVERRIDE_ID ("Enable DLSS-FG override")
 constexpr uint32_t kNgxDlssgModeOff = 1;             // NGX_DLSSG_MODE_OFF
 
 struct DrsValue {
@@ -36,6 +37,7 @@ struct DriverProfileReport {
     std::wstring app_profile;          // name of the profile that holds the exe, empty if none
     DrsValue dlssg_mode_app, dlssg_mode_base;
     DrsValue sl_override_app, sl_override_base;
+    DrsValue fg_override_app, fg_override_base;
     // Diagnostics (GitHub issue 10), from NvAPI_DRS_EnumSettings: every
     // setting of the app profile, and the base profile's settings whose
     // value does not come from the driver's defaults. settings_error says
@@ -48,8 +50,9 @@ struct DriverProfileReport {
 // NvAPI_Initialize, DRS CreateSession/LoadSettings, FindApplicationByName(exe
 // path as given; the host exe's full path returns the profile the driver
 // applies to it, while a bare "acs.exe" can match a different profile) for the
-// app profile, GetBaseProfile for the global one, GetSetting for both ids in
-// both profiles (app: only values set in that profile itself), DestroySession.
+// app profile, GetBaseProfile for the global one, GetSetting for the three
+// ids in both profiles (app: only values set in that profile itself),
+// DestroySession.
 // Never throws; a non-NVIDIA system or a missing nvapi64.dll gives
 // nvapi_ok=false.
 DriverProfileReport ReadDriverProfile(const std::wstring& exePath);
@@ -62,11 +65,52 @@ DriverProfileReport ReadDriverProfile(const std::wstring& exePath);
 // at 48 characters ("..." marks a cut).
 std::string DrsSettingText(const DrsSetting& s);
 
-// Pure: one English warning per problem, empty when none.
-//  - NGX_DLSSG_MODE == NGX_DLSSG_MODE_OFF in the app or base profile:
+// How a finding is shown: StatusLayout::driverWarning (kPanelDriverWarning,
+// kPanelDriverNote) and bridge.log (WARN or INFO).
+enum class DriverNoteKind : uint32_t { Warning = 1, Note = 2 };
+
+struct DriverProfileNote {
+    DriverNoteKind kind = DriverNoteKind::Warning;
+    std::string text;
+    bool operator==(const DriverProfileNote&) const = default;
+};
+
+// What DriverProfileNotes needs besides the profile: the add-on that works
+// only with the DLSS-G of ac-dlssg\sl, "dlssg_for_sm86" (RTX 20/30, tied to
+// its DLSS-G 310.9.1) or "MFG-Unlocker" (RTX 40, it patches only the DLSS-G
+// versions it knows); empty when neither is in use.
+struct DriverProfileContext {
+    std::string pinned_dlssg_user;
+};
+
+// The note for the NVIDIA App's DLSS override when it does no harm.
+constexpr char kDriverOverrideNote[] =
+    "Note: the NVIDIA App's DLSS override is on, so DLSS-G may use the App's newer model. This is normal, not an "
+    "error.";
+
+// Pure: the findings, warnings first, empty when none.
+//  - NGX_DLSSG_MODE == NGX_DLSSG_MODE_OFF in the app or base profile, a
+//    warning for each:
 //    "NVIDIA App DLSS override: frame generation forced off in the <app|global> profile (setting 0x10308298 = 1); DLSS-G will never interpolate"
-//  - SL_DLSS_OVERRIDE != 0 in the app or base profile:
+//  - SL_DLSS_OVERRIDE: Streamline reads the app profile's value and the
+//    global one only when the app profile has none. A value other than 0
+//    is a warning:
 //    "NVIDIA App Streamline override is on in the <app|global> profile (setting 0x10E41E06 = <v>); Streamline may load plugins from the NGX cache instead of ac-dlssg\sl"
-std::vector<std::string> DriverProfileWarnings(const DriverProfileReport& report);
+//    The app profile's 0 under a global value other than 0 is the note.
+//  - NGX_DLSS_FG_OVERRIDE, the app profile's value, else the global one,
+//    other than 0 (NGX loads the NVIDIA App's DLSS-G from its cache): with
+//    context.pinned_dlssg_user a warning
+//    "NVIDIA App DLSS-FG override is on in the <app|global> profile (setting 0x10E41E03 = <v>); NGX may load a newer DLSS-G than <user> supports",
+//    else the note.
+// The note is kDriverOverrideNote, at most once, and never next to the
+// DLSS-FG warning.
+std::vector<DriverProfileNote> DriverProfileNotes(const DriverProfileReport& report,
+                                                  const DriverProfileContext& context);
+
+// Pure, for the panel: StatusLayout::driverWarning (0 none, 1 when there is
+// a warning, 2 when there are only notes), and the text it shows, the first
+// warning, else the first note.
+uint32_t DriverNotesPanelCode(const std::vector<DriverProfileNote>& notes);
+std::string DriverNotesPanelText(const std::vector<DriverProfileNote>& notes);
 
 }  // namespace acdb

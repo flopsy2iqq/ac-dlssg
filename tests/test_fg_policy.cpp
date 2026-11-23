@@ -534,12 +534,6 @@ TEST(FgText_TheMfgUnlockerLineSaysWhetherItUnlocked) {
     CHECK(MfgUnlockLogLine(false, false, 1).text.empty());  // not an RTX 40
 }
 
-TEST(FgText_TheDlssgProviderLineNamesPathAndVersion) {
-    CHECK_EQ(DlssgProviderLine(true, "D:/AC/ac-dlssg/sl/nvngx_dlssg.dll", "310.9.1.0"),
-             std::string("DLSS-G provider: D:/AC/ac-dlssg/sl/nvngx_dlssg.dll, version 310.9.1.0"));
-    CHECK_EQ(DlssgProviderLine(false, "", ""), std::string("DLSS-G provider: nvngx_dlssg.dll is not loaded"));
-}
-
 TEST(FgOptions_SentOnlyWhenStreamlineWouldSeeAChange) {
     // Nothing sent yet: always.
     CHECK(DlssgOptionsDue(false, false, 0, true, false, 1));

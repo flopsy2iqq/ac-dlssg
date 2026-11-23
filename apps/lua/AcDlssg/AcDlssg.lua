@@ -56,10 +56,7 @@ local FLAG_WRITE_FAILED = 64
 -- drives (1 m plus 150 m/s over the frame's real or simulated time, whichever
 -- is longer, so fast-forwarded replays do not count), turned by more than
 -- 30 degrees, or changed its vertical FOV by more than 5 degrees.
-local JUMP_MIN_METERS = 1.0
-local JUMP_MAX_SPEED = 150.0
-local JUMP_MIN_COS = 0.866
-local JUMP_MAX_FOV_DEG = 5.0
+local JUMP = { minMeters = 1.0, maxSpeed = 150.0, minCos = 0.866, maxFovDeg = 5.0 }
 
 local sim = ac.getSim()
 local uiState = ac.getUI()
@@ -140,10 +137,10 @@ local function fill()
     or carCamera ~= prevCarCamera or focused ~= prevFocused or trackSet ~= prevTrackSet
   if not jumped then
     local dx, dy, dz = px - prevX, py - prevY, pz - prevZ
-    local limit = JUMP_MIN_METERS + JUMP_MAX_SPEED * math.max(dt, sim.dt)
+    local limit = JUMP.minMeters + JUMP.maxSpeed * math.max(dt, sim.dt)
     jumped = dx * dx + dy * dy + dz * dz > limit * limit
-      or fx * prevFx + fy * prevFy + fz * prevFz < JUMP_MIN_COS
-      or math.abs(fov - prevFov) > JUMP_MAX_FOV_DEG
+      or fx * prevFx + fy * prevFy + fz * prevFz < JUMP.minCos
+      or math.abs(fov - prevFov) > JUMP.maxFovDeg
   end
   havePrev = true
   prevX, prevY, prevZ, prevFx, prevFy, prevFz, prevFov = px, py, pz, fx, fy, fz, fov
@@ -290,6 +287,10 @@ local STATE_PROXY_NO_FG = 2
 local STATE_FG_AVAILABLE = 3
 local MODE_RESHADE = 1
 local MODE_STANDALONE = 2
+-- driverWarning: a driver profile warning, or only a note (nothing to fix),
+-- drawn muted. A bridge before 1.3.0 publishes 1 for every finding.
+local DRIVER_WARNING = 1
+local DRIVER_NOTE = 2
 
 -- A presenter publishes at least once per second; a status that has not
 -- changed for this long while one should be running means the bridge stopped.
@@ -304,9 +305,11 @@ local COLOR_WARN = rgbm(1, 0.69, 0.13, 1)
 local COLOR_BAD = rgbm(1, 0.27, 0.23, 1)
 local COLOR_RESTART = rgbm(0.35, 0.66, 1, 1)
 
-local LABEL_SAVE = 'Save as default'
-local LABEL_FLIP = 'Flip handedness (camera_flip_handedness)'
-local LABEL_NEGATE = 'Negate the side vector (camera_negate_side)'
+local LABEL = {
+  save = 'Save as default',
+  flip = 'Flip handedness (camera_flip_handedness)',
+  negate = 'Negate the side vector (camera_negate_side)',
+}
 local TEXT_NOT_RUNNING = 'Bridge not running'
 local TEXT_NOT_RUNNING_HINT = 'No status from ac-dlssg. Check that it is installed (ReShade\'s ProxyLibrary, or the'
   .. ' game folder\'s dxgi.dll in standalone mode) and enabled in ac-dlssg\\ac-dlssg.ini, then see'
@@ -1144,7 +1147,7 @@ local function saveButton(now)
     label(texts.save, FONT.semi, 13, x, y, x + lw, y + h, K.alignCenter, faded(c1, COLOR_GOOD, flash * alpha))
   end
   if flash < 1 then
-    label(LABEL_SAVE, FONT.semi, 13, x, y, x + lw, y + h, K.alignCenter, faded(c1, C.text, (1 - flash) * alpha))
+    label(LABEL.save, FONT.semi, 13, x, y, x + lw, y + h, K.alignCenter, faded(c1, C.text, (1 - flash) * alpha))
   end
   finishBlock(x, y, h)
   if texts.save ~= '' and status.saveOk == 0 then wrappedText(texts.save, COLOR_BAD) end
@@ -1168,10 +1171,10 @@ local function debugSwitches()
   ui.pushStyleColor(ui.StyleColor.FrameBg, C.track)
   ui.pushStyleColor(ui.StyleColor.FrameBgHovered, C.buttonHover)
   ui.pushStyleColor(ui.StyleColor.FrameBgActive, C.buttonHover)
-  if ui.checkbox(LABEL_FLIP, currentFlip()) and controls then
+  if ui.checkbox(LABEL.flip, currentFlip()) and controls then
     sendRequest(currentFg(), not currentFlip(), currentNegate(), false, currentMult())
   end
-  if ui.checkbox(LABEL_NEGATE, currentNegate()) and controls then
+  if ui.checkbox(LABEL.negate, currentNegate()) and controls then
     sendRequest(currentFg(), currentFlip(), not currentNegate(), false, currentMult())
   end
   ui.popStyleColor(4)
@@ -1291,7 +1294,7 @@ function script.windowMain(dt)
   -- The video memory guard's note: tight (on anyway), or not enough (off).
   if texts.vramNote ~= '' then wrappedText(texts.vramNote, COLOR_WARN) end
   if s.vsyncNote ~= 0 then noteCard(cards.vsync, nil, TEXT_VSYNC, C.muted) else cards.vsync.alpha = 0 end
-  if s.driverWarning ~= 0 then noteCard(cards.driver, nil, texts.warning, COLOR_WARN) else cards.driver.alpha = 0 end
+  if s.driverWarning ~= 0 then noteCard(cards.driver, nil, texts.warning, s.driverWarning == DRIVER_NOTE and C.muted or COLOR_WARN) else cards.driver.alpha = 0 end
 
   saveButton(now)
   detailsSection(ctl ~= nil)

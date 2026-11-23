@@ -328,6 +328,47 @@ bool NgxIsDriverStoreDlssg(const wchar_t* path) {
     return lower.find(L"\\driverstore\\") != std::wstring::npos;
 }
 
+namespace {
+
+// Lower case with '\' for '/', for the path searches below.
+std::wstring LowerBackslashed(const wchar_t* path) {
+    std::wstring s(path);
+    for (auto& c : s) c = c == L'/' ? L'\\' : static_cast<wchar_t>(towlower(c));
+    return s;
+}
+
+}  // namespace
+
+NgxDlssgFile NgxClassifyDlssgFile(const wchar_t* path) {
+    if (!path || !*path) return NgxDlssgFile::None;
+    if (LowerBackslashed(path).find(L"\\ngx\\models\\dlssg\\") != std::wstring::npos) return NgxDlssgFile::NgxCache;
+    if (NgxIsDriverStoreDlssg(path)) return NgxDlssgFile::DriverStore;
+    const wchar_t* base = path;
+    for (const wchar_t* p = path; *p; ++p)
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    return _wcsicmp(base, L"nvngx_dlssg.dll") == 0 ? NgxDlssgFile::Dll : NgxDlssgFile::None;
+}
+
+std::string NgxCacheDlssgVersion(const wchar_t* path) {
+    if (!path || !*path) return {};
+    const std::wstring s = LowerBackslashed(path);
+    const size_t at = s.find(L"\\versions\\");
+    if (at == std::wstring::npos) return {};
+    const size_t begin = at + 10;
+    const size_t end = s.find(L'\\', begin);
+    if (end == std::wstring::npos || end == begin || end - begin > 10) return {};
+    unsigned long long n = 0;
+    for (size_t i = begin; i < end; ++i) {
+        if (s[i] < L'0' || s[i] > L'9') return {};
+        n = n * 10 + static_cast<unsigned>(s[i] - L'0');
+    }
+    if (n == 0 || n > 0xFFFFFFFFull) return {};
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%u.%u.%u", static_cast<unsigned>(n >> 16), static_cast<unsigned>((n >> 8) & 0xFF),
+                  static_cast<unsigned>(n & 0xFF));
+    return buf;
+}
+
 bool NgxIsDenoiserModule(const wchar_t* path) {
     if (!path || !*path) return false;
     const wchar_t* base = path;

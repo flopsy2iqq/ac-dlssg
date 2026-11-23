@@ -771,7 +771,9 @@ TEST(Bootstrap_CreatesThePanelSectionsAndPublishesItsPart) {
     CHECK_EQ(s.spoofLoaded, bs.spoof_panel);
     CHECK_EQ(s.rtx40, bs.predicted_rtx40 ? 1u : 0u);
     CHECK_EQ(s.mfgUnlockerLoaded, bs.mfg_loaded ? 1u : 0u);
-    CHECK_EQ(s.driverWarning, bs.driver_warnings.empty() ? 0u : 1u);
+    // 1 for a driver profile warning, 2 for a note only; the first warning, else the first note.
+    CHECK_EQ(s.driverWarning, DriverNotesPanelCode(bs.driver_notes));
+    CHECK(TextOf(s.warning) == DriverNotesPanelText(bs.driver_notes).substr(0, kPanelReasonChars - 1));
     // Before any main-window chain: waiting, or passing everything through
     // when the bootstrap already refused (no Streamline next to the test exe).
     // A later test's pass-through may have been published since.

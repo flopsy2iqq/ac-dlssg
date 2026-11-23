@@ -80,6 +80,20 @@ bool NgxIsDenoiserModule(const wchar_t* path);
 // rule 4); case-insensitive, the base name must match exactly.
 bool NgxIsDriverStoreDlssg(const wchar_t* path);
 
+// What a module that can be NGX's DLSS-G provider is, by its path
+// (case-insensitive, either slash): NgxCache, a file under
+// \NGX\models\dlssg\ (NGX's cache of the NVIDIA App's DLSS-G, loaded with
+// the DLSS-FG override); DriverStore, the driver's own nvngx_dlssg.dll
+// (NgxIsDriverStoreDlssg; NVIDIA Smooth Motion loads it); Dll, any other
+// nvngx_dlssg.dll (ac-dlssg\sl's); None otherwise.
+enum class NgxDlssgFile { None, Dll, DriverStore, NgxCache };
+NgxDlssgFile NgxClassifyDlssgFile(const wchar_t* path);
+// The DLSS-G version an NGX cache path encodes in its folder
+// "...\versions\<n>\...": n is major << 16 | minor << 8 | patch, so
+// 20318480 (0x01360910) is "310.9.16"; empty when there is no such folder or
+// n is 0.
+std::string NgxCacheDlssgVersion(const wchar_t* path);
+
 class NgxHook {
 public:
     static NgxHook& Get();

@@ -214,6 +214,8 @@ TEST(LuaApp_PanelConstantsAndSectionsMatchTheCppSide) {
     CHECK_EQ(acdb_test::LuaNumber(lua, "STATE_FG_AVAILABLE"), static_cast<long long>(kPanelFgAvailable));
     CHECK_EQ(acdb_test::LuaNumber(lua, "MODE_RESHADE"), static_cast<long long>(kPanelModeReShade));
     CHECK_EQ(acdb_test::LuaNumber(lua, "MODE_STANDALONE"), static_cast<long long>(kPanelModeStandalone));
+    CHECK_EQ(acdb_test::LuaNumber(lua, "DRIVER_WARNING"), static_cast<long long>(kPanelDriverWarning));
+    CHECK_EQ(acdb_test::LuaNumber(lua, "DRIVER_NOTE"), static_cast<long long>(kPanelDriverNote));
     // CSP's memory-mapped-file functions take the name without "Local\".
     CHECK("Local\\" + acdb_test::LuaString(lua, "STATUS_SECTION") == Narrow(kStatusSectionName));
     CHECK("Local\\" + acdb_test::LuaString(lua, "CONTROL_SECTION") == Narrow(kControlSectionName));
@@ -389,6 +391,17 @@ TEST(LuaApp_Rtx40TextsNameNvidiasLimitAndMfgUnlocker) {
     CHECK(rebuild.find("texts.gpu = (s.gpuName ~= '' and s.gpuName or 'GPU unknown') .. gpuSuffix(s)") != std::string::npos);
     CHECK(rebuild.find("texts.multUnsupported = multUnsupportedText(s)") != std::string::npos);
     CHECK(std::regex_search(lua, std::regex("local texts = \\{[^}]*[{,\\s]multUnsupported = TEXT_MULT_UNSUPPORTED")));
+}
+
+// A driver-profile note (driverWarning 2, such as the NVIDIA App's DLSS
+// override that does no harm) is drawn in the muted colour; a warning (1),
+// and any other value an older bridge publishes, in the warning colour.
+TEST(LuaApp_DriverProfileNotesAreMutedAndWarningsAreNot) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
+    CHECK(window.find("if s.driverWarning ~= 0 then noteCard(cards.driver, nil, texts.warning, s.driverWarning == DRIVER_NOTE "
+                      "and C.muted or COLOR_WARN) else cards.driver.alpha = 0 end") != std::string::npos);
 }
 
 // A bridge whose status record has another version (a later build with a

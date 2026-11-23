@@ -112,17 +112,24 @@ std::string Drs(const DrsValue& v) {
     return buf;
 }
 
-void LogDriverProfile(const DriverProfileReport& r, const std::vector<std::string>& warnings) {
+void LogDriverProfile(const DriverProfileReport& r, const std::vector<DriverProfileNote>& notes) {
     if (!r.nvapi_ok) {
         LOGI("driver profile: not read: %s", r.error.c_str());
     } else {
         LOGI("driver profile: app profile %s; 0x%08X (DLSS-G override mode) app=%s global=%s; 0x%08X (Streamline "
-             "override) app=%s global=%s",
+             "override) app=%s global=%s; 0x%08X (DLSS-FG override) app=%s global=%s",
              r.app_profile.empty() ? "(none)" : ("\"" + ToUtf8(r.app_profile) + "\"").c_str(), kDrsNgxDlssgMode,
              Drs(r.dlssg_mode_app).c_str(), Drs(r.dlssg_mode_base).c_str(), kDrsSlDlssOverride,
-             Drs(r.sl_override_app).c_str(), Drs(r.sl_override_base).c_str());
+             Drs(r.sl_override_app).c_str(), Drs(r.sl_override_base).c_str(), kDrsNgxDlssFgOverride,
+             Drs(r.fg_override_app).c_str(), Drs(r.fg_override_base).c_str());
     }
-    for (const auto& w : warnings) LOGW("driver profile: %s", w.c_str());
+    for (const DriverProfileNote& n : notes) {
+        if (n.kind == DriverNoteKind::Warning) {
+            LOGW("driver profile: %s", n.text.c_str());
+        } else {
+            LOGI("driver profile: %s", n.text.c_str());
+        }
+    }
     // Diagnostics (GitHub issue 10): every setting of the game's profile and
     // the global profile's non-default ones, to see whether the driver
     // attaches its own frame generation to the game.
@@ -235,8 +242,8 @@ void SetUpPanel(const BootstrapState& s) {
         st.spoofLoaded = s.spoof_panel;
         st.rtx40 = s.predicted_rtx40 ? 1u : 0u;
         st.mfgUnlockerLoaded = s.mfg_loaded ? 1u : 0u;
-        st.driverWarning = s.driver_warnings.empty() ? 0u : 1u;
-        CopyText(st.warning, s.driver_warnings.empty() ? std::string() : s.driver_warnings.front());
+        st.driverWarning = DriverNotesPanelCode(s.driver_notes);
+        CopyText(st.warning, DriverNotesPanelText(s.driver_notes));
         CopyText(st.hotkey, hotkey);
         CopyText(st.reason, reason);
         CopyText(st.stateReason, reason);
@@ -436,10 +443,19 @@ void Run(BootstrapState* s) {
         }
     }
 
-    // Driver profile before any D3D device exists (spec 6.8).
+    // Driver profile before any D3D device exists (spec 6.8). Another DLSS-G
+    // than ac-dlssg\sl's is a problem only for the add-ons tied to it.
     s->driver_profile = ReadDriverProfile(exe);
-    s->driver_warnings = DriverProfileWarnings(s->driver_profile);
-    LogDriverProfile(s->driver_profile, s->driver_warnings);
+    DriverProfileContext dpc;
+    const bool spoofGpu = renderAdapter.known &&
+                          SpoofGpuOf(renderAdapter.vendor, renderAdapter.device, renderAdapter.name) != SpoofGpu::None;
+    if (s->spoof_loaded || spoofGpu) {
+        dpc.pinned_dlssg_user = "dlssg_for_sm86";
+    } else if (s->mfg_loaded) {
+        dpc.pinned_dlssg_user = "MFG-Unlocker";
+    }
+    s->driver_notes = DriverProfileNotes(s->driver_profile, dpc);
+    LogDriverProfile(s->driver_profile, s->driver_notes);
 
     // Streamline is loaded only for an enabled bridge: disabled means the
     // game runs as without the mod.

@@ -60,7 +60,9 @@ struct BootstrapState {
     // is Ada; the panel's rtx40 until a swap chain is decided.
     bool predicted_rtx40 = false;
     DriverProfileReport driver_profile;
-    std::vector<std::string> driver_warnings;  // DriverProfileWarnings(driver_profile)
+    // DriverProfileNotes(driver_profile, the add-on that needs ac-dlssg\sl's
+    // DLSS-G: dlssg_for_sm86 on an RTX 20/30, MFG-Unlocker on an RTX 40).
+    std::vector<DriverProfileNote> driver_notes;
 };
 
 void SetBridgeModule(HMODULE module);
@@ -81,7 +83,8 @@ HMODULE BridgeModule();
 // export, DecideSpoof), MFG-Unlocker ("mfg-unlocker:" lines: DecideMfg on
 // data_dir\mfg\version.dll and PredictRenderAdapter of the adapters; a load
 // is timed and logged with the file version), ReadDriverProfile(host exe) with every
-// warning logged at WARN before any D3D device exists, and, only when the
+// warning of DriverProfileNotes logged at WARN and every note at INFO before
+// any D3D device exists, and, only when the
 // config enables the bridge, CameraChannel::Get().Create (M3; a failure is
 // logged and leaves DLSS-G without a camera) and StreamlineRuntime::Get().Init(<data_dir>\sl,
 // <data_dir>\logs) (a disabled bridge never loads Streamline: streamline_error
@@ -91,7 +94,7 @@ HMODULE BridgeModule();
 // panel's status and control sections (PanelStatusChannel::Get().Create and
 // PanelControlChannel::Get().Create); when this process owns the status it
 // publishes the bootstrap's part of it (mode, the config's switches and
-// hotkey, the spoof, the first driver-profile warning) with bridgeState
+// hotkey, the spoof, DriverNotesPanelCode and DriverNotesPanelText) with bridgeState
 // kPanelNotLoaded ("waiting for the game's swap chain"), or kPanelPassThrough
 // with the reason when the bridge is not possible, and logs "panel: status
 // section <name> and control section <name> ready"; a status section of
