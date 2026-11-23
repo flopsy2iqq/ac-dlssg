@@ -15,8 +15,9 @@
 //    off. The helper only reads it.
 // Clearing the DX11 bit was enough to stop Smooth Motion in AC (the i10fixed
 // log of issue 10). Only the application profile that holds acs.exe is ever
-// changed, never the global one, and the bridge DLL links none of this: it
-// never changes driver settings (driver_profile.h).
+// changed, never the global one. The bridge DLL uses only these pure rules,
+// for its Smooth Motion reason (compat.h); it never changes driver settings
+// (driver_profile.h).
 #include <cstdint>
 #include <string>
 

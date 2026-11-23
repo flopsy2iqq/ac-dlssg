@@ -112,6 +112,7 @@ add_library(acdb_core STATIC
     src/streamline_runtime.cpp
     src/driver_profile.cpp
     src/nvapi_drs.cpp
+    src/smooth_motion.cpp
     src/camera_channel.cpp
     src/camera_layout.h
     src/frame_constants.cpp
@@ -142,17 +143,17 @@ target_link_libraries(ac-dlssg PRIVATE acdb_core)
 
 # The installer's driver-profile helper ac-dlssg-drs.exe (NVIDIA Smooth Motion
 # off for acs.exe, and back at uninstall): the only code of this project that
-# writes NVIDIA driver settings. The bridge DLL never links it.
+# writes NVIDIA driver settings. The bridge DLL never links it; it shares
+# only the pure rules of smooth_motion.cpp, which are in acdb_core.
 add_library(acdb_drs STATIC
-    src/smooth_motion.cpp
     src/drs_json.cpp
     src/drs_tool.cpp
     src/drs_store.cpp
 )
 target_include_directories(acdb_drs PUBLIC src)
 target_include_directories(acdb_drs SYSTEM PRIVATE "${ACDB_NVAPI_INCLUDE_DIR}")
-# The NVAPI loading it shares with the bridge (nvapi_drs.cpp); the linker
-# takes only that from acdb_core.
+# The NVAPI loading it shares with the bridge (nvapi_drs.cpp) and the rules
+# of smooth_motion.cpp; the linker takes only those from acdb_core.
 target_link_libraries(acdb_drs PUBLIC acdb_core)
 # KERNEL32 only, like the bridge's own allow-list but smaller
 # (tools\check-imports.ps1 -Helper).

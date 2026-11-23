@@ -7,6 +7,8 @@
 #include "nvapi_drs.h"
 #include <NvApiDriverSettings.h>
 
+#include "smooth_motion.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -186,13 +188,17 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
             NvDRSProfileHandle appProfile = nullptr;
             if (!nvdrs::FindAppProfile(api, session, exePath, &appProfile, error)) break;
             if (appProfile) {
-                r->app_profile = nvdrs::ReadProfileInfo(api, session, appProfile).name;
+                const nvdrs::ProfileInfo info = nvdrs::ReadProfileInfo(api, session, appProfile);
+                r->app_profile = info.name;
+                r->app_profile_predefined = info.predefined;
                 if (!ReadSetting(api, session, appProfile, kDrsNgxDlssgMode, Scope::OwnValueOnly, &r->dlssg_mode_app,
                                  error) ||
                     !ReadSetting(api, session, appProfile, kDrsSlDlssOverride, Scope::OwnValueOnly, &r->sl_override_app,
                                  error) ||
                     !ReadSetting(api, session, appProfile, kDrsNgxDlssFgOverride, Scope::OwnValueOnly,
-                                 &r->fg_override_app, error)) {
+                                 &r->fg_override_app, error) ||
+                    !ReadSetting(api, session, appProfile, kDrsSmoothMotionApis, Scope::OwnValueOnly,
+                                 &r->smooth_motion_apis_app, error)) {
                     break;
                 }
                 ListSettings(api, session, appProfile, false, &r->app_settings, r);  // diagnostics
@@ -209,6 +215,8 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
             !ReadSetting(api, session, base, kDrsSlDlssOverride, Scope::AnyButDefault, &r->sl_override_base,
                          error) ||
             !ReadSetting(api, session, base, kDrsNgxDlssFgOverride, Scope::AnyButDefault, &r->fg_override_base,
+                         error) ||
+            !ReadSetting(api, session, base, kDrsSmoothMotionApis, Scope::AnyButDefault, &r->smooth_motion_apis_base,
                          error)) {
             break;
         }
@@ -252,6 +260,18 @@ DriverProfileReport ReadDriverProfile(const std::wstring& exePath) {
         r.error = "unexpected exception while reading the driver profile";
         return r;
     }
+}
+
+bool SmoothMotionDx11Excluded(const DriverProfileReport& report) {
+    if (!report.nvapi_ok || report.app_profile.empty()) return false;
+    const auto value = [](const DrsValue& d) {
+        ProfileValue v;
+        v.present = d.found;
+        v.value = d.value;
+        return v;
+    };
+    return PlanSmoothMotionOff(value(report.smooth_motion_apis_app), value(report.smooth_motion_apis_base)).action ==
+           SmoothMotionAction::None;
 }
 
 std::string DrsSettingText(const DrsSetting& s) {

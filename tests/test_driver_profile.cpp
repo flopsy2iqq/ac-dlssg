@@ -330,6 +330,27 @@ TEST(DriverProfile_SettingTextShortensLongStrings) {
     CHECK_EQ(DrsSettingText(s), std::string("0x00000002 string \"short\" (this profile)"));
 }
 
+// Review finding B-10: whether "Smooth Motion - Enabled APIs" in effect for
+// the exe's profile already lacks DX11: the profile's own value, else the
+// global one, else every API.
+TEST(DriverProfile_SmoothMotionDx11ExcludedComesFromTheValueInEffect) {
+    DriverProfileReport r;
+    r.nvapi_ok = true;
+    r.app_profile = L"Assetto Corsa";
+    CHECK(!SmoothMotionDx11Excluded(r));  // set nowhere: 7
+    r.smooth_motion_apis_base = Set(5);
+    CHECK(SmoothMotionDx11Excluded(r));  // the global 5
+    r.smooth_motion_apis_app = Set(7);
+    CHECK(!SmoothMotionDx11Excluded(r));  // the profile's own 7 wins
+    r.smooth_motion_apis_app = Set(5);
+    CHECK(SmoothMotionDx11Excluded(r));  // what install.bat writes
+    r.app_profile.clear();
+    CHECK(!SmoothMotionDx11Excluded(r));  // no profile holds the exe
+    r.app_profile = L"Assetto Corsa";
+    r.nvapi_ok = false;
+    CHECK(!SmoothMotionDx11Excluded(r));  // the settings could not be read
+}
+
 TEST(DriverProfile_ReadsThisMachinesDriver) {
     wchar_t exe[MAX_PATH] = {};
     REQUIRE(GetModuleFileNameW(nullptr, exe, MAX_PATH) > 0);
@@ -355,6 +376,12 @@ TEST(DriverProfile_ReadsThisMachinesDriver) {
     // profile, and NVIDIA's drivers ship one for Assetto Corsa's acs.exe.
     CHECK(self.app_profile.empty());
     CHECK(!acsPath.app_profile.empty());
+    // Review finding A-1: NVIDIA's own "Assetto Corsa" profile is a predefined
+    // one; a bare acs.exe may get another game's.
+    std::printf("  predefined: acs.exe '%s' %d; the full path '%s' %d\n", Utf8(acs.app_profile).c_str(),
+                acs.app_profile_predefined ? 1 : 0, Utf8(acsPath.app_profile).c_str(),
+                acsPath.app_profile_predefined ? 1 : 0);
+    if (acsPath.app_profile == L"Assetto Corsa") CHECK(acsPath.app_profile_predefined);
     // Diagnostics (GitHub issue 10): the settings of acs.exe's profile and the
     // global profile's non-default ones are listed; the test exe has no app
     // profile, so none of an app profile.

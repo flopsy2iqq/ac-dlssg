@@ -305,13 +305,20 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
              reason.c_str());
     if (!proxy) {
         if (in.is_main_window && nvPresentCaller) {
+            // The fix follows the driver profile (review finding B-10): the
+            // window's reason, and in its install.bat case the steps by hand.
+            const CompatInputs& sm = bs.compat;
+            const std::string byHand =
+                SmoothMotionFixOf(sm) == SmoothMotionFix::InstallBat
+                    ? "; by hand: in NVIDIA Profile Inspector, open the \"" +
+                          (sm.sm_profile.empty() ? std::string("Assetto Corsa") : sm.sm_profile) +
+                          "\" profile, set \"Smooth Motion - Enabled APIs\" (0xB0CC0875) to 5 (its DX11 bit, 2, "
+                          "cleared), apply and restart the game"
+                    : std::string();
             LOGW("smooth motion: NvPresent64.dll (NVIDIA Smooth Motion, the driver's own frame generation) creates "
                  "the game window's swap chain; DLSS-G cannot run on top of it, so the bridge passes the game "
-                 "through. The NVIDIA App can show Smooth Motion off while it is on. Fix: run install.bat again, "
-                 "which turns it off for Assetto Corsa (Windows asks for administrator rights), and restart the "
-                 "game; or in NVIDIA Profile Inspector, open the \"Assetto Corsa\" profile, set \"Smooth Motion - "
-                 "Enabled APIs\" (0xB0CC0875) to 5 (its DX11 bit, 2, cleared), apply and restart the game; check the "
-                 "global profile too");
+                 "through. Fix: %s%s",
+                 SmoothMotionRefusal(sm).c_str(), byHand.c_str());
         }
         if (in.is_main_window) PublishPassThrough(reason, adapter);
         return false;

@@ -32,6 +32,16 @@ struct CompatInputs {
     // NVIDIA Smooth Motion creates the game's swap chain: NvPresentInCallStack()
     // at its CreateSwapChainForHwnd (FactoryHook sets it per swap chain).
     bool nvpresent_caller = false;
+    // The driver profile that holds acs.exe, for rule 0's reason (review
+    // finding B-10); the bootstrap sets them from ReadDriverProfile.
+    // sm_profile: its name (UTF-8), empty when none holds acs.exe or the
+    // settings could not be read; sm_profile_foreign: it is another game's
+    // predefined profile (IsForeignPredefinedProfile); sm_dx11_excluded:
+    // "Smooth Motion - Enabled APIs" in effect for it already lacks DX11
+    // (SmoothMotionDx11Excluded).
+    std::string sm_profile;
+    bool sm_profile_foreign = false;
+    bool sm_dx11_excluded = false;
     // ac-dlssg.ini [debug] triple_diag=1 (the bootstrap sets it from the
     // config): triple-screen mode is let through for the diagnostics of
     // triple_diag.h.
@@ -44,10 +54,7 @@ struct CompatResult {
 };
 
 // Rules in this order; the first that fails is reported:
-//  0. nvpresent_caller                 -> "NVIDIA Smooth Motion (the driver's own frame generation) is active for
-//                                         Assetto Corsa, even if the NVIDIA App shows it off. It cannot run with
-//                                         DLSS-G. Run install.bat again to turn it off for AC (or see the README),
-//                                         then restart the game."
+//  0. nvpresent_caller                 -> SmoothMotionRefusal(in)
 //  1. old_swapchain == 1               -> "OLD_SWAPCHAIN=1 is not supported"
 //  2. exclusive_fullscreen == 1        -> "EXCLUSIVE_FULLSCREEN=1 is not supported"
 //  3. hdr_enabled == 1                 -> "HDR output is not supported"
@@ -71,6 +78,31 @@ struct CompatResult {
 //  9. renodx_dlss5_loaded              -> the same for "RenoDX DLSS5 (renodx-dlss5.addon64)"
 // 10. !hags_on                         -> "hardware-accelerated GPU scheduling is off"
 CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned swapHeight);
+
+// Rule 0's reason, by the driver profile that holds acs.exe (review finding
+// B-10), each one shorter than the panel's 256 characters:
+//  - sm_dx11_excluded with a profile (install.bat would find nothing to do):
+//    "NVIDIA Smooth Motion is still on for AC, though the profile "<name>"
+//    keeps DX11 out; DLSS-G cannot run with it. In NVIDIA Profile Inspector
+//    set Smooth Motion - Enabled APIs to 5 in the global profile ("Base
+//    Profile") too, then restart AC."
+//  - sm_profile_foreign (install.bat leaves that profile alone): "NVIDIA
+//    Smooth Motion is on for AC; DLSS-G cannot run with it. acs.exe gets
+//    another game's NVIDIA profile "<name>", which install.bat leaves alone:
+//    in NVIDIA Profile Inspector set its Smooth Motion - Enabled APIs to 5,
+//    then restart AC."
+//  - else: "NVIDIA Smooth Motion (the driver's own frame generation) is
+//    active for Assetto Corsa, even if the NVIDIA App shows it off. It cannot
+//    run with DLSS-G. Run install.bat again to turn it off for AC (or see the
+//    README), then restart the game."
+// A name longer than 20 bytes is cut at a whole UTF-8 character, with "...".
+std::string SmoothMotionRefusal(const CompatInputs& in);
+
+// Which of the three SmoothMotionRefusal gives: install.bat, the global
+// profile (sm_dx11_excluded with a profile) or another game's profile
+// (sm_profile_foreign with a profile).
+enum class SmoothMotionFix { InstallBat, GlobalProfile, ForeignProfile };
+SmoothMotionFix SmoothMotionFixOf(const CompatInputs& in);
 
 // VR, by video.ini's [CAMERA] MODE (case-insensitive): AC's OPENVR and
 // OCULUS, and CSP's OpenXR mode __EXT_OPENXR. DLSS-G presents through the

@@ -181,8 +181,11 @@ ac-dlssg {VERSION} для Assetto Corsa
   с -KeepSmoothMotion, сделайте это вручную: в NVIDIA Profile Inspector
   (ссылка на него есть в docs\README.ru.md) выберите профиль Assetto Corsa,
   поставьте Smooth Motion - Enabled APIs (0xB0CC0875) в 5, нажмите Apply
-  changes и перезапустите игру. Если окно пишет то же, поставьте то же
-  значение в глобальном профиле (_GLOBAL_DRIVER_PROFILE).
+  changes и перезапустите игру. Если потом окно пишет "is still on for AC,
+  though the profile ... keeps DX11 out", поставьте то же значение в
+  глобальном профиле (_GLOBAL_DRIVER_PROFILE, он же "Base Profile"); если
+  пишет "acs.exe gets another game's NVIDIA profile", поставьте его в
+  профиле, который окно называет.
 
 Что ещё нужно знать
   - VR не поддерживается и не планируется: в VR мост сам выключается.

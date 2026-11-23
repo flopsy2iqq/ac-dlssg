@@ -53,7 +53,44 @@ CompatResult Refuse(std::string reason) {
     return r;
 }
 
+// A profile name for a reason: at most 20 bytes, cut at a whole UTF-8
+// character and marked with "...".
+std::string ShortProfileName(const std::string& name) {
+    constexpr size_t kMax = 20;
+    if (name.size() <= kMax) return name;
+    size_t n = kMax - 3;
+    while (n > 0 && (static_cast<unsigned char>(name[n]) & 0xC0) == 0x80) --n;
+    return name.substr(0, n) + "...";
+}
+
 }  // namespace
+
+SmoothMotionFix SmoothMotionFixOf(const CompatInputs& in) {
+    if (in.sm_profile.empty()) return SmoothMotionFix::InstallBat;
+    if (in.sm_dx11_excluded) return SmoothMotionFix::GlobalProfile;
+    if (in.sm_profile_foreign) return SmoothMotionFix::ForeignProfile;
+    return SmoothMotionFix::InstallBat;
+}
+
+std::string SmoothMotionRefusal(const CompatInputs& in) {
+    switch (SmoothMotionFixOf(in)) {
+        case SmoothMotionFix::GlobalProfile:
+            return "NVIDIA Smooth Motion is still on for AC, though the profile \"" + ShortProfileName(in.sm_profile) +
+                   "\" keeps DX11 out; DLSS-G cannot run with it. In NVIDIA Profile Inspector set Smooth Motion - "
+                   "Enabled APIs to 5 in the global profile (\"Base Profile\") too, then restart AC.";
+        case SmoothMotionFix::ForeignProfile:
+            return "NVIDIA Smooth Motion is on for AC; DLSS-G cannot run with it. acs.exe gets another game's NVIDIA "
+                   "profile \"" +
+                   ShortProfileName(in.sm_profile) +
+                   "\", which install.bat leaves alone: in NVIDIA Profile Inspector set its Smooth Motion - Enabled "
+                   "APIs to 5, then restart AC.";
+        case SmoothMotionFix::InstallBat:
+            break;
+    }
+    return "NVIDIA Smooth Motion (the driver's own frame generation) is active for Assetto Corsa, even if the NVIDIA "
+           "App shows it off. It cannot run with DLSS-G. Run install.bat again to turn it off for AC (or see the "
+           "README), then restart the game.";
+}
 
 std::string VrRefusal(const std::optional<std::string>& cameraMode) {
     if (!cameraMode) return {};
@@ -74,10 +111,7 @@ bool AspectMismatch(double videoW, double videoH, double swapW, double swapH) {
 }
 
 CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned swapHeight) {
-    if (in.nvpresent_caller)
-        return Refuse("NVIDIA Smooth Motion (the driver's own frame generation) is active for Assetto Corsa, even if "
-                      "the NVIDIA App shows it off. It cannot run with DLSS-G. Run install.bat again to turn it off "
-                      "for AC (or see the README), then restart the game.");
+    if (in.nvpresent_caller) return Refuse(SmoothMotionRefusal(in));
     if (in.old_swapchain == 1) return Refuse("OLD_SWAPCHAIN=1 is not supported");
     if (in.exclusive_fullscreen == 1) return Refuse("EXCLUSIVE_FULLSCREEN=1 is not supported");
     if (in.hdr_enabled == 1) return Refuse("HDR output is not supported");

@@ -35,7 +35,12 @@ struct DriverProfileReport {
     bool nvapi_ok = false;
     std::string error;                 // why NVAPI or DRS could not be read
     std::wstring app_profile;          // name of the profile that holds the exe, empty if none
+    bool app_profile_predefined = false;  // ... and NVIDIA's driver ships it (NVDRS_PROFILE.isPredefined)
     DrsValue dlssg_mode_app, dlssg_mode_base;
+    // "Smooth Motion - Enabled APIs" (kDrsSmoothMotionApis, smooth_motion.h):
+    // the app profile's own value and the global one, for the Smooth Motion
+    // reason (review finding B-10).
+    DrsValue smooth_motion_apis_app, smooth_motion_apis_base;
     DrsValue sl_override_app, sl_override_base;
     DrsValue fg_override_app, fg_override_base;
     // Diagnostics (GitHub issue 10), from NvAPI_DRS_EnumSettings: every
@@ -56,6 +61,12 @@ struct DriverProfileReport {
 // Never throws; a non-NVIDIA system or a missing nvapi64.dll gives
 // nvapi_ok=false.
 DriverProfileReport ReadDriverProfile(const std::wstring& exePath);
+
+// Pure (review finding B-10): an app profile holds the exe, and "Smooth
+// Motion - Enabled APIs" in effect for it (its own value, else the global
+// profile's, else every API, as PlanSmoothMotionOff reads them) lacks DX11.
+// False when the settings could not be read.
+bool SmoothMotionDx11Excluded(const DriverProfileReport& report);
 
 // Pure: "0x<id> <type> <value> (<origin>)" and, when the setting has a name,
 // " \"<name>\"". A DWORD is "dword 0x%08X", a QWORD "qword 0x%016llX", a

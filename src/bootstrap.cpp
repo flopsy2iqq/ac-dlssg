@@ -21,6 +21,7 @@
 #include "spoof_loader.h"
 #include "panel_control.h"
 #include "panel_status.h"
+#include "smooth_motion.h"
 #include "streamline_runtime.h"
 #include "system_dxgi.h"
 #include "triple_diag.h"
@@ -118,12 +119,21 @@ void LogDriverProfile(const DriverProfileReport& r, const std::vector<DriverProf
     if (!r.nvapi_ok) {
         LOGI("driver profile: not read: %s", r.error.c_str());
     } else {
+        const std::string profile =
+            r.app_profile.empty()
+                ? std::string("(none)")
+                : "\"" + ToUtf8(r.app_profile) + "\"" +
+                      (r.app_profile_predefined
+                           ? (IsForeignPredefinedProfile(r.app_profile, true) ? " (another game's predefined profile)"
+                                                                               : " (predefined by NVIDIA)")
+                           : " (user-defined)");
         LOGI("driver profile: app profile %s; 0x%08X (DLSS-G override mode) app=%s global=%s; 0x%08X (Streamline "
-             "override) app=%s global=%s; 0x%08X (DLSS-FG override) app=%s global=%s",
-             r.app_profile.empty() ? "(none)" : ("\"" + ToUtf8(r.app_profile) + "\"").c_str(), kDrsNgxDlssgMode,
-             Drs(r.dlssg_mode_app).c_str(), Drs(r.dlssg_mode_base).c_str(), kDrsSlDlssOverride,
-             Drs(r.sl_override_app).c_str(), Drs(r.sl_override_base).c_str(), kDrsNgxDlssFgOverride,
-             Drs(r.fg_override_app).c_str(), Drs(r.fg_override_base).c_str());
+             "override) app=%s global=%s; 0x%08X (DLSS-FG override) app=%s global=%s; 0x%08X (Smooth Motion - "
+             "Enabled APIs) app=%s global=%s",
+             profile.c_str(), kDrsNgxDlssgMode, Drs(r.dlssg_mode_app).c_str(), Drs(r.dlssg_mode_base).c_str(),
+             kDrsSlDlssOverride, Drs(r.sl_override_app).c_str(), Drs(r.sl_override_base).c_str(),
+             kDrsNgxDlssFgOverride, Drs(r.fg_override_app).c_str(), Drs(r.fg_override_base).c_str(),
+             kDrsSmoothMotionApis, Drs(r.smooth_motion_apis_app).c_str(), Drs(r.smooth_motion_apis_base).c_str());
     }
     for (const DriverProfileNote& n : notes) {
         if (n.kind == DriverNoteKind::Warning) {
@@ -476,6 +486,11 @@ void Run(BootstrapState* s) {
     }
     s->driver_notes = DriverProfileNotes(s->driver_profile, dpc);
     LogDriverProfile(s->driver_profile, s->driver_notes);
+    // What the Smooth Motion reason says (compat rule 0, review finding B-10).
+    s->compat.sm_profile = ToUtf8(s->driver_profile.app_profile);
+    s->compat.sm_profile_foreign =
+        IsForeignPredefinedProfile(s->driver_profile.app_profile, s->driver_profile.app_profile_predefined);
+    s->compat.sm_dx11_excluded = SmoothMotionDx11Excluded(s->driver_profile);
 
     // Streamline is loaded only for an enabled bridge outside VR: disabled
     // means the game runs as without the mod.

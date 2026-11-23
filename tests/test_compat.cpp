@@ -35,6 +35,17 @@ const char* kSmooth =
     "NVIDIA Smooth Motion (the driver's own frame generation) is active for Assetto Corsa, even if the NVIDIA App "
     "shows it off. It cannot run with DLSS-G. Run install.bat again to turn it off for AC (or see the README), then "
     "restart the game.";
+// Review finding B-10: after install.bat kept DX11 out of the profile, the
+// global profile's step; for another game's predefined profile (A-1), its
+// name and the step there.
+const char* kSmoothGlobal =
+    "NVIDIA Smooth Motion is still on for AC, though the profile \"Assetto Corsa\" keeps DX11 out; DLSS-G cannot run "
+    "with it. In NVIDIA Profile Inspector set Smooth Motion - Enabled APIs to 5 in the global profile (\"Base "
+    "Profile\") too, then restart AC.";
+const char* kSmoothForeign =
+    "NVIDIA Smooth Motion is on for AC; DLSS-G cannot run with it. acs.exe gets another game's NVIDIA profile "
+    "\"ACS\", which install.bat leaves alone: in NVIDIA Profile Inspector set its Smooth Motion - Enabled APIs to 5, "
+    "then restart AC.";
 const char* kOld = "OLD_SWAPCHAIN=1 is not supported";
 const char* kExcl = "EXCLUSIVE_FULLSCREEN=1 is not supported";
 const char* kHdr = "HDR output is not supported";
@@ -80,6 +91,55 @@ std::string Reason(const CompatInputs& in, unsigned w = 1920, unsigned h = 1080)
 
 // The Smooth Motion reason fits the panel's 256-character state reason whole.
 TEST(Compat_TheSmoothMotionReasonFitsThePanel) { CHECK(std::string(kSmooth).size() < 256); }
+
+// Review finding B-10: the reason follows the driver profile. With DX11
+// still in effect it sends the user to install.bat; once the profile keeps
+// DX11 out, to the global profile (install.bat would find nothing to do);
+// for another game's predefined profile, which install.bat leaves alone,
+// it names that profile.
+TEST(Compat_TheSmoothMotionReasonFollowsTheDriverProfile) {
+    auto in = GoodInputs();
+    in.nvpresent_caller = true;
+    in.sm_profile = "Assetto Corsa";
+    CHECK_EQ(Reason(in), kSmooth);
+    in.sm_dx11_excluded = true;
+    CHECK_EQ(Reason(in), kSmoothGlobal);
+
+    in = GoodInputs();
+    in.nvpresent_caller = true;
+    in.sm_profile = "ACS";
+    in.sm_profile_foreign = true;
+    CHECK_EQ(Reason(in), kSmoothForeign);
+    // DX11 kept out there too: the global step, naming the profile.
+    in.sm_dx11_excluded = true;
+    const std::string r = Reason(in);
+    CHECK(r.find("the profile \"ACS\" keeps DX11 out") != std::string::npos);
+    CHECK(r.find("in the global profile (\"Base Profile\")") != std::string::npos);
+    // Without a profile for acs.exe: install.bat, which then says why.
+    in = GoodInputs();
+    in.nvpresent_caller = true;
+    in.sm_dx11_excluded = true;
+    CHECK_EQ(Reason(in), kSmooth);
+}
+
+// A long profile name is cut, at a whole UTF-8 character, so that every
+// reason fits the panel.
+TEST(Compat_TheSmoothMotionReasonsFitThePanelWithALongProfileName) {
+    std::string longName;
+    for (int i = 0; i < 40; ++i) longName += "\xD0\x96";  // U+0416, two bytes each
+    for (int c = 0; c < 2; ++c) {
+        auto in = GoodInputs();
+        in.nvpresent_caller = true;
+        in.sm_profile = longName;
+        in.sm_profile_foreign = c == 0;
+        in.sm_dx11_excluded = c == 1;
+        const std::string r = Reason(in);
+        CHECK(r.size() < 256);
+        CHECK(r.find("...\"") != std::string::npos);
+        const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, r.data(), static_cast<int>(r.size()), nullptr, 0);
+        CHECK(n > 0);
+    }
+}
 
 TEST(Compat_GoodInputsPass) {
     auto r = EvaluateCompat(GoodInputs(), 1920, 1080);
