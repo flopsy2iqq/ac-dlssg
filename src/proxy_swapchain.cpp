@@ -1,8 +1,12 @@
 #include "proxy_swapchain.h"
 
+#include <intrin.h>
+
+#include <cstdio>
 #include <cstring>
 #include <exception>
 
+#include "diag_util.h"
 #include "log.h"
 #include "present_flags.h"
 
@@ -294,7 +298,36 @@ HRESULT ProxySwapChain::PresentCommon(UINT syncInterval, UINT flags) {
     return hr;
 }
 
+void ProxySwapChain::TracePresent(const char* method, const void* caller, UINT syncInterval, UINT flags) {
+    const int left = g_trace_frames.load();
+    if (left <= 0) return;
+    try {
+        LARGE_INTEGER now{};
+        LARGE_INTEGER freq{};
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&freq);
+        // The module lookup takes loader locks; never under mu_.
+        const std::string from = ModuleAddressText(caller);
+        std::lock_guard<std::recursive_mutex> lock(mu_);
+        // The presenter counts g_trace_frames down by one per frame it
+        // presents, so the previous traced Present was the one right before
+        // this when the count stayed or went down by one; otherwise untraced
+        // Presents came between.
+        const bool previous = trace_prev_left_ > 0 && (left == trace_prev_left_ || left == trace_prev_left_ - 1);
+        char since[64] = "no previous traced Present";
+        if (previous && freq.QuadPart > 0)
+            std::snprintf(since, sizeof(since), "%.3f ms after the previous Present",
+                          static_cast<double>(now.QuadPart - trace_prev_qpc_) * 1000.0 / static_cast<double>(freq.QuadPart));
+        trace_prev_qpc_ = now.QuadPart;
+        trace_prev_left_ = left;
+        LOGI("diag: %s(%u, 0x%X) from %s, %s (%d traced frames left)", method, syncInterval, flags, from.c_str(),
+             since, left);
+    } catch (...) {
+    }
+}
+
 HRESULT STDMETHODCALLTYPE ProxySwapChain::Present(UINT syncInterval, UINT flags) {
+    TracePresent("Present", _ReturnAddress(), syncInterval, flags);
     return PresentCommon(syncInterval, flags);
 }
 
@@ -474,6 +507,7 @@ HRESULT STDMETHODCALLTYPE ProxySwapChain::GetCoreWindow(REFIID /*riid*/, void** 
 HRESULT STDMETHODCALLTYPE ProxySwapChain::Present1(UINT syncInterval, UINT flags,
                                                    const DXGI_PRESENT_PARAMETERS* /*params*/) {
     // Dirty rectangles and scroll are ignored (spec 6.3).
+    TracePresent("Present1", _ReturnAddress(), syncInterval, flags);
     return PresentCommon(syncInterval, flags);
 }
 

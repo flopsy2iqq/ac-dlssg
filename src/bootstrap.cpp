@@ -123,6 +123,15 @@ void LogDriverProfile(const DriverProfileReport& r, const std::vector<std::strin
              Drs(r.sl_override_app).c_str(), Drs(r.sl_override_base).c_str());
     }
     for (const auto& w : warnings) LOGW("driver profile: %s", w.c_str());
+    // Diagnostics (GitHub issue 10): every setting of the game's profile and
+    // the global profile's non-default ones, to see whether the driver
+    // attaches its own frame generation to the game.
+    if (!r.nvapi_ok && r.app_settings.empty() && r.base_settings.empty()) return;
+    if (!r.settings_error.empty()) LOGI("diag: driver profile settings not listed fully: %s", r.settings_error.c_str());
+    LOGI("diag: driver profile: %zu settings in the app profile, %zu non-default ones in the global profile",
+         r.app_settings.size(), r.base_settings.size());
+    for (const DrsSetting& s : r.app_settings) LOGI("diag:   app %s", DrsSettingText(s).c_str());
+    for (const DrsSetting& s : r.base_settings) LOGI("diag:   global %s", DrsSettingText(s).c_str());
 }
 
 // Every adapter, in DXGI's order, for PredictRenderAdapter.
@@ -482,7 +491,9 @@ BridgeMode BridgeModeFromPath(const std::wstring& modulePath) {
 const char* BridgeModeName(BridgeMode mode) { return mode == BridgeMode::Standalone ? "standalone" : "proxy"; }
 
 std::string BannerLine() {
-    return std::string("ac-dlssg ") + ACDB_VERSION +
+    // A diagnostic build (ACDB_BUILD_TAG, empty for a release) says so.
+    const std::string tag = ACDB_BUILD_TAG;
+    return std::string("ac-dlssg ") + ACDB_VERSION + (tag.empty() ? std::string() : " diagnostic build " + tag) +
            " (DLSS Frame Generation 2X/3X/4X and Reflex through NVIDIA Streamline for Assetto Corsa with CSP)";
 }
 

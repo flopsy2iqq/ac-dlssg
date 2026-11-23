@@ -75,6 +75,10 @@ bool NgxIsFillerStub(const void* fn);
 // Ray Reconstruction). Calls whose outermost layer is such a module, or a
 // module whose exports resolve into one, are never counted (ngx review F4).
 bool NgxIsDenoiserModule(const wchar_t* path);
+// Diagnostics (GitHub issue 10): true when path is an nvngx_dlssg.dll in a
+// DriverStore folder, the driver's own DLSS-G module (the hook skips it under
+// rule 4); case-insensitive, the base name must match exactly.
+bool NgxIsDriverStoreDlssg(const wchar_t* path);
 
 class NgxHook {
 public:
@@ -111,11 +115,14 @@ public:
     void LockStateForTest();
     void UnlockStateForTest();
 
-    // Internal, referenced by the per-slot detours. Not for callers.
-    NgxResult DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId,
-                             NgxParameter* params, NgxHandle** outHandle) noexcept;
+    // Internal, referenced by the per-slot detours. Not for callers. caller is
+    // the detour's return address, for the diagnostics of GitHub issue 10:
+    // the first outermost create and the first outermost evaluate are logged
+    // once each with the module and offset it lies in.
+    NgxResult DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId, NgxParameter* params,
+                             NgxHandle** outHandle, const void* caller = nullptr) noexcept;
     NgxResult DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx, const NgxHandle* handle,
-                               const NgxParameter* params, void* callback) noexcept;
+                               const NgxParameter* params, void* callback, const void* caller = nullptr) noexcept;
 
 private:
     NgxHook() = default;

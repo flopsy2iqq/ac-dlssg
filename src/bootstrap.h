@@ -29,7 +29,8 @@ BridgeMode BridgeModeFromPath(const std::wstring& modulePath);
 const char* BridgeModeName(BridgeMode mode);  // "standalone" or "proxy"
 
 // The start banner's first line in bridge.log: "ac-dlssg <ACDB_VERSION>
-// (<what the bridge does>)", with no milestone text.
+// (<what the bridge does>)", with no milestone text; a diagnostic build has
+// " diagnostic build <ACDB_BUILD_TAG>" after the version.
 std::string BannerLine();
 
 // The banner line about the game folder's dxgi.dll. isThisBridge: that file

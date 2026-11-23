@@ -67,6 +67,9 @@ const char* CameraReadResultText(CameraChannel::ReadResult r);
 
 struct FrameCapture {
     uint32_t evaluates = 0;   // qualifying evaluates since the previous Present
+    // Diagnostics (GitHub issue 10): every evaluate handed to OnEvaluate since
+    // the previous Present, also those ignored for their context or device.
+    uint32_t allEvaluates = 0;
     bool captured = false;    // copied into slot (ordered before the Present's signal)
     uint32_t slot = 0;        // this frame's slot (frame index mod 3)
     // renderW/H: the tag extent and the MV scale's reference size (the
@@ -113,6 +116,13 @@ private:
     bool SameDevice(ID3D11DeviceContext* ctx);
     void Capture(const NgxEvaluateInputs& in);
     void LogThrottled(const std::string& what);
+    // Diagnostics (GitHub issue 10), at the first evaluate whose device is
+    // not the game's: the context, both devices (diag_util's description,
+    // their immediate contexts, ReShade's unwrap answer), which of them owns
+    // the depth and motion vectors, whether the evaluate's device is a
+    // pass-through swap chain's, and once per process the modules outside the
+    // Windows folder. Logging only.
+    void LogDeviceMismatch(const NgxEvaluateInputs& in);
 
     Deps deps_;
     std::mutex mu_;
@@ -130,6 +140,7 @@ private:
     bool logged_first_evaluate_ = false;
     uint32_t idle_frames_ = 0;  // frames in a row without a counted evaluate
     bool logged_first_fresh_ = false;
+    bool logged_mismatch_ = false;  // LogDeviceMismatch ran
 };
 
 }  // namespace acdb

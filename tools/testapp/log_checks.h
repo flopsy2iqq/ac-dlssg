@@ -58,12 +58,14 @@ inline Stats ParseStats(const std::string& line) {
 
 // The M2 fields in order; the M3 contract keeps them and appends its six
 // fields and multi frame generation's fg_mult, all or none, before vram_mib,
-// which stays last.
+// which only the diagnostic build's no_evaluate follows.
 inline constexpr const char* kStatsM2Keys[] = {
     "base_fps", "presented_fps", "skipped", "failed", "occluded",   "uncopied", "max_frame_ms", "max_present_ms",
     "d3d11",    "d3d12",         "fg",      "stalls", "streamline", "reflex",   "pcl_problems"};
 inline constexpr const char* kStatsM3Keys[] = {"captures",  "camera_fresh", "tagged",           "fg_frames",
                                                "generated", "double_evaluates", "fg_mult"};
+// The diagnostic build of GitHub issue 10 appends this count after vram_mib.
+inline constexpr char kStatsDiagKey[] = "no_evaluate";
 
 inline bool IsCount(const std::string& v) {
     if (v.empty()) return false;
@@ -76,12 +78,13 @@ inline bool HasM3Stats(const Stats& s) { return s.Get(kStatsM3Keys[0]) != nullpt
 
 // Empty when the line has that layout, fg on or off, Streamline and Reflex
 // on, no PCL problem, counts in the M3 fields (generated may be n/a), an
-// fg_mult of 2, 3 or 4 and a non-zero video memory budget; otherwise what is
-// wrong.
+// fg_mult of 2, 3 or 4, a non-zero video memory budget and, when present,
+// a no_evaluate count as the last field; otherwise what is wrong.
 inline std::string StatsProblem(const Stats& s) {
     std::vector<std::string> expected(std::begin(kStatsM2Keys), std::end(kStatsM2Keys));
     if (HasM3Stats(s)) expected.insert(expected.end(), std::begin(kStatsM3Keys), std::end(kStatsM3Keys));
     expected.push_back("vram_mib");
+    if (s.Get(kStatsDiagKey)) expected.push_back(kStatsDiagKey);
     std::string keys, want;
     for (const auto& f : s.fields) keys += (keys.empty() ? "" : " ") + f.first;
     for (const auto& k : expected) want += (want.empty() ? "" : " ") + k;
@@ -101,6 +104,7 @@ inline std::string StatsProblem(const Stats& s) {
     if (slash == std::string::npos || !IsCount(vram.substr(0, slash)) || !IsCount(vram.substr(slash + 1)) ||
         std::strtoull(vram.c_str() + slash + 1, nullptr, 10) == 0)
         return "vram_mib is not <usage>/<budget> with a budget";
+    if (const std::string* n = s.Get(kStatsDiagKey); n && !IsCount(*n)) return "no_evaluate is not a count";
     return {};
 }
 

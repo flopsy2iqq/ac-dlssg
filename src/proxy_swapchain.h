@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -98,6 +99,11 @@ private:
     ProxySwapChain() = default;
     ~ProxySwapChain();
     HRESULT PresentCommon(UINT syncInterval, UINT flags);
+    // Diagnostics (GitHub issue 10): while the presenter traces the Presents
+    // after a DLSS feature create (g_trace_frames > 0), logs who called
+    // Present or Present1 (caller: its return address), with what, and how
+    // long after the previous traced Present. Nothing at all otherwise.
+    void TracePresent(const char* method, const void* caller, UINT syncInterval, UINT flags);
 
     std::atomic<ULONG> ref_{1};
     // Recursive: SetFullscreenState sends window messages synchronously, and a
@@ -117,6 +123,8 @@ private:
     std::map<GUID, Microsoft::WRL::ComPtr<IUnknown>, bool (*)(const GUID&, const GUID&)> private_ifaces_{
         [](const GUID& a, const GUID& b) { return memcmp(&a, &b, sizeof(GUID)) < 0; }};
     UINT present_count_ = 0;
+    int64_t trace_prev_qpc_ = 0;  // TracePresent: the previous traced Present's QPC
+    int trace_prev_left_ = 0;     // ... and g_trace_frames then
 };
 
 }  // namespace acdb

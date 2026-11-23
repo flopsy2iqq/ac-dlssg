@@ -719,6 +719,28 @@ TEST(FactoryHook_MainWindowDecisionIsLoggedAndPassesThroughOnRefusal) {
     CHECK(log.find("pass-through: " + refusal) != std::string::npos);
     CHECK(log.find("proxy swap chain created") == std::string::npos);
     if (lines != 1) std::printf("  log:\n%s\n", log.c_str());
+    // Diagnostics (GitHub issue 10): the call is described at INFO with its
+    // caller, this executable, the window's real class and the device, then
+    // what the original returned; the internal call is not described.
+    const std::regex caller(
+        R"( INFO diag: CreateSwapChainForHwnd #([0-9]+) \(main window\) from [^\n]*\\acdb_tests\.exe\+0x[0-9A-F]+: window [0-9A-F]+ class "acsW")");
+    std::smatch m;
+    const bool described = std::regex_search(log, m, caller);
+    CHECK(described);
+    if (described) {
+        const std::string n = m[1].str();
+        CHECK(std::regex_search(log, std::regex(" INFO diag: CreateSwapChainForHwnd #" + n +
+                                                " device [0-9A-F]+ \\(identity [0-9A-F]+, vtable [^\\n]*d3d11\\.dll\\+0x")));
+        CHECK(std::regex_search(log, std::regex(" INFO diag: CreateSwapChainForHwnd #" + n +
+                                                " returned 0x00000000 from the original, swap chain [0-9A-F]+ ")));
+    } else {
+        std::printf("  log:\n%s\n", log.c_str());
+    }
+    size_t described_calls = 0;
+    for (size_t pos = log.find(" from the original, swap chain "); pos != std::string::npos;
+         pos = log.find(" from the original, swap chain ", pos + 1))
+        ++described_calls;
+    CHECK_EQ(described_calls, static_cast<size_t>(1));
 }
 
 // ---------------------------------------------------------------- the panel (spec 6.9)

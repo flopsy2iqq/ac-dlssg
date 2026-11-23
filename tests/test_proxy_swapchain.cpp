@@ -567,6 +567,50 @@ TEST(ProxySwapChain_FrameLatency) {
     CHECK(log.find(" WARN ") == std::string::npos);
 }
 
+// Diagnostics (GitHub issue 10): while the presenter traces the Presents
+// after a DLSS feature create (g_trace_frames), each Present and Present1 on
+// the proxy is logged with its caller, its arguments and the time since the
+// previous traced Present; outside those frames nothing is logged.
+TEST(ProxySwapChain_TracedPresentsNameTheirCaller) {
+    acdb_test::TempDir dir(L"proxy_trace");
+    const std::wstring logPath = dir.Str() + L"\\bridge.log";
+    g_trace_frames.store(0);
+    REQUIRE(LogOpen(logPath, LogLevel::Info));
+    bool ran = false;
+    {
+        Fixture f;
+        if (f.Init(CspDesc(640, 360))) {
+            ran = true;
+            ComPtr<ID3D11RenderTargetView> rtv = BufferRtv(f.chain.Get(), f.dev.device11.Get());
+            REQUIRE(rtv);
+            CHECK(PresentOk(Frame(f.chain.Get(), f.dev.ctx11.Get(), rtv.Get(), 0)));  // not traced
+            g_trace_frames.store(2);
+            CHECK(PresentOk(Frame(f.chain.Get(), f.dev.ctx11.Get(), rtv.Get(), 1)));
+            DXGI_PRESENT_PARAMETERS params{};
+            CHECK(PresentOk(f.chain->Present1(0, DXGI_PRESENT_ALLOW_TEARING, &params)));
+            CHECK_EQ(g_trace_frames.load(), 0);
+            CHECK(PresentOk(Frame(f.chain.Get(), f.dev.ctx11.Get(), rtv.Get(), 3)));  // the trace is over
+        } else {
+            REQUIRE(!f.dev.device11);
+        }
+    }
+    LogClose();
+    g_trace_frames.store(0);
+    if (!ran) return;
+    const std::string log = acdb_test::ReadAll(logPath);
+    const bool first = std::regex_search(
+        log, std::regex(R"( INFO diag: Present\(0, 0x0\) from [^\n]*\\acdb_tests\.exe\+0x[0-9A-F]+, no previous traced Present \(2 traced frames left\)\r?\n)"));
+    const bool second = std::regex_search(
+        log, std::regex(R"( INFO diag: Present1\(0, 0x200\) from [^\n]*\\acdb_tests\.exe\+0x[0-9A-F]+, [0-9]+\.[0-9]{3} ms after the previous Present \(1 traced frames left\)\r?\n)"));
+    CHECK(first);
+    CHECK(second);
+    size_t traced = 0;
+    for (size_t pos = log.find(" diag: Present"); pos != std::string::npos; pos = log.find(" diag: Present", pos + 1))
+        ++traced;
+    CHECK_EQ(traced, static_cast<size_t>(2));
+    if (!first || !second || traced != 2) std::printf("  log:\n%s\n", log.c_str());
+}
+
 TEST(ProxySwapChain_WithoutWaitableFlagHasNoLatencyObject) {
     Fixture f;
     if (!f.Init(CspDesc(640, 360, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING))) {

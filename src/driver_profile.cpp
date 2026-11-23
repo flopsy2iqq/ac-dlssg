@@ -6,7 +6,9 @@
 #include <nvapi.h>
 #include <NvApiDriverSettings.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 
 namespace acdb {
@@ -28,6 +30,7 @@ constexpr unsigned kIdDrsFindApplicationByName = 0xeee566b2;
 constexpr unsigned kIdDrsGetProfileInfo = 0x61cd6fd6;
 constexpr unsigned kIdDrsGetBaseProfile = 0xda8466a0;
 constexpr unsigned kIdDrsGetSetting = 0x73bf8338;
+constexpr unsigned kIdDrsEnumSettings = 0xae3039da;  // diagnostics (GitHub issue 10)
 
 using QueryInterfaceFn = void*(__cdecl*)(unsigned int id);
 
@@ -42,6 +45,7 @@ struct Nvapi {
     decltype(&NvAPI_DRS_GetProfileInfo) GetProfileInfo = nullptr;
     decltype(&NvAPI_DRS_GetBaseProfile) GetBaseProfile = nullptr;
     decltype(&NvAPI_DRS_GetSetting) GetSetting = nullptr;
+    decltype(&NvAPI_DRS_EnumSettings) EnumSettings = nullptr;  // optional (diagnostics)
 };
 
 template <typename Fn>
@@ -84,6 +88,116 @@ bool ReadSetting(const Nvapi& api, NvDRSSessionHandle session, NvDRSProfileHandl
     out->found = true;
     out->value = setting->u32CurrentValue;
     return true;
+}
+
+// ---- Diagnostics (GitHub issue 10): the profiles' settings, listed only.
+
+// DrsSetting keeps NVAPI's numbers for the type and the location.
+static_assert(NVDRS_DWORD_TYPE == 0 && NVDRS_BINARY_TYPE == 1 && NVDRS_STRING_TYPE == 2 && NVDRS_WSTRING_TYPE == 3 &&
+              NVDRS_QWORD_TYPE == 4);
+static_assert(NVDRS_CURRENT_PROFILE_LOCATION == 0 && NVDRS_GLOBAL_PROFILE_LOCATION == 1 &&
+              NVDRS_BASE_PROFILE_LOCATION == 2 && NVDRS_DEFAULT_PROFILE_LOCATION == 3);
+
+// UTF-8 of at most max characters of w; "..." marks a cut.
+std::string Shortened(const std::wstring& w, size_t max) {
+    const bool cut = w.size() > max;
+    const int n = static_cast<int>(cut ? max : w.size());
+    std::string s;
+    if (n > 0) {
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, w.data(), n, nullptr, 0, nullptr, nullptr);
+        if (bytes > 0) {
+            s.assign(static_cast<size_t>(bytes), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w.data(), n, s.data(), bytes, nullptr, nullptr);
+        }
+    }
+    return cut ? s + "..." : s;
+}
+
+const char* OriginName(uint32_t location) {
+    switch (location) {
+        case NVDRS_CURRENT_PROFILE_LOCATION: return "this profile";
+        case NVDRS_GLOBAL_PROFILE_LOCATION: return "global profile";
+        case NVDRS_BASE_PROFILE_LOCATION: return "base profile";
+        case NVDRS_DEFAULT_PROFILE_LOCATION: return "default";
+    }
+    return "?";
+}
+
+std::wstring WideOf(const NvU16* s) {
+    std::wstring w;
+    for (size_t i = 0; i < NVAPI_UNICODE_STRING_MAX && s[i]; ++i) w.push_back(static_cast<wchar_t>(s[i]));
+    return w;
+}
+
+DrsSetting ToDrsSetting(const NVDRS_SETTING& s) {
+    DrsSetting d;
+    d.id = s.settingId;
+    d.type = static_cast<uint32_t>(s.settingType);
+    d.location = static_cast<uint32_t>(s.settingLocation);
+    d.name = WideOf(s.settingName);
+    switch (s.settingType) {
+        case NVDRS_DWORD_TYPE: d.number = s.u32CurrentValue; break;
+        case NVDRS_QWORD_TYPE: d.number = s.u64CurrentValue; break;
+        case NVDRS_STRING_TYPE:
+        case NVDRS_WSTRING_TYPE: d.text = WideOf(s.wszCurrentValue); break;
+        case NVDRS_BINARY_TYPE: d.binary_length = s.binaryCurrentValue.valueLength; break;
+        default: break;
+    }
+    return d;
+}
+
+// Every setting of the profile, or with skipDefault those whose value does
+// not come from the driver's defaults; false with *error when it fails.
+// Driver 621.01 starts a later page a few settings before startIndex, so a
+// setting already listed is skipped; the pages are large, so that usually
+// one call returns the whole profile.
+bool EnumProfileSettings(const Nvapi& api, NvDRSSessionHandle session, NvDRSProfileHandle profile, bool skipDefault,
+                         std::vector<DrsSetting>* out, std::string* error) {
+    constexpr NvU32 kBatch = 128;         // NVDRS_SETTING is about 12 KB
+    constexpr NvU32 kMaxSettings = 4096;  // a bound for a misbehaving driver
+    std::vector<NVDRS_SETTING> batch(kBatch);
+    std::vector<NvU32> seen;
+    for (NvU32 start = 0; start < kMaxSettings;) {
+        for (NVDRS_SETTING& s : batch) {
+            std::memset(&s, 0, sizeof(s));
+            s.version = NVDRS_SETTING_VER;
+        }
+        NvU32 count = kBatch;
+        const NvAPI_Status status = api.EnumSettings(session, profile, start, &count, batch.data());
+        if (status == NVAPI_END_ENUMERATION) return true;
+        if (status != NVAPI_OK) {
+            *error = Failed(api, "NvAPI_DRS_EnumSettings", status);
+            return false;
+        }
+        if (count > kBatch) count = kBatch;
+        for (NvU32 i = 0; i < count; ++i) {
+            const NVDRS_SETTING& s = batch[i];
+            if (std::find(seen.begin(), seen.end(), s.settingId) != seen.end()) continue;
+            seen.push_back(s.settingId);
+            if (skipDefault && s.settingLocation == NVDRS_DEFAULT_PROFILE_LOCATION) continue;
+            out->push_back(ToDrsSetting(s));
+        }
+        if (count < kBatch) return true;
+        start += count;
+    }
+    return true;
+}
+
+// Lists the settings into *out; a failure only fills r->settings_error (the
+// first one is kept), so the rest of the report never depends on it.
+void ListSettings(const Nvapi& api, NvDRSSessionHandle session, NvDRSProfileHandle profile, bool skipDefault,
+                  std::vector<DrsSetting>* out, DriverProfileReport* r) {
+    if (!api.EnumSettings) return;
+    std::string err;
+    try {
+        if (EnumProfileSettings(api, session, profile, skipDefault, out, &err)) return;
+    } catch (...) {
+        err = "unexpected exception while listing the settings";
+    }
+    try {
+        if (r->settings_error.empty()) r->settings_error = err;
+    } catch (...) {
+    }
 }
 
 // Destroys the DRS session on every exit, a C++ exception included.
@@ -136,6 +250,7 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
                                  error)) {
                     break;
                 }
+                ListSettings(api, session, appProfile, false, &r->app_settings, r);  // diagnostics
             } else if (status != NVAPI_EXECUTABLE_NOT_FOUND && status != NVAPI_PROFILE_NOT_FOUND &&
                        status != NVAPI_EXECUTABLE_PATH_IS_AMBIGUOUS) {
                 *error = Failed(api, "NvAPI_DRS_FindApplicationByName", status);
@@ -155,6 +270,7 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
                          error)) {
             break;
         }
+        ListSettings(api, session, base, true, &r->base_settings, r);  // diagnostics
         ok = true;
     } while (false);
     return ok;
@@ -207,6 +323,9 @@ DriverProfileReport ReadDriverProfileImpl(const std::wstring& exePath) {
         r.error = std::string("nvapi_QueryInterface has no ") + missing;
         return r;
     }
+    // Optional: without it only the diagnostic list of settings is missing.
+    if (!Resolve(query, kIdDrsEnumSettings, &api.EnumSettings))
+        r.settings_error = "nvapi_QueryInterface has no NvAPI_DRS_EnumSettings";
 
     const NvAPI_Status status = api.Initialize();
     if (status != NVAPI_OK) {
@@ -232,6 +351,37 @@ DriverProfileReport ReadDriverProfile(const std::wstring& exePath) {
         r.error = "unexpected exception while reading the driver profile";
         return r;
     }
+}
+
+std::string DrsSettingText(const DrsSetting& s) {
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "0x%08X ", static_cast<unsigned>(s.id));
+    std::string text = buf;
+    switch (s.type) {
+        case NVDRS_DWORD_TYPE:
+            std::snprintf(buf, sizeof(buf), "dword 0x%08X", static_cast<unsigned>(s.number));
+            text += buf;
+            break;
+        case NVDRS_QWORD_TYPE:
+            std::snprintf(buf, sizeof(buf), "qword 0x%016llX", static_cast<unsigned long long>(s.number));
+            text += buf;
+            break;
+        case NVDRS_STRING_TYPE:
+        case NVDRS_WSTRING_TYPE:
+            text += (s.type == NVDRS_STRING_TYPE ? "string \"" : "wstring \"") + Shortened(s.text, 64) + "\"";
+            break;
+        case NVDRS_BINARY_TYPE:
+            std::snprintf(buf, sizeof(buf), "binary %u bytes", static_cast<unsigned>(s.binary_length));
+            text += buf;
+            break;
+        default:
+            std::snprintf(buf, sizeof(buf), "type %u", static_cast<unsigned>(s.type));
+            text += buf;
+            break;
+    }
+    text += std::string(" (") + OriginName(s.location) + ")";
+    if (!s.name.empty()) text += " \"" + Shortened(s.name, 48) + "\"";
+    return text;
 }
 
 std::vector<std::string> DriverProfileWarnings(const DriverProfileReport& report) {

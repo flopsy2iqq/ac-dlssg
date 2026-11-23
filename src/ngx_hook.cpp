@@ -1,13 +1,17 @@
 #include "ngx_hook.h"
 
 #include <d3d11.h>
+#include <intrin.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 
+#include "diag_util.h"
 #include "inline_hook.h"
 #include "log.h"
+#include "module_version.h"
 
 // Everything here is noexcept with a catch-all (spec 9): a detour must never let
 // an exception escape into CSP's render thread. The original NGX call is always
@@ -276,6 +280,31 @@ bool EndsWithNoCase(const wchar_t* s, const wchar_t* suffix) {
     return _wcsicmp(s + (ls - lf), suffix) == 0;
 }
 
+// ---- Diagnostics (GitHub issue 10); logging only.
+
+std::atomic<bool> g_logged_first_create{false};
+std::atomic<bool> g_logged_first_evaluate{false};
+std::atomic<bool> g_logged_driver_dlssg{false};
+
+// True the first time only; a relaxed load first, so that later calls cost
+// one plain read.
+bool FirstTime(std::atomic<bool>& done) {
+    return !done.load(std::memory_order_relaxed) && !done.exchange(true);
+}
+
+// On RTX 40 and 50, driver 621.01 loads its own DLSS-G module from the
+// DriverStore into the game (the "rule 4" skip): said once, with its file
+// version. Caller holds scanLock with m pinned.
+void NoteDriverDlssgModule(HMODULE m, const std::wstring& path) {
+    if (g_logged_driver_dlssg.load(std::memory_order_relaxed)) return;
+    try {
+        if (!NgxIsDriverStoreDlssg(path.c_str()) || !FirstTime(g_logged_driver_dlssg)) return;
+        LOGI("diag: the driver's own DLSS-G module is loaded: %ls at %p, version %s", path.c_str(),
+             static_cast<void*>(m), ModuleVersionText(m).c_str());
+    } catch (...) {
+    }
+}
+
 }  // namespace
 
 bool NgxIsFillerStub(const void* fn) {
@@ -286,6 +315,17 @@ bool NgxIsFillerStub(const void* fn) {
     for (int i = 1; i < 14; ++i)
         if (b[i] != b[0]) return false;
     return true;
+}
+
+bool NgxIsDriverStoreDlssg(const wchar_t* path) {
+    if (!path || !*path) return false;
+    const wchar_t* base = path;
+    for (const wchar_t* p = path; *p; ++p)
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    if (_wcsicmp(base, L"nvngx_dlssg.dll") != 0) return false;
+    std::wstring lower(path, base);
+    for (auto& c : lower) c = static_cast<wchar_t>(towlower(c));
+    return lower.find(L"\\driverstore\\") != std::wstring::npos;
 }
 
 bool NgxIsDenoiserModule(const wchar_t* path) {
@@ -315,18 +355,19 @@ NgxSkip NgxClassifyModule(const wchar_t* path, bool isHostExe, const void* creat
 
 // ---------------------------------------------------------------- per-slot detours
 
+// The patch jumps to the detour, so _ReturnAddress() is the NGX caller's.
 #define NGX_LAYER_DETOURS(k)                                                                          \
     static NgxResult __cdecl DetourCreate##k(ID3D11DeviceContext* c, uint32_t f, NgxParameter* p,     \
                                              NgxHandle** o) {                                         \
-        return NgxHook::Get().DispatchCreate(k, c, f, p, o);                                          \
+        return NgxHook::Get().DispatchCreate(k, c, f, p, o, _ReturnAddress());                        \
     }                                                                                                \
     static NgxResult __cdecl DetourEval##k(ID3D11DeviceContext* c, const NgxHandle* h,                \
                                            const NgxParameter* p, void* cb) {                         \
-        return NgxHook::Get().DispatchEvaluate(k, false, c, h, p, cb);                                \
+        return NgxHook::Get().DispatchEvaluate(k, false, c, h, p, cb, _ReturnAddress());              \
     }                                                                                                \
     static NgxResult __cdecl DetourEvalC##k(ID3D11DeviceContext* c, const NgxHandle* h,               \
                                             const NgxParameter* p, void* cb) {                        \
-        return NgxHook::Get().DispatchEvaluate(k, true, c, h, p, cb);                                 \
+        return NgxHook::Get().DispatchEvaluate(k, true, c, h, p, cb, _ReturnAddress());               \
     }
 
 NGX_LAYER_DETOURS(0) NGX_LAYER_DETOURS(1) NGX_LAYER_DETOURS(2) NGX_LAYER_DETOURS(3)
@@ -432,6 +473,7 @@ bool HookModuleLocked(HMODULE m, bool isHostExe) {
     if (!create || (!eval && !eval_c)) return true;
 
     const std::wstring path = ModulePath(m);
+    NoteDriverDlssgModule(m, path);
     const NgxSkip skip = NgxClassifyModule(path.c_str(), isHostExe, create, eval, eval_c);
     if (skip != NgxSkip::None) {
         LOGD("ngx: skipping %ls (rule %d)", path.c_str(), static_cast<int>(skip));
@@ -592,6 +634,19 @@ void CALLBACK OnLdrNotification(ULONG reason, const void* data, void*) {
 // fault (adapted from dlss5-bridge, MIT).
 bool Plausible(const void* p) { return reinterpret_cast<uintptr_t>(p) >= 0x10000; }
 
+// Diagnostics (GitHub issue 10): the first outermost CreateFeature or
+// EvaluateFeature, after the original returned: who called it, on which
+// context, and what it returned (the slot's module is in the "ngx: hooked"
+// line).
+void LogFirstOutermostCall(const char* what, int slot, const void* caller, ID3D11DeviceContext* ctx, NgxResult r) {
+    try {
+        LOGI("diag: first outermost NGX %s: slot %d, called from %s, ctx %p (vtable %s), result 0x%X", what, slot,
+             ModuleAddressText(caller).c_str(), static_cast<void*>(ctx),
+             Plausible(ctx) ? VtableModuleText(ctx).c_str() : "none", static_cast<unsigned>(r));
+    } catch (...) {
+    }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- NgxHook
@@ -739,8 +794,8 @@ void NgxHook::UnlockStateForTest() {
     ReleaseSRWLockExclusive(&s.scanLock);
 }
 
-NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId,
-                                  NgxParameter* params, NgxHandle** outHandle) noexcept {
+NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t featureId, NgxParameter* params,
+                                  NgxHandle** outHandle, const void* caller) noexcept {
     HookState& s = S();
     // No original (an unused, removed or detached slot): report NGX's generic
     // failure rather than invent a Success with *outHandle unwritten.
@@ -757,6 +812,11 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
                 static_cast<unsigned>(r));
     if (featureId == kNgxFeatureSuperSampling && nest == 1) g_trace_frames.store(12);
     if (nest != 1) return r;  // nested NGX-internal create: forward only
+    if (FirstTime(g_logged_first_create)) {
+        char what[48];
+        std::snprintf(what, sizeof(what), "CreateFeature (feature %u)", featureId);
+        LogFirstOutermostCall(what, slot, caller, ctx, r);
+    }
     if (r != kNgxSuccess || !outHandle || !*outHandle || !Plausible(params)) return r;
     try {
         const uint64_t key = reinterpret_cast<uint64_t>(*outHandle);
@@ -805,7 +865,7 @@ NgxResult NgxHook::DispatchCreate(int slot, ID3D11DeviceContext* ctx, uint32_t f
 }
 
 NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx, const NgxHandle* handle,
-                                    const NgxParameter* params, void* callback) noexcept {
+                                    const NgxParameter* params, void* callback, const void* caller) noexcept {
     HookState& s = S();
     if (slot < 0 || slot >= kMaxLayers) return kNgxFail;  // as in DispatchCreate
     InlineHook& hook = isC ? s.layers[slot].eval_c : s.layers[slot].eval;
@@ -821,6 +881,8 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
     if (tracing)
         LOGT_ONCE_N(40, "trace: ngx evaluate exit slot %d nest %d result 0x%X", slot, nest, static_cast<unsigned>(r));
     if (nest != 1) return r;  // nested: touch nothing (spec 6.5)
+    if (FirstTime(g_logged_first_evaluate))
+        LogFirstOutermostCall(isC ? "EvaluateFeature_C" : "EvaluateFeature", slot, caller, ctx, r);
     if (neverCount) return r;  // a denoiser snippet's own entry point (F4)
     try {
         // Deferred contexts cannot be captured (spec 6.5).

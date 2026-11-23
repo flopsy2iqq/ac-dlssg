@@ -2,6 +2,7 @@
 // NVIDIA driver.
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -110,6 +111,51 @@ TEST(DriverProfile_OnlyModeOffForcesFrameGenerationOff) {
     }
 }
 
+// Diagnostics (GitHub issue 10): the lines that list a profile's settings
+// give the id, the type, the value (a DWORD in hex) and where the value comes
+// from, then the setting's name when the driver has one.
+TEST(DriverProfile_SettingTextShowsIdTypeValueAndOrigin) {
+    DrsSetting d;
+    d.id = 0x10E41E06;
+    d.type = 0;
+    d.location = 0;
+    d.name = L"Enable Streamline override";
+    d.number = 1;
+    CHECK_EQ(DrsSettingText(d), std::string("0x10E41E06 dword 0x00000001 (this profile) \"Enable Streamline override\""));
+    DrsSetting q;
+    q.id = 0x00ABCDEF;
+    q.type = 4;
+    q.location = 2;
+    q.number = 0x123456789ULL;
+    CHECK_EQ(DrsSettingText(q), std::string("0x00ABCDEF qword 0x0000000123456789 (base profile)"));
+    DrsSetting b;
+    b.id = 1;
+    b.type = 1;
+    b.location = 1;
+    b.binary_length = 120;
+    CHECK_EQ(DrsSettingText(b), std::string("0x00000001 binary 120 bytes (global profile)"));
+    DrsSetting u;
+    u.id = 2;
+    u.type = 9;
+    u.location = 3;
+    CHECK_EQ(DrsSettingText(u), std::string("0x00000002 type 9 (default)"));
+}
+
+TEST(DriverProfile_SettingTextShortensLongStrings) {
+    DrsSetting s;
+    s.id = 0x2;
+    s.type = 3;
+    s.location = 0;
+    s.text = std::wstring(100, L'a');
+    s.name = std::wstring(60, L'n');
+    CHECK_EQ(DrsSettingText(s), "0x00000002 wstring \"" + std::string(64, 'a') + "...\" (this profile) \"" +
+                                    std::string(48, 'n') + "...\"");
+    s.type = 2;
+    s.text = L"short";
+    s.name.clear();
+    CHECK_EQ(DrsSettingText(s), std::string("0x00000002 string \"short\" (this profile)"));
+}
+
 TEST(DriverProfile_ReadsThisMachinesDriver) {
     wchar_t exe[MAX_PATH] = {};
     REQUIRE(GetModuleFileNameW(nullptr, exe, MAX_PATH) > 0);
@@ -135,4 +181,22 @@ TEST(DriverProfile_ReadsThisMachinesDriver) {
     // profile, and NVIDIA's drivers ship one for Assetto Corsa's acs.exe.
     CHECK(self.app_profile.empty());
     CHECK(!acsPath.app_profile.empty());
+    // Diagnostics (GitHub issue 10): the settings of acs.exe's profile and the
+    // global profile's non-default ones are listed; the test exe has no app
+    // profile, so none of an app profile.
+    std::printf("  acs.exe: %zu app profile settings, %zu non-default global ones\n", acsPath.app_settings.size(),
+                acsPath.base_settings.size());
+    for (const DrsSetting& s : acsPath.app_settings) std::printf("    app %s\n", DrsSettingText(s).c_str());
+    for (const DrsSetting& s : acsPath.base_settings) std::printf("    global %s\n", DrsSettingText(s).c_str());
+    CHECK_EQ(acsPath.settings_error, std::string());
+    CHECK(!acsPath.app_settings.empty());
+    CHECK(self.app_settings.empty());
+    // Each setting once, although driver 621.01's later pages overlap.
+    std::vector<uint32_t> ids;
+    for (const DrsSetting& s : acsPath.app_settings) ids.push_back(s.id);
+    std::sort(ids.begin(), ids.end());
+    CHECK(std::adjacent_find(ids.begin(), ids.end()) == ids.end());
+    bool onlyNonDefault = true;
+    for (const DrsSetting& s : acsPath.base_settings) onlyNonDefault = onlyNonDefault && s.location != 3;
+    CHECK(onlyNonDefault);
 }

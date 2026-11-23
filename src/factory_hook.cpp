@@ -1,6 +1,7 @@
 #include "factory_hook.h"
 
 #include <d3d11.h>
+#include <intrin.h>
 #include <wrl/client.h>
 
 #include <atomic>
@@ -15,6 +16,7 @@
 #include "adapter_caps.h"
 #include "bootstrap.h"
 #include "compat.h"
+#include "diag_util.h"
 #include "gpu_info.h"
 #include "internal_call.h"
 #include "log.h"
@@ -53,6 +55,56 @@ std::mutex g_install_mu;
 bool g_install_done = false;  // guarded by g_install_mu
 std::atomic<bool> g_installed{false};
 std::atomic<void**> g_hooked_vtable{nullptr};
+
+// Diagnostics (GitHub issue 10): the external CreateSwapChain and
+// CreateSwapChainForHwnd calls are numbered; every main-window call and the
+// first kDiagOtherCalls others are described at INFO with their caller,
+// window and device, then with what they returned. Internal calls are not
+// counted.
+constexpr int kDiagOtherCalls = 4;
+std::atomic<int> g_diag_calls{0};
+std::atomic<int> g_diag_other_calls{0};
+
+struct DiagCall {
+    int number = 0;          // "#<number>" in the log
+    bool described = false;  // a main-window call, or one of the first kDiagOtherCalls others
+};
+
+DiagCall CountDiagCall(bool mainWindow) {
+    DiagCall c;
+    c.number = ++g_diag_calls;
+    c.described = mainWindow || ++g_diag_other_calls <= kDiagOtherCalls;
+    return c;
+}
+
+void DiagDescribeCall(const char* api, const DiagCall& c, bool mainWindow, const void* caller, HWND hwnd,
+                      IUnknown* device) {
+    if (!c.described) return;
+    try {
+        LOGI("diag: %s #%d%s from %s: window %s", api, c.number, mainWindow ? " (main window)" : "",
+             ModuleAddressText(caller).c_str(), DescribeWindow(hwnd).c_str());
+        ComPtr<ID3D11Device> device11;
+        if (device)
+            device->QueryInterface(__uuidof(ID3D11Device), reinterpret_cast<void**>(device11.GetAddressOf()));
+        if (device11) {
+            LOGI("diag: %s #%d device %s", api, c.number, DescribeD3D11Device(device11.Get()).c_str());
+        } else {
+            LOGI("diag: %s #%d device %p is not a D3D11 device (vtable %s)", api, c.number,
+                 static_cast<void*>(device), VtableModuleText(device).c_str());
+        }
+    } catch (...) {
+    }
+}
+
+void DiagDescribeResult(const char* api, const DiagCall& c, HRESULT hr, const char* by, IUnknown* chain) {
+    if (!c.described) return;
+    try {
+        LOGI("diag: %s #%d returned 0x%08lX from %s, swap chain %p (vtable %s)", api, c.number,
+             static_cast<unsigned long>(hr), by, static_cast<void*>(chain),
+             chain ? VtableModuleText(chain).c_str() : "none");
+    } catch (...) {
+    }
+}
 
 // Stores the original before the slot changes, because another thread may
 // enter the hook as soon as the slot is patched. Fn comes from the atomic
@@ -271,12 +323,26 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChain(IDXGIFactory* self, IUnknown* devi
                                               IDXGISwapChain** swapChain) noexcept {
     const auto original = g_orig_create.load();
     if (!original) return DXGI_ERROR_INVALID_CALL;
-    if (!IsInternalCall() && desc) {
+    const bool external = !IsInternalCall();
+    if (external && desc) {
         LOGD("CreateSwapChain (legacy): hwnd %p, %ux%u, windowed %d: pass-through",
              static_cast<void*>(desc->OutputWindow), desc->BufferDesc.Width, desc->BufferDesc.Height,
              desc->Windowed ? 1 : 0);
     }
-    return original(self, device, desc, swapChain);
+    const HWND hwnd = desc ? desc->OutputWindow : nullptr;
+    DiagCall diag;  // diagnostics (GitHub issue 10)
+    if (external) {
+        const bool mainWindow = IsMainGameWindow(hwnd);
+        diag = CountDiagCall(mainWindow);
+        DiagDescribeCall("CreateSwapChain (legacy)", diag, mainWindow, _ReturnAddress(), hwnd, device);
+    }
+    const HRESULT hr = original(self, device, desc, swapChain);
+    if (external) {
+        NotePassThroughDevice(device, hwnd, diag.number);
+        DiagDescribeResult("CreateSwapChain (legacy)", diag, hr, "the original",
+                           SUCCEEDED(hr) && swapChain ? *swapChain : nullptr);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(IDXGIFactory2* self, IUnknown* device, HWND hwnd,
@@ -286,19 +352,33 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(IDXGIFactory2* self, IUnkno
                                                      IDXGISwapChain1** swapChain) noexcept {
     const auto original = g_orig_hwnd.load();
     if (!original) return DXGI_ERROR_INVALID_CALL;
+    const bool external = !IsInternalCall();
+    DiagCall diag;  // diagnostics (GitHub issue 10)
+    if (external) {
+        const bool mainWindow = IsMainGameWindow(hwnd);
+        diag = CountDiagCall(mainWindow);
+        DiagDescribeCall("CreateSwapChainForHwnd", diag, mainWindow, _ReturnAddress(), hwnd, device);
+    }
     // Invalid arguments are left for DXGI to report.
-    if (!IsInternalCall() && self && desc && hwnd && swapChain) {
+    if (external && self && desc && hwnd && swapChain) {
         try {
             IDXGISwapChain1* proxy = nullptr;
             if (TryProxy(self, device, hwnd, *desc, fullscreenDesc, &proxy)) {
                 *swapChain = proxy;
+                DiagDescribeResult("CreateSwapChainForHwnd", diag, S_OK, "the proxy", proxy);
                 return S_OK;
             }
         } catch (...) {
             LOGE("CreateSwapChainForHwnd hook: unexpected exception; passing through");
         }
     }
-    return original(self, device, hwnd, desc, fullscreenDesc, restrictToOutput, swapChain);
+    const HRESULT hr = original(self, device, hwnd, desc, fullscreenDesc, restrictToOutput, swapChain);
+    if (external) {
+        NotePassThroughDevice(device, hwnd, diag.number);
+        DiagDescribeResult("CreateSwapChainForHwnd", diag, hr, "the original",
+                           SUCCEEDED(hr) && swapChain ? *swapChain : nullptr);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HookCreateSwapChainForCoreWindow(IDXGIFactory2* self, IUnknown* device, IUnknown* window,
@@ -359,6 +439,11 @@ void Install(IUnknown* factory) {
         LOGE("factory hook on vtable %p incomplete: slot 10 %s, 15 %s, 16 %s, 24 %s", static_cast<void*>(vtable),
              ok10 ? "ok" : "failed", ok15 ? "ok" : "failed", ok16 ? "ok" : "failed", ok24 ? "ok" : "failed");
     }
+    // Diagnostics (GitHub issue 10): the module the factory class belongs to,
+    // and the code slot 15 held before the patch (another hook installed
+    // before ours would show here).
+    LOGI("diag: the hooked factory vtable %p is in %s; slot 15 held %s", static_cast<void*>(vtable),
+         ModuleAddressText(vtable).c_str(), ModuleAddressText(reinterpret_cast<const void*>(g_orig_hwnd.load())).c_str());
 }
 
 }  // namespace
