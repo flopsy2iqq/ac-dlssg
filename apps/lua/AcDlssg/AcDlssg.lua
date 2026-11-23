@@ -77,16 +77,18 @@ local function hasField(object, name)
 end
 local OPTIONAL_SIM_FIELDS = { 'renderSize', 'originShift', 'cameraJumped', 'driveableCameraMode', 'carCameraIndex',
   'trackCamerasSet', 'isTripleMode', 'isVRConnected', 'cameraClipNear', 'cameraClipFar', 'isOpenXRMode',
-  'isCustomVideoMode' }
+  'isCustomVideoMode', 'isTripleScreenAvailable' }
 local simHas = {}
 for _, name in ipairs(OPTIONAL_SIM_FIELDS) do simHas[name] = hasField(sim, name) end
-local missingSimFields = {}
-for _, name in ipairs(OPTIONAL_SIM_FIELDS) do
-  if not simHas[name] then missingSimFields[#missingSimFields + 1] = name end
-end
-if #missingSimFields > 0 then
-  ac.warn('AcDlssg: this CSP build has no ac.getSim().' .. table.concat(missingSimFields, ', ')
-    .. '; using defaults for them')
+do -- a block, so that the list takes no top-level local for good
+  local missingSimFields = {}
+  for _, name in ipairs(OPTIONAL_SIM_FIELDS) do
+    if not simHas[name] then missingSimFields[#missingSimFields + 1] = name end
+  end
+  if #missingSimFields > 0 then
+    ac.warn('AcDlssg: this CSP build has no ac.getSim().' .. table.concat(missingSimFields, ', ')
+      .. '; using defaults for them')
+  end
 end
 local ZERO_ORIGIN = vec3(0, 0, 0)
 -- AC's usual clip planes, for builds without cameraClipNear/cameraClipFar.
@@ -243,10 +245,14 @@ end
 -- The notices outside the window: their functions are set at the end of
 -- this file, where the window's status functions exist (see there).
 local notice = { welcomeDone = false, reasonShown = false, started = nil, nextCheck = 0, stored = nil }
+-- The triple-screen diagnostics: their functions are set at the end too.
+local triple = { started = false, available = nil, lines = 0 }
 
 function script.update(dt)
   -- The first-run and pass-through notices, at most once per second.
   if notice.update then notice.update() end
+  -- Triple-screen mode only: what CSP tells about the three screens.
+  if triple.update then triple.update() end
   -- Fallback only while render.onSceneReady has never fired.
   if not opened or sceneReadyFired then return end
   publish()
@@ -1399,5 +1405,61 @@ notice.update = function ()
   if not ok then
     notice.welcomeDone, notice.reasonShown = true, true
     ac.error('AcDlssg: the notices failed: ' .. tostring(err))
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- Triple screens (ac-dlssg 1.3.0 diagnostics). Frame generation for triple
+-- screens is planned for 1.4 and needs to know how CSP lays the three screens
+-- out. In triple-screen mode the app writes into CSP's log what CSP tells
+-- about them: ac.getTripleConfiguration() at the start and whenever it
+-- changes, and whether the camera shows the triple view
+-- (isTripleScreenAvailable) whenever that changes. collect-logs.bat collects
+-- these lines; with [debug] triple_diag=1 in ac-dlssg.ini the bridge logs
+-- CSP's DLSS calls next to them. Older CSP builds lack these calls, so they
+-- are guarded, and at most MAX_LINES lines are written in a session.
+
+triple.MAX_LINES = 40
+
+triple.log = function (why)
+  if triple.lines >= triple.MAX_LINES then return end
+  triple.lines = triple.lines + 1
+  local size = ''
+  if simRenderSize then size = string.format(', render size %.0fx%.0f', simRenderSize.x, simRenderSize.y) end
+  local head = string.format('AcDlssg: triple: %s: window %.0fx%.0f%s', why, sim.windowWidth, sim.windowHeight, size)
+  if not ac.getTripleConfiguration then
+    ac.log(head .. '; this CSP build has no ac.getTripleConfiguration()')
+    return
+  end
+  local config = ac.getTripleConfiguration()
+  if not config or not config.screens then
+    ac.log(head .. '; ac.getTripleConfiguration() returned no screens')
+    return
+  end
+  local parts = {}
+  for i = 0, 2 do
+    local s = config.screens[i]
+    if s then
+      parts[#parts + 1] = string.format('screen %d xFrom %.4f xTo %.4f xWidth %.4f height %.4f left (%.4f, %.4f)'
+        .. ' right (%.4f, %.4f)', i, s.xFrom, s.xTo, s.xWidth, s.height, s.left.x, s.left.y, s.right.x, s.right.y)
+    end
+  end
+  ac.log(head .. '; ' .. table.concat(parts, '; '))
+end
+
+triple.update = function ()
+  if not (simHas.isTripleMode and sim.isTripleMode) then return end
+  if not triple.started then
+    triple.started = true
+    local ok, err = pcall(triple.log, 'at start')
+    if not ok then ac.warn('AcDlssg: triple: ' .. tostring(err)) end
+    if ac.onTripleConfigurationChanged then
+      triple.subscription = ac.onTripleConfigurationChanged(function () pcall(triple.log, 'configuration changed') end)
+    end
+  end
+  local available = simHas.isTripleScreenAvailable and sim.isTripleScreenAvailable or false
+  if available ~= triple.available then
+    triple.available = available
+    pcall(triple.log, available and 'the camera shows the triple view' or 'the camera shows a single view')
   end
 end

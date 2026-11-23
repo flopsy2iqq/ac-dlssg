@@ -724,6 +724,34 @@ TEST(LuaApp_APassThroughOrAMissingBridgeGetsOneToastPerSession) {
     CHECK(InOrder(update, {"if notice.update then notice.update() end", "if not opened or sceneReadyFired then return end"}));
 }
 
+// The triple-screen diagnostics of 1.3.0: in triple-screen mode only, the
+// app writes what CSP tells about the three screens into CSP's log (which
+// collect-logs.bat picks up): at the start, when the configuration changes,
+// and when the camera switches between the triple view and a single one.
+// The SDK calls that older CSP builds lack are guarded.
+TEST(LuaApp_LogsTheTripleConfigurationInTripleScreenModeOnly) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    auto function = [&lua](const char* head) {
+        const size_t begin = lua.find(head);
+        if (begin == std::string::npos) return std::string();
+        const size_t end = lua.find("\nend", begin);
+        return end == std::string::npos ? std::string() : lua.substr(begin, end - begin);
+    };
+    const std::string update = function("triple.update = function ()");
+    const std::string log = function("triple.log = function (why)");
+    REQUIRE(!update.empty() && !log.empty());
+    CHECK(InOrder(update, {"if not (simHas.isTripleMode and sim.isTripleMode) then return end",
+                           "if not triple.started then", "pcall(triple.log, 'at start')",
+                           "if ac.onTripleConfigurationChanged then", "ac.onTripleConfigurationChanged(function ()",
+                           "simHas.isTripleScreenAvailable and sim.isTripleScreenAvailable"}));
+    CHECK(InOrder(log, {"if not ac.getTripleConfiguration then", "ac.getTripleConfiguration()", "for i = 0, 2 do",
+                        "xFrom", "xTo", "xWidth", "ac.log("}));
+    CHECK(lua.find("'isTripleScreenAvailable'") != std::string::npos);
+    const std::string script = lua.substr(lua.find("function script.update(dt)"));
+    CHECK(InOrder(script, {"if triple.update then triple.update() end", "if not opened or sceneReadyFired then return end"}));
+}
+
 TEST(LuaApp_TheMainChunkStaysUnderLuaJitsLocalLimit) {
     const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
     REQUIRE(!lua.empty());
