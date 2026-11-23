@@ -108,6 +108,12 @@ constexpr unsigned char kRectangleBytes[4] = {255, 188, 0, 255};  // 0.5 linear 
 constexpr UINT kRenderScaleNum = 2;
 constexpr UINT kRenderScaleDen = 3;
 constexpr wchar_t kFakeNgxDll[] = L"fake_nvngx.dll";
+// --fake-nvpresent: the build's stand-in for NVIDIA Smooth Motion's
+// NvPresent64.dll (tests/fake_nvpresent), in a subfolder so that nothing
+// finds it by name.
+constexpr wchar_t kFakeNvPresentDll[] = L"fake_np\\NvPresent64.dll";
+using FakeNvPresentCreateFn = HRESULT(__cdecl*)(IDXGIFactory2*, IUnknown*, HWND, const DXGI_SWAP_CHAIN_DESC1*,
+                                                IDXGISwapChain1**);
 constexpr double kFakeCameraFps = 60.0;  // simulated time step of the fake drive
 // --expect-fg: the capture, camera and tag counts of each statistics line
 // after the first must reach this share of base_fps.
@@ -147,6 +153,7 @@ struct Options {
     bool fake_ngx = false;           // CSP's DLSS calls against fake_nvngx.dll
     bool fake_camera = false;        // the CSP Lua app's camera writer
     bool fake_panel = false;         // the CSP Lua app's settings window
+    bool fake_nvpresent = false;     // NVIDIA Smooth Motion: the chain is created from a module named NvPresent64.dll
     ExpectFg expect_fg = ExpectFg::None;
     int expect_fg_mult = 0;  // --expect-fg-mult: fg_mult of every statistics line (0: unchecked)
     std::wstring fixture = L"default";
@@ -411,6 +418,7 @@ struct App {
 
     // M3 (--fake-ngx, --fake-camera).
     HMODULE ngx_module = nullptr;      // fake_nvngx.dll
+    HMODULE nvpresent_module = nullptr;  // --fake-nvpresent: fake_np\NvPresent64.dll
     testapp::FakeNgx ngx;
     UINT ngx_first_w = 0, ngx_first_h = 0;  // render size of the first DLSS feature
     testapp::CameraWriter camera;
@@ -904,7 +912,24 @@ bool CreateChain(App& a) {
     desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
     desc.Flags = a.chain_flags;
     ++a.chains_created;
-    const HRESULT hr = a.factory->CreateSwapChainForHwnd(a.device.Get(), a.hwnd, &desc, nullptr, nullptr, &a.chain);
+    HRESULT hr = E_FAIL;
+    if (a.opt.fake_nvpresent) {
+        // As NVIDIA Smooth Motion does on driver 621.01: the game window's
+        // chain is created from inside NvPresent64.dll.
+        if (!a.nvpresent_module) {
+            const std::wstring path = a.exe_dir + L"\\" + kFakeNvPresentDll;
+            a.nvpresent_module = LoadLibraryW(path.c_str());
+            if (!a.nvpresent_module)
+                return Fail("fake NvPresent: LoadLibraryW(%s) failed: error %lu", Narrow(path).c_str(), GetLastError());
+            Print("fake NvPresent: loaded %s", Narrow(path).c_str());
+        }
+        const auto create = reinterpret_cast<FakeNvPresentCreateFn>(
+            GetProcAddress(a.nvpresent_module, "FakeNvPresentCreateSwapChainForHwnd"));
+        if (!create) return Fail("fake NvPresent: no FakeNvPresentCreateSwapChainForHwnd export");
+        hr = create(a.factory.Get(), a.device.Get(), a.hwnd, &desc, a.chain.ReleaseAndGetAddressOf());
+    } else {
+        hr = a.factory->CreateSwapChainForHwnd(a.device.Get(), a.hwnd, &desc, nullptr, nullptr, &a.chain);
+    }
     if (FAILED(hr) || !a.chain)
         return Fail("CreateSwapChainForHwnd #%d failed: 0x%08lX (%s)", a.chains_created,
                     static_cast<unsigned long>(hr), HrName(hr));
@@ -1697,6 +1722,8 @@ void Usage() {
         "  --fake-ngx            CSP's DLSS calls against fake_nvngx.dll next to the exe: one SuperSampling\n"
         "                        create (render size 2/3 of the window, MVLowRes), then per frame an evaluate\n"
         "                        with depth, ping-ponged motion vectors, Halton jitter, MV.Scale and Reset\n"
+        "  --fake-nvpresent      the main chain is created from fake_np\\NvPresent64.dll next to the exe, as\n"
+        "                        NVIDIA Smooth Motion creates it; the bridge must pass it through\n"
         "  --fake-camera         the CSP Lua app's camera: Local\\AcDlssg.Camera.v1 written before every frame\n"
         "                        (refused while acs.exe runs, which shares that section)\n"
         "  --expect-fg MODE      pipeline: the bridge log shows the capture, camera, constants and first-tags\n"
@@ -1764,6 +1791,8 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
             if (o->passthrough_reason.empty()) return false;
         } else if (arg == L"--fake-ngx") {
             o->fake_ngx = true;
+        } else if (arg == L"--fake-nvpresent") {
+            o->fake_nvpresent = true;
         } else if (arg == L"--fake-camera") {
             o->fake_camera = true;
         } else if (arg == L"--fake-panel") {

@@ -17,6 +17,7 @@
 #include "log.h"
 #include "mfg_loader.h"
 #include "module_version.h"
+#include "nvpresent.h"
 #include "spoof_loader.h"
 #include "panel_control.h"
 #include "panel_status.h"
@@ -283,6 +284,7 @@ void Run(BootstrapState* s) {
              ToUtf8(sep == std::wstring::npos ? bridgePath : bridgePath.substr(sep + 1)).c_str());
     }
     LOGI("Windows %s", WindowsBuild().c_str());
+    LOGI("smooth motion: %s at bridge init", NvPresentLoadedText().c_str());
     if (const HMODULE version = GetModuleHandleW(L"version.dll"))
         LOGI("version.dll loaded from %s, version %s", ToUtf8(ModuleFileName(version)).c_str(),
              ModuleVersionText(version).c_str());

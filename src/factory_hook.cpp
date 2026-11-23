@@ -21,6 +21,7 @@
 #include "internal_call.h"
 #include "log.h"
 #include "mfg_loader.h"
+#include "nvpresent.h"
 #include "panel_status.h"
 #include "proxy_swapchain.h"
 #include "streamline_runtime.h"
@@ -226,10 +227,29 @@ void PublishPassThrough(const std::string& reason, const RenderAdapter& adapter)
     });
 }
 
+// NVIDIA Smooth Motion in the process (GitHub issue 10), logged once each:
+// whether NvPresent64.dll is loaded at the first swap chain, and its own
+// swap chain on its hidden window.
+std::atomic<bool> g_logged_first_chain{false};
+std::atomic<bool> g_logged_nvpresent_window{false};
+
+void NoteSmoothMotion(HWND hwnd) {
+    try {
+        if (!g_logged_first_chain.exchange(true))
+            LOGI("smooth motion: %s at the first swap chain", NvPresentLoadedText().c_str());
+        if (IsNvPresentWindow(hwnd) && !g_logged_nvpresent_window.exchange(true))
+            LOGW("smooth motion: NvPresent64.dll creates a swap chain on its own window %p (class "
+                 "InvisibleWindowClassNvPresent): NVIDIA Smooth Motion is active in this process",
+                 static_cast<void*>(hwnd));
+    } catch (...) {
+    }
+}
+
 // Decides, and on "proxy" creates the ProxySwapChain. False means the caller
 // passes through. Exceptions propagate to the hook, which also passes through.
+// nvPresentCaller: NvPresentInCallStack() in the hook (compat rule 0).
 bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1& requested,
-              const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc, IDXGISwapChain1** out) {
+              const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreenDesc, bool nvPresentCaller, IDXGISwapChain1** out) {
     ProxyDecisionInputs in;
     in.internal_call = IsInternalCall();
     ComPtr<ID3D11Device> device11;
@@ -265,6 +285,7 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         ci.dlss5_bridge_file = LoadedDlss5BridgeFile();
         ci.dlss5_bridge_loaded = !ci.dlss5_bridge_file.empty();
         ci.renodx_dlss5_loaded = GetModuleHandleW(L"renodx-dlss5.addon64") != nullptr;
+        ci.nvpresent_caller = nvPresentCaller;
         compat = EvaluateChainCompat(ci, hags, desc.Width, desc.Height);
         in.compat_ok = compat.ok;
     }
@@ -282,6 +303,13 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
              fullscreenDesc ? "fullscreen desc" : "no fullscreen desc", proxy ? "proxy" : "pass-through: ",
              reason.c_str());
     if (!proxy) {
+        if (in.is_main_window && nvPresentCaller) {
+            LOGW("smooth motion: NvPresent64.dll (NVIDIA Smooth Motion, the driver's own frame generation) creates "
+                 "the game window's swap chain; DLSS-G cannot run on top of it, so the bridge passes the game "
+                 "through. The NVIDIA App can show Smooth Motion off while it is on. Fix: in NVIDIA Profile "
+                 "Inspector, open the \"Assetto Corsa\" profile, set \"Smooth Motion - Enabled APIs\" (0xB0CC0875) "
+                 "to 5 (its DX11 bit, 2, cleared), apply and restart the game; check the global profile too");
+        }
         if (in.is_main_window) PublishPassThrough(reason, adapter);
         return false;
     }
@@ -339,6 +367,7 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChain(IDXGIFactory* self, IUnknown* devi
     const HWND hwnd = desc ? desc->OutputWindow : nullptr;
     DiagCall diag;  // diagnostics (GitHub issue 10)
     if (external) {
+        NoteSmoothMotion(hwnd);
         const bool mainWindow = IsMainGameWindow(hwnd);
         diag = CountDiagCall(mainWindow);
         DiagDescribeCall("CreateSwapChain (legacy)", diag, mainWindow, _ReturnAddress(), hwnd, device);
@@ -361,8 +390,13 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(IDXGIFactory2* self, IUnkno
     if (!original) return DXGI_ERROR_INVALID_CALL;
     const bool external = !IsInternalCall();
     DiagCall diag;  // diagnostics (GitHub issue 10)
+    // NVIDIA Smooth Motion creates the game's swap chain (GitHub issue 10):
+    // looked for here, the fewest frames away from its call.
+    bool nvPresentCaller = false;
     if (external) {
+        NoteSmoothMotion(hwnd);
         const bool mainWindow = IsMainGameWindow(hwnd);
+        nvPresentCaller = mainWindow && NvPresentInCallStack();
         diag = CountDiagCall(mainWindow);
         DiagDescribeCall("CreateSwapChainForHwnd", diag, mainWindow, _ReturnAddress(), hwnd, device);
     }
@@ -370,7 +404,7 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(IDXGIFactory2* self, IUnkno
     if (external && self && desc && hwnd && swapChain) {
         try {
             IDXGISwapChain1* proxy = nullptr;
-            if (TryProxy(self, device, hwnd, *desc, fullscreenDesc, &proxy)) {
+            if (TryProxy(self, device, hwnd, *desc, fullscreenDesc, nvPresentCaller, &proxy)) {
                 *swapChain = proxy;
                 DiagDescribeResult("CreateSwapChainForHwnd", diag, S_OK, "the proxy", proxy);
                 return S_OK;
@@ -440,6 +474,7 @@ void Install(IUnknown* factory) {
     if (ok15) g_hooked_vtable.store(vtable);
     g_installed.store(ok15);
 
+    LOGI("smooth motion: %s at the first DXGI factory", NvPresentLoadedText().c_str());
     if (ok10 && ok15 && ok16 && ok24) {
         LOGI("factory hook installed on vtable %p (slots 10, 15, 16, 24)", static_cast<void*>(vtable));
     } else {

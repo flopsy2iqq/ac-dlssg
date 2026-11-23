@@ -121,6 +121,7 @@ add_library(acdb_core STATIC
     src/panel_status.h
     src/panel_control.cpp
     src/diag_util.cpp
+    src/nvpresent.cpp
     ${ACDB_SHADER_HEADERS}
 )
 target_include_directories(acdb_core PUBLIC src)
@@ -174,6 +175,7 @@ add_executable(acdb_tests
     tests/test_bridge_mode.cpp
     tests/test_dxgi_export_coverage.cpp
     tests/test_diag_util.cpp
+    tests/test_nvpresent.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
@@ -205,6 +207,16 @@ add_library(acdb_mfg_fixture SHARED tests/mfg_fixture.cpp)
 target_compile_definitions(acdb_tests PRIVATE
     ACDB_MFG_FIXTURE_PATH="$<TARGET_FILE:acdb_mfg_fixture>")
 add_dependencies(acdb_tests acdb_mfg_fixture)
+
+# A stand-in for NVIDIA Smooth Motion's NvPresent64.dll (never the real one),
+# in a subfolder so that nothing finds it by name: its exports call back
+# through it, for the NvPresentInCallStack test and the test app's
+# --fake-nvpresent scenario.
+add_library(fake_nvpresent SHARED tests/fake_nvpresent/fake_nvpresent.cpp)
+set_target_properties(fake_nvpresent PROPERTIES OUTPUT_NAME NvPresent64
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/fake_np")
+target_compile_definitions(acdb_tests PRIVATE FAKE_NVPRESENT_PATH=L"$<TARGET_FILE:fake_nvpresent>")
+add_dependencies(acdb_tests fake_nvpresent)
 
 # A fake NGX module for the NgxHook tests: it exports the three D3D11 entry
 # points with NVIDIA's signatures and records what its "original" was called

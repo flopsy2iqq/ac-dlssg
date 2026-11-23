@@ -31,6 +31,9 @@ CompatInputs GoodInputs() {
     return in;
 }
 
+const char* kSmooth =
+    "NVIDIA Smooth Motion (the driver's own frame generation) is active for Assetto Corsa, even if the NVIDIA App "
+    "shows it off. It cannot run with DLSS-G. Turn it off: see the AC DLSS-G help or the README.";
 const char* kOld = "OLD_SWAPCHAIN=1 is not supported";
 const char* kExcl = "EXCLUSIVE_FULLSCREEN=1 is not supported";
 const char* kHdr = "HDR output is not supported";
@@ -69,6 +72,9 @@ std::string Reason(const CompatInputs& in, unsigned w = 1920, unsigned h = 1080)
 
 }  // namespace
 
+// The Smooth Motion reason fits the panel's 256-character state reason whole.
+TEST(Compat_TheSmoothMotionReasonFitsThePanel) { CHECK(std::string(kSmooth).size() < 256); }
+
 TEST(Compat_GoodInputsPass) {
     auto r = EvaluateCompat(GoodInputs(), 1920, 1080);
     CHECK(r.ok);
@@ -77,6 +83,10 @@ TEST(Compat_GoodInputsPass) {
 
 TEST(Compat_EachRuleAlone) {
     auto in = GoodInputs();
+    in.nvpresent_caller = true;
+    CHECK_EQ(Reason(in), kSmooth);
+
+    in = GoodInputs();
     in.old_swapchain = 1;
     CHECK_EQ(Reason(in), kOld);
 
@@ -136,7 +146,11 @@ TEST(Compat_RulesAreReportedInOrder) {
     in.dlss5_bridge_loaded = true;
     in.renodx_dlss5_loaded = true;
     in.hags_on = false;
+    in.nvpresent_caller = true;
 
+    // NVIDIA Smooth Motion first: it took the swap chain over whatever else holds.
+    CHECK_EQ(Reason(in), kSmooth);
+    in.nvpresent_caller = false;
     CHECK_EQ(Reason(in), kOld);
     in.old_swapchain = 0;
     CHECK_EQ(Reason(in), kExcl);

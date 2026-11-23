@@ -16,7 +16,8 @@ set_target_properties(testapp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${ACDB_TESTAP
 
 # The bridge DLL and the fixtures sit next to testapp.exe, as the DLL and the
 # CSP config sit next to acs.exe; so does the fake NGX module, which
-# --fake-ngx loads by path as CSP loads NGX. A separate always-run target rather than a
+# --fake-ngx loads by path as CSP loads NGX, and in fake_np\ the stand-in for
+# NVIDIA Smooth Motion's NvPresent64.dll for --fake-nvpresent. A separate always-run target rather than a
 # POST_BUILD step, so that a rebuilt DLL is copied even when testapp.exe is up
 # to date. The staged Streamline DLLs (ACDB_SL_DLLS, top-level CMakeLists)
 # go to ac-dlssg\sl, where the bootstrap loads them as from <game>\ac-dlssg\sl;
@@ -31,9 +32,11 @@ add_custom_target(testapp_payload ALL
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${ACDB_TESTAPP_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ac-dlssg>" "${ACDB_TESTAPP_DIR}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:fake_nvngx>" "${ACDB_TESTAPP_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${ACDB_TESTAPP_DIR}/fake_np"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:fake_nvpresent>" "${ACDB_TESTAPP_DIR}/fake_np"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/fixtures" "${ACDB_TESTAPP_DIR}"
     ${ACDB_TESTAPP_SL_COMMANDS}
     COMMENT "Copying ac-dlssg.dll, fake_nvngx.dll, the Streamline DLLs and the test fixtures next to testapp.exe"
     VERBATIM)
-add_dependencies(testapp_payload ac-dlssg fake_nvngx)
+add_dependencies(testapp_payload ac-dlssg fake_nvngx fake_nvpresent)
 add_dependencies(testapp testapp_payload)

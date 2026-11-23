@@ -29,6 +29,9 @@ struct CompatInputs {
     bool dlss5_bridge_loaded = false;   // LoadedDlss5BridgeFile() is not empty
     std::string dlss5_bridge_file;      // ... and which file it is, for the reason
     bool renodx_dlss5_loaded = false;   // GetModuleHandleW(L"renodx-dlss5.addon64")
+    // NVIDIA Smooth Motion creates the game's swap chain: NvPresentInCallStack()
+    // at its CreateSwapChainForHwnd (FactoryHook sets it per swap chain).
+    bool nvpresent_caller = false;
 };
 
 struct CompatResult {
@@ -37,6 +40,9 @@ struct CompatResult {
 };
 
 // Rules in this order; the first that fails is reported:
+//  0. nvpresent_caller                 -> "NVIDIA Smooth Motion (the driver's own frame generation) is active for
+//                                         Assetto Corsa, even if the NVIDIA App shows it off. It cannot run with
+//                                         DLSS-G. Turn it off: see the AC DLSS-G help or the README."
 //  1. old_swapchain == 1               -> "OLD_SWAPCHAIN=1 is not supported"
 //  2. exclusive_fullscreen == 1        -> "EXCLUSIVE_FULLSCREEN=1 is not supported"
 //  3. hdr_enabled == 1                 -> "HDR output is not supported"
