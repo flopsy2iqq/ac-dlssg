@@ -347,8 +347,10 @@ void Run(BootstrapState* s) {
     LogCompatInputs(s->compat);
     if (c.triple_diag) {
         if (TripleDiagActive(c.triple_diag, s->compat.camera_mode)) {
-            LOGI("triple-diag: [debug] triple_diag=1 in triple-screen mode: the game's swap chain is proxied with "
-                 "frame generation off, and CSP's DLSS evaluates are logged");
+            // Before the swap chain is decided on (review finding B-7): the
+            // presenter's "triple-diag: on" says that it was proxied.
+            LOGI("triple-diag: [debug] triple_diag=1 in triple-screen mode: if the bridge proxies the game's swap "
+                 "chain, it keeps frame generation off and logs CSP's DLSS evaluates (\"triple-diag: on\" below)");
         } else {
             LOGI("triple-diag: [debug] triple_diag=1, but video.ini [CAMERA] MODE is %s, not TRIPLE: nothing to log",
                  s->compat.camera_mode ? s->compat.camera_mode->c_str() : "unset");

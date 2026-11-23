@@ -210,7 +210,10 @@ $scenarios = @(
     @{ Name = 'triple-diag';        Args = @('--fixture', 'triple', '--fake-ngx', '--fake-camera', '--frames', '600',
                                              '--fps-cap', '500', '--expect-proxy');
        Ini = @('[debug]', 'triple_diag=1'); Camera = $true;
-       LogMust = @(' INFO triple-diag: \[debug\] triple_diag=1 in triple-screen mode', ' INFO triple-diag: on \(',
+       # The bootstrap's line comes before the swap chain is decided on, so it
+       # says what happens if it is proxied (review finding B-7).
+       LogMust = @(' INFO triple-diag: \[debug\] triple_diag=1 in triple-screen mode: if the bridge proxies the game''s swap chain, ',
+           ' INFO triple-diag: on \(',
            ' INFO triple-diag: window 1 of 4: ', ' INFO triple-diag: frame 1 evaluate 1: feature 0x[0-9A-F]+; context [0-9A-F]+ immediate, on the game''s device; create ',
            ' INFO triple-diag: frame 300: [1-9][0-9]* DLSS evaluates; swap chain 1280x720 format 28',
            ' INFO triple-diag: window 1 done after 300 frames', 'triple-screen diagnostics \(\[debug\] triple_diag=1\)');
