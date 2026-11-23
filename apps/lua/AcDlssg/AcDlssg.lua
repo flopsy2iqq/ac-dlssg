@@ -1331,10 +1331,13 @@ notice.find = function ()
   return nil
 end
 
+-- True when the window was found and made visible.
 notice.open = function ()
   local w = notice.find()
   local accessor = w and ac.accessAppWindow(w.name)
-  if accessor and accessor:valid() then accessor:setVisible(true) end
+  if not (accessor and accessor:valid()) then return false end
+  accessor:setVisible(true)
+  return true
 end
 
 notice.toast = function (icon, text, openButton)
@@ -1355,11 +1358,14 @@ notice.step = function (now)
     if ac.storage then notice.stored = ac.storage({ welcomeShown = false }, 'acdlssg.') end
     if notice.stored and not notice.stored.welcomeShown then
       notice.stored.welcomeShown = true
-      notice.open()
+      local shown = notice.open()
       notice.toast(ui.Icons.Info, notice.WELCOME, false)
-      -- The window is open now and shows the state itself.
-      notice.reasonShown = true
-      return
+      -- The window is open now and shows the state itself; a window that
+      -- could not be opened leaves the pass-through toast to come.
+      if shown then
+        notice.reasonShown = true
+        return
+      end
     end
   end
   if notice.reasonShown then return end

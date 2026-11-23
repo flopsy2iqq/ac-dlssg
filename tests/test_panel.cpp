@@ -687,7 +687,10 @@ TEST(LuaApp_TheFirstRunOpensTheWindowOnceAndSaysWhereTheAppIs) {
     // Our window by its title, made visible through CSP's window accessor.
     CHECK(NoticeFunction(lua, "find").find("if w.title == WORDS.title then return w end") != std::string::npos);
     CHECK(InOrder(NoticeFunction(lua, "open"), {"ac.accessAppWindow(w.name)", "accessor:valid()",
-                                                 "accessor:setVisible(true)"}));
+                                                 "accessor:setVisible(true)", "return true"}));
+    // Only a window that was opened takes over the pass-through toast.
+    CHECK(InOrder(step, {"local shown = notice.open()", "notice.toast(ui.Icons.Info, notice.WELCOME, false)",
+                         "if shown then", "notice.reasonShown = true"}));
     CHECK(InOrder(NoticeFunction(lua, "toast"), {"if ui.toast then", "ui.toast(icon, text)", "else",
                                                   "ac.setMessage(WORDS.title, text, nil, 10)"}));
 }
