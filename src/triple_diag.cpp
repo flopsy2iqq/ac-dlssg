@@ -289,10 +289,10 @@ void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight) {
                 const std::string uncounted = UncountedText(before_);
                 lines.push_back("triple-diag: no counted DLSS evaluate in " + std::to_string(noEvaluateFrames_) +
                                 " frames" + (uncounted.empty() ? std::string() : " (" + uncounted + ")") +
-                                ": CSP runs DLSS only with Extra FX on, and in triple-screen mode only with its "
-                                "\"Allow in triple\" option (extra_fx.ini [BASIC] ALLOW_IN_TRIPLE=1), and with DLSS as "
-                                "its upscaler; the compat lines at the start show both. The diagnostics start with "
-                                "the first evaluate");
+                                ": normal while the track loads. On track, CSP runs DLSS only with Extra FX on, and in "
+                                "triple-screen mode only with its \"Allow in triple\" option (extra_fx.ini [BASIC] "
+                                "ALLOW_IN_TRIPLE=1), and with DLSS as its upscaler; the compat lines at the start "
+                                "show both. The diagnostics start with the first evaluate");
             }
         } else {
             counts_.frame = frame_;

@@ -139,7 +139,9 @@ TEST(TripleDiagLog_SaysOnceWhenNoEvaluateCame) {
     for (int i = 0; i < 20; ++i) log.EndFrame(5760, 1080);
     lines.Print();
     CHECK_EQ(lines.all.size(), 1u);
-    CHECK_EQ(lines.Count("triple-diag: no counted DLSS evaluate in 5 frames (not counted: 1 on a deferred context): "), 1u);
+    CHECK_EQ(lines.Count("triple-diag: no counted DLSS evaluate in 5 frames (not counted: 1 on a deferred context): "
+                         "normal while the track loads. On track, "),
+             1u);
     CHECK_EQ(lines.Count("Extra FX"), 1u);
     CHECK_EQ(lines.Count("extra_fx.ini [BASIC] ALLOW_IN_TRIPLE=1"), 1u);
     CHECK(log.WantsEvaluates());
