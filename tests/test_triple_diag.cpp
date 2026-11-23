@@ -122,6 +122,27 @@ TEST(TripleDiagLog_EvaluatesWithoutAnEndStopAtTheCaps) {
     CHECK_EQ(lines.Count("triple-diag: frame "), 15u);  // the evaluate lines only, no frame line after the stop
 }
 
+// Review finding B-5: while a window is open, the frame line counts the
+// evaluates the hook does not count, on a deferred context and failed ones
+// with the last result.
+TEST(TripleDiagLog_TheFrameLineCountsTheUncountedEvaluates) {
+    Lines lines;
+    TripleDiagLog log(lines.Sink(), 2, 1);
+    log.OnUncountedEvaluate(true, kNgxSuccess);  // before the window: in no frame line
+    log.OnEvaluate(Evaluate(1));
+    log.OnUncountedEvaluate(true, kNgxSuccess);
+    log.OnUncountedEvaluate(true, kNgxSuccess);
+    log.OnUncountedEvaluate(false, static_cast<NgxResult>(0xBAD00001u));
+    log.OnUncountedEvaluate(false, static_cast<NgxResult>(0xBAD00005u));
+    log.EndFrame(5760, 1080, 28);
+    log.EndFrame(5760, 1080, 28);
+    lines.Print();
+    CHECK_EQ(lines.Count("triple-diag: frame 1: 1 DLSS evaluates; not counted: 2 on a deferred context, 2 failed "
+                         "(last result 0xBAD00005); swap chain 5760x1080 format 28"),
+             1u);
+    CHECK_EQ(lines.Count("triple-diag: frame 2: 0 DLSS evaluates; swap chain 5760x1080 format 28"), 1u);
+}
+
 TEST(TripleDiagLog_ANewFeatureStartsAnotherWindowUpToTheLimit) {
     Lines lines;
     TripleDiagLog log(lines.Sink(), 1, 2);
@@ -181,8 +202,15 @@ TEST(TripleDiagLines_NameTheSizesTheSubrectsAndTheTextures) {
     CHECK(Has(l, "MotionVectors none"));
     TripleDiagEvaluate bare = Evaluate(9);
     CHECK(Has(TripleDiagEvaluateLine(1, 1, bare), "create not seen"));
-    CHECK_EQ(TripleDiagFrameLine(7, 3, 5760, 1080, 28),
+    CHECK_EQ(TripleDiagFrameLine({7, 3}, 5760, 1080, 28),
              std::string("triple-diag: frame 7: 3 DLSS evaluates; swap chain 5760x1080 format 28"));
+    // Review finding B-5: the evaluates the hook does not count.
+    CHECK_EQ(TripleDiagFrameLine({7, 0, 0, 2, 0xBAD00005u}, 5760, 1080, 28),
+             std::string("triple-diag: frame 7: 0 DLSS evaluates; not counted: 2 failed (last result 0xBAD00005); swap "
+                         "chain 5760x1080 format 28"));
+    CHECK_EQ(TripleDiagFrameLine({7, 1, 3, 0, 0}, 5760, 1080, 28),
+             std::string("triple-diag: frame 7: 1 DLSS evaluates; not counted: 3 on a deferred context; swap chain "
+                         "5760x1080 format 28"));
 }
 
 // Review finding B-2: the line identifies each texture by its pointer, and

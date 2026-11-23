@@ -113,6 +113,8 @@ public:
 
     void OnCreateFeature(uint64_t featureKey, const NgxCreateInfo& info) override;
     void OnEvaluate(const NgxEvaluateInputs& in) override;
+    // To the triple-screen diagnostics, when they run (review finding B-5).
+    void OnUncountedEvaluate(const NgxUncountedEvaluate& u) override;
 
     FrameCapture EndFrame();
     void NoteTagged(uint32_t slot, uint64_t progressValue);

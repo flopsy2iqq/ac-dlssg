@@ -550,6 +550,11 @@ TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
     CspSources os = MakeSources(other.device11.Get(), 64, 36);
     REQUIRE(os.depth && os.mvec);
     r.coord->OnEvaluate(r.Inputs(os, other.ctx11.Get()));
+    // Review finding B-5: an evaluate the hook did not count.
+    NgxUncountedEvaluate deferred;
+    deferred.featureKey = 0x5000;
+    deferred.deferred = true;
+    r.coord->OnUncountedEvaluate(deferred);
     r.coord->EndFrame();
     diag.EndFrame(128, 72, 28);
     std::string all;
@@ -565,7 +570,8 @@ TEST(Coordinator_ReportsCreatesAndEvaluatesToTheTripleDiagnostics) {
     CHECK(Has(all, "frame 1 evaluate 3: feature 0x5000; context " + Ptr(other.ctx11.Get()) +
                        " immediate, not on the game's device; "));
     CHECK(Has(all, "Depth " + Ptr(os.depth.Get()) + " 64x36 format 39"));
-    CHECK(Has(all, "triple-diag: frame 1: 3 DLSS evaluates; swap chain 128x72 format 28"));
+    CHECK(Has(all, "triple-diag: frame 1: 3 DLSS evaluates; not counted: 1 on a deferred context; swap chain 128x72 "
+                   "format 28"));
 }
 
 // Review finding B-1: with the triple-screen diagnostics on, the coordinator

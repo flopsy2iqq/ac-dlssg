@@ -41,6 +41,13 @@ struct NgxEvaluateInputs {
     const NgxParameter* params = nullptr;
 };
 
+// An evaluate the hook did not count (NgxEvaluateSink::OnUncountedEvaluate).
+struct NgxUncountedEvaluate {
+    uint64_t featureKey = 0;     // the NVSDK_NGX_Handle* value
+    bool deferred = false;       // on a deferred context (else the original failed)
+    NgxResult result = kNgxSuccess;  // what the original returned
+};
+
 // The sink is called only for counted calls, after the original returned.
 class NgxEvaluateSink {
 public:
@@ -58,6 +65,11 @@ public:
     // in.ctx, in.depth and in.mvec are CSP's raw pointers, not AddRef'd: they
     // are valid only for the duration of this call, and nothing may keep them.
     virtual void OnEvaluate(const NgxEvaluateInputs& in) = 0;
+    // An outermost evaluate that is not counted (review finding B-5): on a
+    // deferred context, or one whose original failed, unless its create
+    // showed another feature than SuperSampling. For the triple-screen
+    // diagnostics only; the default ignores it.
+    virtual void OnUncountedEvaluate(const NgxUncountedEvaluate&) {}
 };
 
 // Skip decision for one candidate module (spec 6.5). Exposed so the rules are

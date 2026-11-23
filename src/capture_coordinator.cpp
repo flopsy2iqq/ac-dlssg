@@ -177,6 +177,14 @@ void CaptureCoordinator::OnCreateFeature(uint64_t featureKey, const NgxCreateInf
     }
 }
 
+// TripleDiagLog has its own lock; the coordinator's state is not touched.
+void CaptureCoordinator::OnUncountedEvaluate(const NgxUncountedEvaluate& u) {
+    try {
+        if (deps_.tripleDiag) deps_.tripleDiag->OnUncountedEvaluate(u.deferred, u.result);
+    } catch (...) {
+    }
+}
+
 void CaptureCoordinator::OnEvaluate(const NgxEvaluateInputs& in) {
     try {
         std::lock_guard<std::mutex> lock(mu_);

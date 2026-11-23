@@ -31,10 +31,12 @@ using EvalFn = int(__cdecl*)(void*, const void*, const void*, void*);
 struct RecSink : NgxEvaluateSink {
     std::vector<std::pair<uint64_t, NgxCreateInfo>> creates;
     std::vector<NgxEvaluateInputs> evals;
+    std::vector<NgxUncountedEvaluate> uncounted;
     void OnCreateFeature(uint64_t key, const NgxCreateInfo& info) override {
         creates.push_back({key, info});
     }
     void OnEvaluate(const NgxEvaluateInputs& in) override { evals.push_back(in); }
+    void OnUncountedEvaluate(const NgxUncountedEvaluate& u) override { uncounted.push_back(u); }
 };
 
 HMODULE LoadFake() { return LoadLibraryW(FAKE_NVNGX_PATH); }
@@ -352,6 +354,58 @@ TEST(NgxHook_DeferredContextNotCaptured) {
     eval(deferred.Get(), h, &ep, nullptr);
     CHECK_EQ(s->evalCalls, 2L);
     CHECK_EQ(fx.sink.evals.size(), size_t{1});
+}
+
+// Review finding B-5: an evaluate the hook does not count, on a deferred
+// context or failing, reaches the sink's OnUncountedEvaluate (for the
+// triple-screen diagnostics) with its result and its context's type; one of
+// a feature known not to be SuperSampling does not.
+TEST(NgxHook_UncountedEvaluatesReachTheSink) {
+    GpuTestDevices d;
+    if (!ImmediateDevices(&d)) return;
+    ComPtr<ID3D11DeviceContext> deferred;
+    if (FAILED(d.device11->CreateDeferredContext(0, &deferred))) {
+        std::printf("  no deferred context; skipping\n");
+        return;
+    }
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    FakeNgxState* s = State(fake);
+    *s = FakeNgxState{};
+    s->nextHandle = reinterpret_cast<void*>(0x910000);
+    HookFixture fx(fake);
+    CreateFn create = Create(fake);
+    EvalFn eval = Eval(fake);
+    FakeNgxParam ss = SuperSamplingCreate();
+    void* h = nullptr;
+    create(d.ctx11.Get(), kNgxFeatureSuperSampling, &ss, &h);
+    FakeNgxParam ep = CspEvaluate();
+
+    eval(deferred.Get(), h, &ep, nullptr);
+    REQUIRE(fx.sink.uncounted.size() == size_t{1});
+    CHECK(fx.sink.uncounted[0].deferred);
+    CHECK_EQ(fx.sink.uncounted[0].result, kNgxSuccess);
+    CHECK_EQ(fx.sink.uncounted[0].featureKey, static_cast<uint64_t>(0x910000));
+    s->evalResult = static_cast<int>(0xBAD00005);
+    eval(d.ctx11.Get(), h, &ep, nullptr);
+    REQUIRE(fx.sink.uncounted.size() == size_t{2});
+    CHECK(!fx.sink.uncounted[1].deferred);
+    CHECK_EQ(static_cast<unsigned>(fx.sink.uncounted[1].result), 0xBAD00005u);
+    CHECK(fx.sink.evals.empty());
+    // A counted evaluate is not reported as uncounted.
+    s->evalResult = kNgxSuccess;
+    eval(d.ctx11.Get(), h, &ep, nullptr);
+    CHECK_EQ(fx.sink.evals.size(), size_t{1});
+    CHECK_EQ(fx.sink.uncounted.size(), size_t{2});
+    // Ray Reconstruction, known from its create: not reported.
+    s->nextHandle = reinterpret_cast<void*>(0x920000);
+    FakeNgxParam rr = SuperSamplingCreate();
+    void* hr = nullptr;
+    create(d.ctx11.Get(), kNgxFeatureRayReconstruction, &rr, &hr);
+    s->evalResult = static_cast<int>(0xBAD00005);
+    eval(d.ctx11.Get(), hr, &ep, nullptr);
+    eval(deferred.Get(), hr, &ep, nullptr);
+    CHECK_EQ(fx.sink.uncounted.size(), size_t{2});
 }
 
 TEST(NgxHook_LateLoadThenRescanThenUnload) {

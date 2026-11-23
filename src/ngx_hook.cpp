@@ -957,18 +957,38 @@ NgxResult NgxHook::DispatchEvaluate(int slot, bool isC, ID3D11DeviceContext* ctx
         LogFirstOutermostCall(isC ? "EvaluateFeature_C" : "EvaluateFeature", slot, caller, ctx, r);
     if (neverCount) return r;  // a denoiser snippet's own entry point (F4)
     try {
+        // An evaluate that is not counted reaches the sink's
+        // OnUncountedEvaluate, for the triple-screen diagnostics (review
+        // finding B-5), unless its create showed another feature.
+        const auto reportUncounted = [&](bool deferred) {
+            const uint64_t key = reinterpret_cast<uint64_t>(handle);
+            {
+                SharedLock rec(&s.recLock);
+                const auto it = s.records.find(key);
+                if (it != s.records.end() && !it->second.supersampling) return;
+            }
+            NgxUncountedEvaluate u;
+            u.featureKey = key;
+            u.deferred = deferred;
+            u.result = r;
+            CallSink([&](NgxEvaluateSink* sink) { sink->OnUncountedEvaluate(u); });
+        };
         // Deferred contexts cannot be captured (spec 6.5).
         if (!Plausible(ctx)) return r;
         if (ctx->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE) {
             static LONG said = 0;
             if (InterlockedCompareExchange(&said, 1, 0) == 0)
                 LOGW("ngx: DLSS evaluate on a deferred context; capture disabled");
+            reportUncounted(true);
             return r;
         }
         // Decision (spec 6.5 open point): a failed original is not captured. The
         // depth and MV a failed DLSS consumed cannot be trusted to pair with a
         // DLSS-G frame, and building constants for it would only feed garbage.
-        if (r != kNgxSuccess) return r;
+        if (r != kNgxSuccess) {
+            reportUncounted(false);
+            return r;
+        }
         if (!Plausible(params) || !Plausible(handle)) return r;
 
         const uint64_t key = reinterpret_cast<uint64_t>(handle);

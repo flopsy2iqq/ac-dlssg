@@ -171,12 +171,23 @@ std::string TripleDiagEvaluateLine(uint32_t frame, uint32_t index, const TripleD
     return line;
 }
 
-std::string TripleDiagFrameLine(uint32_t frame, uint32_t evaluates, uint32_t swapWidth, uint32_t swapHeight,
+std::string TripleDiagFrameLine(const TripleDiagFrameCounts& c, uint32_t swapWidth, uint32_t swapHeight,
                                 uint32_t swapFormat) {
     char buf[160];
-    std::snprintf(buf, sizeof(buf), "triple-diag: frame %u: %u DLSS evaluates; swap chain %ux%u format %u", frame,
-                  evaluates, swapWidth, swapHeight, swapFormat);
-    return buf;
+    std::snprintf(buf, sizeof(buf), "triple-diag: frame %u: %u DLSS evaluates; ", c.frame, c.evaluates);
+    std::string line = buf;
+    if (c.deferred || c.failed) {
+        line += "not counted: ";
+        if (c.deferred) line += std::to_string(c.deferred) + " on a deferred context";
+        if (c.failed) {
+            std::snprintf(buf, sizeof(buf), "%s%u failed (last result 0x%08X)", c.deferred ? ", " : "", c.failed,
+                          c.lastFailResult);
+            line += buf;
+        }
+        line += "; ";
+    }
+    std::snprintf(buf, sizeof(buf), "swap chain %ux%u format %u", swapWidth, swapHeight, swapFormat);
+    return line + buf;
 }
 
 TripleDiagLog::TripleDiagLog(std::function<void(const std::string&)> log, uint32_t frames, uint32_t windows,
@@ -226,16 +237,16 @@ void TripleDiagLog::OnEvaluate(const TripleDiagEvaluate& e) {
             ++windowsUsed_;
             framesLeft_ = frames_;
             frame_ = 1;
-            evaluates_ = 0;
+            counts_ = TripleDiagFrameCounts();
             windowLines_ = 0;
             lines.push_back("triple-diag: window " + std::to_string(windowsUsed_) + " of " +
                             std::to_string(windows_) + ": logging every DLSS evaluate of the next " +
                             std::to_string(frames_) + " frames (frame generation stays off)");
         }
-        ++evaluates_;
+        ++counts_.evaluates;
         ++windowLines_;
         ++lines_;
-        lines.push_back(TripleDiagEvaluateLine(frame_, evaluates_, e));
+        lines.push_back(TripleDiagEvaluateLine(frame_, counts_.evaluates, e));
         // The caps (review finding B-4): the window, or every window, ends.
         if (lines_ >= maxLines_) {
             lines.push_back("triple-diag: " + std::to_string(lines_) +
@@ -261,8 +272,9 @@ void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t s
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (framesLeft_ == 0) return;
-        lines.push_back(TripleDiagFrameLine(frame_, evaluates_, swapWidth, swapHeight, swapFormat));
-        evaluates_ = 0;
+        counts_.frame = frame_;
+        lines.push_back(TripleDiagFrameLine(counts_, swapWidth, swapHeight, swapFormat));
+        counts_ = TripleDiagFrameCounts();
         ++frame_;
         if (--framesLeft_ == 0) {
             lines.push_back("triple-diag: window " + std::to_string(windowsUsed_) + " done after " +
@@ -273,6 +285,17 @@ void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t s
         }
     }
     for (const std::string& l : lines) Log(l);
+}
+
+void TripleDiagLog::OnUncountedEvaluate(bool deferred, NgxResult result) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (framesLeft_ == 0) return;
+    if (deferred) {
+        ++counts_.deferred;
+    } else {
+        ++counts_.failed;
+        counts_.lastFailResult = static_cast<uint32_t>(result);
+    }
 }
 
 bool TripleDiagLog::WantsEvaluates() const {
