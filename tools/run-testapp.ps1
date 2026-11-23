@@ -150,6 +150,10 @@ $scenarios = @(
     # into a stall is deferred (resize_pending in d3d12_presenter.cpp); the
     # test app notes it when the log shows one.
     @{ Name = 'stall-resize'; Args = @('--stall', '--resize', '--recreate', '--expect-proxy') },
+    # VR (video.ini [CAMERA] MODE=OPENVR): the bridge starts nothing and passes
+    # the game through with the VR reason.
+    @{ Name = 'vr-passthrough'; Args = @('--fixture', 'vr', '--expect-passthrough', '--expect-passthrough-reason',
+                                         '"VR (MODE=OPENVR): DLSS Frame Generation works only on a monitor"') },
     # The refusal path, with every chain operation, as a baseline against real DXGI.
     @{ Name = 'passthrough';  Args = @('--fixture', 'passthrough', '--expect-passthrough', '--resize', '--recreate',
                                        '--test-present') },

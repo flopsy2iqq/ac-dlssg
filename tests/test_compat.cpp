@@ -43,6 +43,11 @@ const char* kDlss5 =
 const char* kRenodx = "renodx-dlss5.addon64 is loaded";
 const char* kHags = "hardware-accelerated GPU scheduling is off";
 
+std::string VrReason(const char* mode) {
+    return std::string("VR (MODE=") + mode +
+           "): DLSS Frame Generation works only on a monitor, not in a headset; ac-dlssg stays off in VR";
+}
+
 std::string Reason(const CompatInputs& in, unsigned w = 1920, unsigned h = 1080) {
     auto r = EvaluateCompat(in, w, h);
     if (r.ok && !r.reason.empty()) return "<ok with reason>";
@@ -85,9 +90,9 @@ TEST(Compat_EachRuleAlone) {
 
     in = GoodInputs();
     in.camera_mode = "TRIPLE";
-    CHECK_EQ(Reason(in), "camera mode TRIPLE (VR or triple screen) is not supported");
+    CHECK_EQ(Reason(in), "camera mode TRIPLE (triple screen) is not supported");
     in.camera_mode = "OCULUS";
-    CHECK_EQ(Reason(in), "camera mode OCULUS (VR or triple screen) is not supported");
+    CHECK_EQ(Reason(in), VrReason("OCULUS"));
 
     in = GoodInputs();
     in.video_height = 1200;
@@ -130,7 +135,7 @@ TEST(Compat_RulesAreReportedInOrder) {
     in.fsr_old_implementation = 3;
     CHECK_EQ(Reason(in), kMsaa);
     in.aasamples = 1;
-    CHECK_EQ(Reason(in), "camera mode OPENVR (VR or triple screen) is not supported");
+    CHECK_EQ(Reason(in), VrReason("OPENVR"));
     in.camera_mode = "default";
     CHECK_EQ(Reason(in), kAspect);
     in.video_height = 1080;
@@ -163,6 +168,37 @@ TEST(Compat_MissingKeyDefaults) {
     // ALLOW_STRETCHING missing counts as 0.
     in.video_height = 1080;
     CHECK_EQ(Reason(in, 1920, 1200), kAspect);
+}
+
+// VR: AC's own camera modes OPENVR and OCULUS (acs.exe) and CSP's OpenXR
+// mode __EXT_OPENXR (extension\config\data_manifest.ini [CUSTOM_RENDER_MODES]).
+// DLSS-G presents through the monitor's swap chain, not to the headset, so
+// the bridge stays off in VR and says so in the panel's 160-character field.
+TEST(Compat_VrModesGetTheVrReason) {
+    for (const char* mode : {"OPENVR", "OCULUS", "__EXT_OPENXR", "openvr", "Oculus", "__ext_openxr"}) {
+        CHECK_EQ(VrRefusal(std::string(mode)), VrReason(mode));
+        CHECK(VrReason(mode).size() < 160);
+        auto in = GoodInputs();
+        in.camera_mode = mode;
+        CHECK_EQ(Reason(in), VrReason(mode));
+    }
+    CHECK(VrRefusal(std::nullopt).empty());
+    for (const char* mode : {"DEFAULT", "TRIPLE", "__EXT_360", "__EXT_FISHEYE", "__EXT_SPLITSCREEN", "OPENVR2", ""})
+        CHECK(VrRefusal(std::string(mode)).empty());
+}
+
+// The other modes name what they are: triple screen, or one of CSP's custom
+// rendering modes (360, fisheye, split screen), which are not VR.
+TEST(Compat_OtherCameraModesNameWhatTheyAre) {
+    auto in = GoodInputs();
+    in.camera_mode = "TRIPLE";
+    CHECK_EQ(Reason(in), "camera mode TRIPLE (triple screen) is not supported");
+    in.camera_mode = "__EXT_360";
+    CHECK_EQ(Reason(in), "custom rendering mode __EXT_360 (360, fisheye or split screen) is not supported");
+    in.camera_mode = "__ext_splitscreen";
+    CHECK_EQ(Reason(in), "custom rendering mode __ext_splitscreen (360, fisheye or split screen) is not supported");
+    in.camera_mode = "SOMETHING";
+    CHECK_EQ(Reason(in), "camera mode SOMETHING is not supported");
 }
 
 TEST(Compat_CameraModeCaseInsensitive) {

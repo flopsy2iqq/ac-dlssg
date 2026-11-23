@@ -4,6 +4,7 @@
 #include <string>
 
 #include "bootstrap.h"
+#include "compat.h"
 #include "test_framework.h"
 
 using namespace acdb;
@@ -25,6 +26,41 @@ TEST(Banner_NamesTheVersionAndWhatTheBridgeDoes) {
     CHECK(line.find("Streamline") != std::string::npos);
     // A release banner names no development milestone.
     CHECK(!std::regex_search(line, std::regex(R"(\bM\d\b)")));
+}
+
+// What the bootstrap starts: Streamline, MFG-Unlocker and the camera section
+// only for an enabled bridge outside VR. In VR the game passes through with
+// the VR reason; triple screen and the custom modes are refused per swap
+// chain, as before.
+TEST(BridgeStart_NothingStartsInVrOrWhenDisabled) {
+    CompatInputs in;
+    BridgeStart b = PlanBridgeStart(true, in);
+    CHECK(b.start);
+    CHECK(b.reason.empty());
+    in.camera_mode = "DEFAULT";
+    CHECK(PlanBridgeStart(true, in).start);
+    in.camera_mode = "TRIPLE";
+    CHECK(PlanBridgeStart(true, in).start);
+    in.camera_mode = "__EXT_360";
+    CHECK(PlanBridgeStart(true, in).start);
+    for (const char* mode : {"OPENVR", "OCULUS", "__EXT_OPENXR"}) {
+        in.camera_mode = mode;
+        b = PlanBridgeStart(true, in);
+        CHECK(!b.start);
+        CHECK_EQ(b.reason, std::string("VR (MODE=") + mode +
+                               "): DLSS Frame Generation works only on a monitor, not in a headset; ac-dlssg stays "
+                               "off in VR");
+        CHECK(b.vr);
+    }
+    // Disabled wins: that is what the user chose.
+    b = PlanBridgeStart(false, in);
+    CHECK(!b.start);
+    CHECK_EQ(b.reason, std::string("disabled in ac-dlssg.ini"));
+    in.camera_mode = "DEFAULT";
+    b = PlanBridgeStart(false, in);
+    CHECK(!b.start);
+    CHECK(!b.vr);
+    CHECK_EQ(b.reason, std::string("disabled in ac-dlssg.ini"));
 }
 
 TEST(BridgeMode_DxgiDllIsStandalone) {

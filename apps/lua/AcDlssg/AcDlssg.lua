@@ -51,6 +51,7 @@ local FLAG_VR = 8
 local FLAG_TRIPLE = 16
 local FLAG_MAIN_MENU = 32
 local FLAG_WRITE_FAILED = 64
+local FLAG_CUSTOM_MODE = 128 -- CSP's custom rendering modes: 360, fisheye, split screen
 
 -- A camera cut: the camera moved further in one frame than anything in AC
 -- drives (1 m plus 150 m/s over the frame's real or simulated time, whichever
@@ -75,7 +76,8 @@ local function hasField(object, name)
   return (pcall(function () return object[name] end))
 end
 local OPTIONAL_SIM_FIELDS = { 'renderSize', 'originShift', 'cameraJumped', 'driveableCameraMode', 'carCameraIndex',
-  'trackCamerasSet', 'isTripleMode', 'isVRConnected', 'cameraClipNear', 'cameraClipFar' }
+  'trackCamerasSet', 'isTripleMode', 'isVRConnected', 'cameraClipNear', 'cameraClipFar', 'isOpenXRMode',
+  'isCustomVideoMode' }
 local simHas = {}
 for _, name in ipairs(OPTIONAL_SIM_FIELDS) do simHas[name] = hasField(sim, name) end
 local missingSimFields = {}
@@ -150,7 +152,8 @@ local function fill()
   if jumped then flags = flags + FLAG_JUMPED end
   if sim.isPaused then flags = flags + FLAG_PAUSED end
   if sim.isReplayActive then flags = flags + FLAG_REPLAY end
-  if sim.isVRMode or (simHas.isVRConnected and sim.isVRConnected) then flags = flags + FLAG_VR end
+  if sim.isVRMode or (simHas.isVRConnected and sim.isVRConnected) or (simHas.isOpenXRMode and sim.isOpenXRMode) then flags = flags + FLAG_VR end
+  if simHas.isCustomVideoMode and sim.isCustomVideoMode then flags = flags + FLAG_CUSTOM_MODE end
   if simHas.isTripleMode and sim.isTripleMode then flags = flags + FLAG_TRIPLE end
   if sim.isInMainMenu then flags = flags + FLAG_MAIN_MENU end
 

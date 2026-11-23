@@ -325,6 +325,10 @@ void Run(BootstrapState* s) {
     LOGI("documents dir: %s", s->docs_ac_dir.empty() ? "(not found)" : ToUtf8(s->docs_ac_dir).c_str());
     s->compat = ReadCompatInputs(s->game_dir, s->docs_ac_dir);
     LogCompatInputs(s->compat);
+    // In VR the bridge starts nothing (Streamline, MFG-Unlocker, the camera
+    // section), as when it is disabled.
+    const BridgeStart plan = PlanBridgeStart(c.enabled, s->compat);
+    if (plan.vr) LOGI("bridge: stays off for this session: %s", plan.reason.c_str());
 
     // Spoof: dlssg_for_sm86's version.dll next to acs.exe (spec 10). On
     // Windows 11 25H2 the process can bind VERSION.dll to System32 before
@@ -371,8 +375,8 @@ void Run(BootstrapState* s) {
                 LOGW("spoof: %s", d.reason.c_str());
                 break;
             case SpoofAction::LoadExplicitly:
-                if (!s->config.enabled) {
-                    LOGI("spoof: %s; not done because the bridge is disabled", d.reason.c_str());
+                if (!plan.start) {
+                    LOGI("spoof: %s; not done: %s", d.reason.c_str(), plan.reason.c_str());
                     break;
                 }
                 LOGI("spoof: %s", d.reason.c_str());
@@ -390,8 +394,10 @@ void Run(BootstrapState* s) {
 
     // MFG-Unlocker on an RTX 40: the pinned copy the installer put into
     // data_dir\mfg, by full path, before NVAPI and Streamline's interposer
-    // are loaded, so that it sees sl.dlss_g and nvngx_dlssg arrive.
-    {
+    // are loaded, so that it sees sl.dlss_g and nvngx_dlssg arrive. Never in VR.
+    if (plan.vr) {
+        LOGI("mfg-unlocker: not loaded: %s", plan.reason.c_str());
+    } else {
         MfgInputs mi;
         mi.enabled = c.enabled;
         mi.configured = c.mfg_unlocker;
@@ -457,9 +463,9 @@ void Run(BootstrapState* s) {
     s->driver_notes = DriverProfileNotes(s->driver_profile, dpc);
     LogDriverProfile(s->driver_profile, s->driver_notes);
 
-    // Streamline is loaded only for an enabled bridge: disabled means the
-    // game runs as without the mod.
-    if (c.enabled) {
+    // Streamline is loaded only for an enabled bridge outside VR: disabled
+    // means the game runs as without the mod.
+    if (plan.start) {
         // Spec 6.6: the camera section exists before CSP's Lua app opens it.
         std::string camErr;
         if (CameraChannel::Get().Create(&camErr)) {
@@ -475,13 +481,13 @@ void Run(BootstrapState* s) {
             LOGW("Streamline: not available: %s", s->streamline_error.c_str());
         }
     } else {
-        s->streamline_error = "not loaded: the bridge is disabled";
+        s->streamline_error = plan.vr ? "not loaded: VR" : "not loaded: the bridge is disabled";
         LOGI("Streamline: %s", s->streamline_error.c_str());
     }
 
-    s->possible = c.enabled && s->streamline_ok;
-    if (!c.enabled) {
-        s->reason = "disabled in ac-dlssg.ini";
+    s->possible = plan.start && s->streamline_ok;
+    if (!plan.start) {
+        s->reason = plan.reason;
     } else if (!s->streamline_ok) {
         s->reason = "Streamline: " + s->streamline_error;
     }
@@ -505,6 +511,18 @@ BridgeMode BridgeModeFromPath(const std::wstring& modulePath) {
 }
 
 const char* BridgeModeName(BridgeMode mode) { return mode == BridgeMode::Standalone ? "standalone" : "proxy"; }
+
+BridgeStart PlanBridgeStart(bool enabled, const CompatInputs& compat) {
+    BridgeStart b;
+    if (!enabled) {
+        b.reason = "disabled in ac-dlssg.ini";
+        return b;
+    }
+    b.reason = VrRefusal(compat.camera_mode);
+    b.vr = !b.reason.empty();
+    b.start = !b.vr;
+    return b;
+}
 
 std::string BannerLine() {
     return std::string("ac-dlssg ") + ACDB_VERSION +

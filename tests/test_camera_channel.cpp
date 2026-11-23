@@ -185,6 +185,7 @@ TEST(LuaApp_ConstantsMatchTheCppSide) {
     CHECK_EQ(LuaConstant(lua, "FLAG_TRIPLE"), static_cast<long long>(kCamTriple));
     CHECK_EQ(LuaConstant(lua, "FLAG_MAIN_MENU"), static_cast<long long>(kCamMainMenu));
     CHECK_EQ(LuaConstant(lua, "FLAG_WRITE_FAILED"), static_cast<long long>(kCamWriteFailed));
+    CHECK_EQ(LuaConstant(lua, "FLAG_CUSTOM_MODE"), static_cast<long long>(kCamCustomMode));
 
     // ac.writeMemoryMappedFile takes the name without "Local\" (CSP SDK,
     // common/ac_extras_connectmmf.lua) and persists the mapping.

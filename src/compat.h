@@ -43,7 +43,10 @@ struct CompatResult {
 //                                      -> "CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)"
 //  5. aasamples > 1                    -> "MSAA (AASAMPLES>1) is not supported"
 //  6. camera_mode present and not DEFAULT (case-insensitive)
-//                                      -> "camera mode <MODE> (VR or triple screen) is not supported"
+//                                      -> VrRefusal for a VR mode; "camera mode TRIPLE (triple screen) is not
+//                                         supported"; "custom rendering mode <MODE> (360, fisheye or split
+//                                         screen) is not supported" for CSP's __EXT_ modes; else "camera mode
+//                                         <MODE> is not supported"
 //  7. allow_stretching != 1 (missing counts as 0) and both video sizes known
 //     and AspectMismatch(...)          -> "video.ini aspect ratio differs from the window; letterboxed output is not supported in v1"
 //  8. dlss5_bridge_loaded              -> "DLSS 5 Bridge (<dlss5_bridge_file, else dlss5-bridge.addon64>) is loaded:
@@ -52,6 +55,14 @@ struct CompatResult {
 //  9. renodx_dlss5_loaded              -> "renodx-dlss5.addon64 is loaded"
 // 10. !hags_on                         -> "hardware-accelerated GPU scheduling is off"
 CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned swapHeight);
+
+// VR, by video.ini's [CAMERA] MODE (case-insensitive): AC's OPENVR and
+// OCULUS, and CSP's OpenXR mode __EXT_OPENXR. DLSS-G presents through the
+// monitor's swap chain, which in VR only mirrors the headset, so the bridge
+// stays off: "VR (MODE=<MODE>): DLSS Frame Generation works only on a
+// monitor, not in a headset; ac-dlssg stays off in VR". Empty for any other
+// mode or none.
+std::string VrRefusal(const std::optional<std::string>& cameraMode);
 
 // True when |(videoW/videoH) / (swapW/swapH) - 1| > 0.005. False when any
 // argument is zero.

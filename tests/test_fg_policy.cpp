@@ -78,6 +78,7 @@ TEST(FgGate_EachConditionTurnsItOffWithItsReason) {
         {"menu", [](FgGateInputs* in) { in->cameraFlags = kCamMainMenu; }, "menu open", true},
         {"vr", [](FgGateInputs* in) { in->cameraFlags = kCamVR; }, "VR or triple-screen", true},
         {"triple", [](FgGateInputs* in) { in->cameraFlags = kCamTriple; }, "VR or triple-screen", true},
+        {"custom", [](FgGateInputs* in) { in->cameraFlags = kCamCustomMode; }, "custom rendering mode", true},
         {"constants",
          [](FgGateInputs* in) {
              in->constantsOk = false;

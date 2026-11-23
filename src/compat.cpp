@@ -38,6 +38,16 @@ CompatResult Refuse(std::string reason) {
 
 }  // namespace
 
+std::string VrRefusal(const std::optional<std::string>& cameraMode) {
+    if (!cameraMode) return {};
+    for (const char* vr : {"OPENVR", "OCULUS", "__EXT_OPENXR"}) {
+        if (EqualsNoCase(*cameraMode, vr))
+            return "VR (MODE=" + *cameraMode +
+                   "): DLSS Frame Generation works only on a monitor, not in a headset; ac-dlssg stays off in VR";
+    }
+    return {};
+}
+
 bool AspectMismatch(double videoW, double videoH, double swapW, double swapH) {
     if (videoW == 0 || videoH == 0 || swapW == 0 || swapH == 0) return false;
     // |(vW/vH) / (sW/sH) - 1| > 0.005, rearranged to
@@ -53,8 +63,15 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
     if (in.fsr_active.value_or(0) != 1 || in.fsr_old_implementation.value_or(0) != 3)
         return Refuse("CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)");
     if (in.aasamples && *in.aasamples > 1) return Refuse("MSAA (AASAMPLES>1) is not supported");
-    if (in.camera_mode && !EqualsNoCase(*in.camera_mode, "DEFAULT"))
-        return Refuse("camera mode " + *in.camera_mode + " (VR or triple screen) is not supported");
+    if (in.camera_mode && !EqualsNoCase(*in.camera_mode, "DEFAULT")) {
+        const std::string vr = VrRefusal(in.camera_mode);
+        if (!vr.empty()) return Refuse(vr);
+        const std::string& mode = *in.camera_mode;
+        if (EqualsNoCase(mode, "TRIPLE")) return Refuse("camera mode " + mode + " (triple screen) is not supported");
+        if (mode.size() > 6 && EqualsNoCase(mode.substr(0, 6), "__EXT_"))
+            return Refuse("custom rendering mode " + mode + " (360, fisheye or split screen) is not supported");
+        return Refuse("camera mode " + mode + " is not supported");
+    }
     if (in.allow_stretching.value_or(0) != 1 && in.video_width && in.video_height &&
         AspectMismatch(static_cast<double>(*in.video_width), static_cast<double>(*in.video_height), swapWidth,
                        swapHeight))

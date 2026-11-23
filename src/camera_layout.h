@@ -23,6 +23,7 @@ enum CameraFlags : uint32_t {
     kCamTriple = 16,       // AC was started in triple-screen mode
     kCamMainMenu = 32,     // AC's in-game menu is open
     kCamWriteFailed = 64,  // the Lua writer hit an error; the record is not valid
+    kCamCustomMode = 128,  // CSP's custom rendering mode: 360, fisheye or split screen
 };
 
 struct CameraLayout {

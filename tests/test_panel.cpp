@@ -562,7 +562,7 @@ TEST(LuaApp_CameraWriterReadsOptionalSimFieldsOnlyBehindAProbe) {
     const std::string listed = m[1];
     const char* const optional[] = {"renderSize",      "originShift",    "cameraJumped", "driveableCameraMode",
                                     "carCameraIndex",  "trackCamerasSet", "isTripleMode", "isVRConnected",
-                                    "cameraClipNear",  "cameraClipFar"};
+                                    "cameraClipNear",  "cameraClipFar",   "isOpenXRMode", "isCustomVideoMode"};
     const std::string body = acdb_test::LuaFunctionBody(lua, "open") + acdb_test::LuaFunctionBody(lua, "fill");
     REQUIRE(!body.empty());
     auto count = [](const std::string& s, const std::string& what) {
@@ -624,6 +624,20 @@ size_t TopLevelLocals(const std::string& code) {
 }  // namespace
 
 // The window's constants and animation state live in tables for this.
+// VR through CSP's OpenXR path (isOpenXRMode) counts as VR, and CSP's custom
+// rendering modes (360, fisheye, split screen: isCustomVideoMode) get their
+// own flag: frame generation stays off in both, frame by frame.
+TEST(LuaApp_OpenXrIsVrAndCustomVideoModesAreFlagged) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string fill = acdb_test::LuaFunctionBody(lua, "fill");
+    REQUIRE(!fill.empty());
+    CHECK(fill.find("if sim.isVRMode or (simHas.isVRConnected and sim.isVRConnected) or (simHas.isOpenXRMode and "
+                    "sim.isOpenXRMode) then flags = flags + FLAG_VR end") != std::string::npos);
+    CHECK(fill.find("if simHas.isCustomVideoMode and sim.isCustomVideoMode then flags = flags + FLAG_CUSTOM_MODE end") !=
+          std::string::npos);
+}
+
 TEST(LuaApp_TheMainChunkStaysUnderLuaJitsLocalLimit) {
     const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
     REQUIRE(!lua.empty());

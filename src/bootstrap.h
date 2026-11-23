@@ -36,6 +36,17 @@ std::string BannerLine();
 // is this module (standalone), which is never called ReShade.
 std::string GameFolderDxgiLine(bool loaded, bool isThisBridge, const std::string& path, const std::string& version);
 
+// What the bootstrap starts (pure): Streamline, MFG-Unlocker and the camera
+// section only when the bridge is enabled and the game is not in VR
+// (VrRefusal); otherwise the game passes through with reason, "disabled in
+// ac-dlssg.ini" first.
+struct BridgeStart {
+    bool start = false;
+    bool vr = false;     // VrRefusal refused (the bridge is enabled)
+    std::string reason;  // empty when start
+};
+BridgeStart PlanBridgeStart(bool enabled, const CompatInputs& compat);
+
 struct BootstrapState {
     bool possible = false;
     BridgeMode mode = BridgeMode::Proxy;  // from BridgeModule()'s file name
@@ -88,7 +99,9 @@ HMODULE BridgeModule();
 // config enables the bridge, CameraChannel::Get().Create (M3; a failure is
 // logged and leaves DLSS-G without a camera) and StreamlineRuntime::Get().Init(<data_dir>\sl,
 // <data_dir>\logs) (a disabled bridge never loads Streamline: streamline_error
-// is then "not loaded: the bridge is disabled"); possible = enabled &&
+// is then "not loaded: the bridge is disabled", or "not loaded: VR" when
+// PlanBridgeStart refused for VR, which also skips MFG-Unlocker and the
+// camera section, and the reason is then VrRefusal's); possible = enabled &&
 // streamline_ok, reason "disabled in ac-dlssg.ini" or "Streamline: <error>"
 // otherwise. Last, whether or not the bridge is enabled (spec 6.9): the
 // panel's status and control sections (PanelStatusChannel::Get().Create and
