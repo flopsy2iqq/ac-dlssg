@@ -573,6 +573,14 @@ function Invoke-SmoothMotionStep([string]$Game) {
         $statusJson = Join-Path $work 'status.json'
         $run = Invoke-DrsHelper $helper @('smooth-motion', 'status', '--exe', $acs, '--json', $statusJson) $work
         $status = Read-DrsJson $statusJson
+        if ($run.Code -eq $script:AcdbDrsExit.ForeignProfile) {
+            # Another game's predefined profile holds acs.exe (review finding
+            # A-1): the helper leaves it alone and says how to change it by hand.
+            foreach ($line in $run.Log) { Write-Host "  $line" }
+            Say ("WARNING: NVIDIA Smooth Motion was not turned off: $(Get-DrsExitText $run.Code $acs) (see above for why, and for " +
+                'the steps by hand). The rest of the install stays.')
+            return
+        }
         if ($run.Code -ne $script:AcdbDrsExit.Ok -or -not $status) {
             foreach ($line in $run.Log) { Write-Host "  $line" }
             Say "WARNING: NVIDIA Smooth Motion was not checked: $(Get-DrsExitText $run.Code $acs) (see above). If frame generation does not start, the AC DLSS-G window names Smooth Motion; the README has the manual steps."

@@ -16,6 +16,7 @@ namespace acdb {
 // acs.exe, and of the global profile.
 struct SmoothMotionProfile {
     std::wstring name;          // the application profile's name, such as "Assetto Corsa"
+    bool predefined = false;    // NVIDIA's driver ships it (NVDRS_PROFILE.isPredefined)
     ProfileValue apis, enable;  // its own values of kDrsSmoothMotionApis and kDrsSmoothMotionEnable
     // The global (base) profile's values; not present when they are the
     // driver's defaults.

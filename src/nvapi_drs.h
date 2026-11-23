@@ -70,8 +70,14 @@ std::wstring FromUnicodeString(const NvU16* s);
 bool FindAppProfile(const Api& api, NvDRSSessionHandle session, const std::wstring& exePath,
                     NvDRSProfileHandle* profile, std::string* error);
 
-// The profile's name; empty when NvAPI_DRS_GetProfileInfo fails.
-std::wstring ProfileName(const Api& api, NvDRSSessionHandle session, NvDRSProfileHandle profile);
+// A profile's name, and whether NVIDIA's driver ships it (isPredefined).
+struct ProfileInfo {
+    std::wstring name;
+    bool predefined = false;
+};
+
+// NvAPI_DRS_GetProfileInfo; an empty name and not predefined when it fails.
+ProfileInfo ReadProfileInfo(const Api& api, NvDRSSessionHandle session, NvDRSProfileHandle profile);
 
 // Destroys the DRS session on every exit, a C++ exception included.
 struct SessionGuard {

@@ -19,7 +19,7 @@ It takes about 5 minutes.
 3. **Unpack it.** Right-click the zip and choose **Extract All**.
 4. **Double-click `install.bat`.**
    - If Windows asks "Do you want to allow this app to make changes?", click **Yes**.
-   - **RTX 40 or RTX 50:** the installer also turns NVIDIA Smooth Motion off for Assetto Corsa (the driver's own frame generation, which frame generation cannot run on top of). It says so first, then Windows asks for administrator rights for this one change ("ac-dlssg driver profile helper"): click **Yes**. The uninstaller puts the setting back. To leave the driver profile alone, run `install.bat -KeepSmoothMotion` instead; the README's section "NVIDIA Smooth Motion" explains it.
+   - **RTX 40 or RTX 50:** the installer also turns NVIDIA Smooth Motion off for Assetto Corsa (the driver's own frame generation, which frame generation cannot run on top of). It says so first, then Windows asks for administrator rights for this one change ("ac-dlssg driver profile helper"): click **Yes**. The uninstaller puts the setting back. To leave the driver profile alone, run `install.bat -KeepSmoothMotion` instead; the README's section "NVIDIA Smooth Motion" explains it. If the game is not in a folder named `assettocorsa` (every Steam install is), the driver may give `acs.exe` another game's profile; the installer then leaves it alone, and its warning says what to do by hand.
    - Wait until the window says it is done, then press **Enter**.
    - Done. You can now delete the unpacked folder and the zip. Everything the mod needs, its uninstaller too, is in the game folder.
 5. **Turn on DLSS before you start the game.** Frame generation needs it.

@@ -12,7 +12,9 @@
 // what off would do. off clears the DX11 bit of "Smooth Motion - Enabled
 // APIs" in that profile (PlanSmoothMotionOff) and writes the record of the
 // change into --json: before, written and the profile; the installer keeps
-// it in its manifest. restore reads such a record and puts the old state
+// it in its manifest. A profile that NVIDIA ships for another game
+// (IsForeignPredefinedProfile) is left alone: status and off then exit
+// with kDrsExitForeignProfile and say how to change it by hand. restore reads such a record and puts the old state
 // back (PlanRestore), only while the profile still holds the value written.
 // Every change is read back from a fresh load of the driver settings.
 // --exe defaults to the acs.exe one folder above the helper's own (it is
@@ -36,6 +38,10 @@ constexpr int kDrsExitNeedsAdmin = 4;  // saving needs administrator rights; not
 constexpr int kDrsExitFailed = 5;      // the change failed, or the driver settings read back differently
 constexpr int kDrsExitChanged = 6;     // restore: changed since it was written; left as it is
 constexpr int kDrsExitFile = 7;        // --json could not be written, or (restore) read as a record
+// status and off: the profile that holds acs.exe is another game's
+// predefined one (IsForeignPredefinedProfile) and DX11 is among its APIs;
+// off leaves it alone, nothing was changed.
+constexpr int kDrsExitForeignProfile = 8;
 
 enum class DrsCommand { Status, Off, Restore };
 

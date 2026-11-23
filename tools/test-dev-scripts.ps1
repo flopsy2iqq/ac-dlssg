@@ -3594,7 +3594,8 @@ $fakeDrsScript = @'
 # A stand-in for ac-dlssg-drs.exe (tools\test-dev-scripts.ps1): the driver
 # settings are state.json next to it (profile: the profile that holds
 # acs.exe, empty for none; app and global: their values of 0xB0CC0875, null
-# for not set; saveFails: admin, error or empty; noDriver), and each call is
+# for not set; saveFails: admin, error or empty; noDriver; foreign: the
+# profile is another game's predefined one), and each call is
 # a line of calls.txt. Its JSON results and exit codes are those of
 # src/drs_tool.h.
 $ErrorActionPreference = 'Stop'
@@ -3640,15 +3641,23 @@ $source = 'default'
 if ($null -ne $state.app) { $effective = [long]$state.app; $source = 'app' } elseif ($null -ne $state.global) { $effective = [long]$state.global; $source = 'global' }
 $write = ($effective -band 2) -ne 0
 $value = $effective -band (-bnot [long]2)
-$json = [ordered]@{ tool = 'ac-dlssg-drs fake'; command = $cmd; result = 'read'; exitCode = 0; exe = $opt['--exe']; profile = [string]$state.profile; settingId = '0xB0CC0875' }
+$json = [ordered]@{ tool = 'ac-dlssg-drs fake'; command = $cmd; result = 'read'; exitCode = 0; exe = $opt['--exe']; profile = [string]$state.profile;
+    profilePredefined = [bool]$state.foreign; settingId = '0xB0CC0875' }
 $json[$(if ($cmd -eq 'off') { 'before' } else { 'app' })] = Val $state.app
 $json.global = Val $state.global
 $json.effective = $effective
 $json.source = $source
 $json.plan = [ordered]@{ action = $(if ($write) { 'write' } else { 'none' }); value = $(if ($write) { $value } else { $null }) }
+if ($cmd -eq 'off') { $json.written = $null; $json.after = $null }
+if ($write -and $state.foreign) {
+    $json.result = 'foreign-profile'
+    $json.exitCode = 8
+    $lines.Add("not changed: the driver gives acs.exe NVIDIA's predefined profile `"$($state.profile)`", which belongs to another game. " +
+        "NVIDIA's own `"Assetto Corsa`" profile only matches an acs.exe in a folder named assettocorsa. To turn Smooth Motion off by hand: " +
+        "in NVIDIA Profile Inspector, open the profile `"$($state.profile)`", set `"Smooth Motion - Enabled APIs`" to $value")
+    Done 8 $json
+}
 if ($cmd -eq 'status') { Done 0 $json }
-$json.written = $null
-$json.after = $null
 if (-not $write) { $json.result = 'unchanged'; $lines.Add('nothing to change'); Done 0 $json }
 if ($state.saveFails) {
     $code = if ($state.saveFails -eq 'admin') { 4 } else { 5 }
@@ -3668,12 +3677,13 @@ Done 0 $json
 
 # A stand-in helper of its own for one case, with its driver settings.
 function New-FakeDrs([string]$Name, $App = $null, $GlobalApis = $null, [string]$Profile = 'Assetto Corsa', [string]$SaveFails = '',
-    [switch]$NoDriver) {
+    [switch]$NoDriver, [switch]$Foreign) {
     $dir = Join-Path $FakeRoot "drs\$Name"
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $path = Join-Path $dir 'ac-dlssg-drs.ps1'
     Write-Text $path $fakeDrsScript
-    Set-FakeDrsState $path ([ordered]@{ profile = $Profile; app = $App; global = $GlobalApis; saveFails = $SaveFails; noDriver = [bool]$NoDriver })
+    Set-FakeDrsState $path ([ordered]@{ profile = $Profile; app = $App; global = $GlobalApis; saveFails = $SaveFails; noDriver = [bool]$NoDriver;
+        foreign = [bool]$Foreign })
     return $path
 }
 function Get-FakeDrsState([string]$Fake) { return Read-Manifest (Join-Path (Split-Path -Parent $Fake) 'state.json') }
@@ -3898,6 +3908,27 @@ Invoke-Case 'DR10: an upgrade of a schema 6 install becomes schema 7 and gets th
     Check ($r.Code -eq 0 -and $m.schema -eq 7 -and (Get-ManifestDriverProfile $m)) 'the manifest becomes schema 7 with the record'
     $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
     Check ($r.Code -eq 0 -and $null -eq (Get-FakeDrsState $fake).app) 'and the uninstall restores it'
+}
+
+# Review finding A-1: an acs.exe outside a folder named assettocorsa gets
+# NVIDIA's predefined "ACS" profile of another game, which the helper leaves
+# alone (exit 8).
+Invoke-Case 'DR11: another game''s predefined profile holds acs.exe: a warning with the steps by hand, no prompt, nothing recorded' {
+    $pkg = New-PackageCopy 'DR11'
+    $game = New-FakeGame 'DR11' -NoDxgi
+    $fake = New-FakeDrs 'DR11' -Profile 'ACS' -Foreign
+    $r = Invoke-PackageInstall $pkg $game ((Get-DrsArgs '10DE:2684' $fake) + '-DrsDeclineUac')
+    Check ($r.Code -eq 0) 'install.ps1 exits 0'
+    Check ($r.Text -match 'WARNING: NVIDIA Smooth Motion was not turned off: another game''s predefined NVIDIA driver profile holds') 'it warns that another game''s profile holds acs.exe'
+    Check ($r.Text -match 'NVIDIA''s predefined profile "ACS"' -and $r.Text -match 'folder named assettocorsa' -and $r.Text -match 'NVIDIA Profile Inspector') 'and shows the helper''s reason and the steps by hand'
+    Check ($r.Text -notmatch 'Windows now asks for administrator rights' -and $r.Text -notmatch 'declined') 'Windows is not asked'
+    Check ((Get-FakeDrsCalls $fake) -eq 'status' -and -not (Get-DrsRecord $game)) 'the helper only read, nothing recorded'
+    Check ((Test-SlMatches $game $slReal) -and (Test-ToolsInstalled $game)) 'everything else is installed'
+    # A profile the user made, of any name, is changed as usual.
+    $game = New-FakeGame 'DR11-user' -NoDxgi
+    $fake = New-FakeDrs 'DR11-user' -Profile 'ACS'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    Check ($r.Code -eq 0 -and (Get-FakeDrsState $fake).app -eq 5 -and (Get-DrsRecord $game).profile -eq 'ACS') 'a user-made "ACS" profile is changed and recorded'
 }
 
 # ---------------------------------------------------------------------------

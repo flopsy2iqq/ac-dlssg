@@ -50,4 +50,18 @@ std::string SmoothMotionApisText(uint32_t mask) {
     return text.empty() ? "none" : text;
 }
 
+bool IsForeignPredefinedProfile(const std::wstring& name, bool predefined) {
+    if (!predefined) return false;
+    const std::wstring ours = kNvidiaAcProfileName;
+    if (name.size() != ours.size()) return true;
+    for (size_t i = 0; i < name.size(); ++i) {
+        wchar_t a = name[i];
+        wchar_t b = ours[i];
+        if (a >= L'a' && a <= L'z') a = static_cast<wchar_t>(a - L'a' + L'A');
+        if (b >= L'a' && b <= L'z') b = static_cast<wchar_t>(b - L'a' + L'A');
+        if (a != b) return true;
+    }
+    return false;
+}
+
 }  // namespace acdb

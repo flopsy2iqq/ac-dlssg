@@ -168,8 +168,9 @@ private:
                 return DrsStatus::NoDriver;
             }
         }
-        out->name = nvdrs::ProfileName(api_, session_, profile);
-        if (out->name.empty()) out->name = profileName;
+        const nvdrs::ProfileInfo info = nvdrs::ReadProfileInfo(api_, session_, profile);
+        out->name = info.name.empty() ? profileName : info.name;
+        out->predefined = info.predefined;
         NvDRSProfileHandle base = nullptr;
         status = api_.GetBaseProfile(session_, &base);
         if (status != NVAPI_OK) {

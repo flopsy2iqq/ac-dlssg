@@ -186,7 +186,7 @@ bool ReadWithSession(const Nvapi& api, const std::wstring& exePath, DriverProfil
             NvDRSProfileHandle appProfile = nullptr;
             if (!nvdrs::FindAppProfile(api, session, exePath, &appProfile, error)) break;
             if (appProfile) {
-                r->app_profile = nvdrs::ProfileName(api, session, appProfile);
+                r->app_profile = nvdrs::ReadProfileInfo(api, session, appProfile).name;
                 if (!ReadSetting(api, session, appProfile, kDrsNgxDlssgMode, Scope::OwnValueOnly, &r->dlssg_mode_app,
                                  error) ||
                     !ReadSetting(api, session, appProfile, kDrsSlDlssOverride, Scope::OwnValueOnly, &r->sl_override_app,

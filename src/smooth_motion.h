@@ -83,4 +83,17 @@ RestorePlan PlanRestore(const SmoothMotionRecord& record, const ProfileValue& cu
 // bits as ", other bits 0x%08X".
 std::string SmoothMotionApisText(uint32_t mask);
 
+// NVIDIA's own profile for the game. It matches only an acs.exe in a folder
+// named assettocorsa ("assettocorsa/acs.exe"), as in every Steam install.
+constexpr wchar_t kNvidiaAcProfileName[] = L"Assetto Corsa";
+
+// Pure (review finding A-1): the profile that holds acs.exe is one that
+// NVIDIA's driver ships (NVDRS_PROFILE.isPredefined) for another game, that
+// is, a predefined profile not named kNvidiaAcProfileName (ignoring case).
+// One such, "ACS", holds a bare acs.exe and so gets every acs.exe that is
+// not in a folder named assettocorsa. A change there would apply to that
+// game too, so the helper leaves it alone. A profile a user made, whatever
+// its name, is never foreign.
+bool IsForeignPredefinedProfile(const std::wstring& name, bool predefined);
+
 }  // namespace acdb

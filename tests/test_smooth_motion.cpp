@@ -139,3 +139,19 @@ TEST(SmoothMotionApisText_NamesTheApis) {
     CHECK_EQ(SmoothMotionApisText(0), std::string("none"));
     CHECK_EQ(SmoothMotionApisText(0xFFFFFFFDu), std::string("DX12, Vulkan, other bits 0xFFFFFFF8"));
 }
+
+// ---------------------------------------------------------------- profile
+
+// Review finding A-1: NVIDIA ships a predefined profile "ACS" of another game
+// that holds a bare acs.exe; it takes an acs.exe that is not in a folder
+// named assettocorsa, which NVIDIA's "Assetto Corsa" profile needs. Only a
+// predefined profile of another name is foreign: NVIDIA's own "Assetto
+// Corsa" profile and every profile a user made are not.
+TEST(SmoothMotionProfile_OnlyAnotherGamesPredefinedProfileIsForeign) {
+    CHECK(IsForeignPredefinedProfile(L"ACS", true));
+    CHECK(!IsForeignPredefinedProfile(L"ACS", false));
+    CHECK(!IsForeignPredefinedProfile(L"Assetto Corsa", true));
+    CHECK(!IsForeignPredefinedProfile(L"assetto corsa", true));
+    CHECK(!IsForeignPredefinedProfile(L"Assetto Corsa", false));
+    CHECK(!IsForeignPredefinedProfile(L"My AC", false));
+}

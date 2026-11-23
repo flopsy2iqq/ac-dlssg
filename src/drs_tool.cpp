@@ -102,6 +102,7 @@ std::string ReportJson(const Report& r) {
     add("exitCode", std::to_string(r.exitCode));
     add("exe", JsonQuote(Utf8(r.exe)));
     add("profile", r.haveProfile ? JsonQuote(Utf8(r.profile.name)) : std::string("null"));
+    add("profilePredefined", r.haveProfile ? (r.profile.predefined ? "true" : "false") : std::string("null"));
     add("settingId", JsonQuote(Hex(kDrsSmoothMotionApis)));
     add(off ? "before" : "app", ValueJson(r.profile.apis));
     add("global", ValueJson(r.profile.globalApis));
@@ -122,7 +123,8 @@ std::string ReportJson(const Report& r) {
 
 // The lines that describe a profile's two settings.
 void PrintProfile(Out& out, const SmoothMotionProfile& p) {
-    out.Line("driver profile: " + Quoted(p.name));
+    out.Line("driver profile: " + Quoted(p.name) +
+             (p.predefined ? " (predefined by NVIDIA)" : " (user-defined)"));
     const SmoothMotionOffPlan plan = PlanSmoothMotionOff(p.apis, p.globalApis);
     std::string effective = std::to_string(plan.effective) + " (" + SmoothMotionApisText(plan.effective) + ")";
     if (std::string(plan.source) == "default") effective += ", the driver's default";
@@ -131,6 +133,18 @@ void PrintProfile(Out& out, const SmoothMotionProfile& p) {
              "; in the global profile: " + ApisText(p.globalApis) + "; in effect: " + effective);
     out.Line(Hex(kDrsSmoothMotionEnable) + " Smooth Motion - Enable: in the profile: " + EnableText(p.enable) +
              "; in the global profile: " + EnableText(p.globalEnable));
+}
+
+// Review finding A-1: why off leaves another game's predefined profile
+// alone, and the one manual route.
+std::string ForeignProfileText(const std::wstring& name, uint32_t value) {
+    return "the driver gives acs.exe NVIDIA's predefined profile " + Quoted(name) +
+           ", which belongs to another game. NVIDIA's own " + Quoted(kNvidiaAcProfileName) +
+           " profile only matches an acs.exe in a folder named assettocorsa, as in every Steam install. To turn "
+           "Smooth Motion off by hand: in NVIDIA Profile Inspector, open the profile " + Quoted(name) +
+           ", set \"Smooth Motion - Enabled APIs\" (" + Hex(kDrsSmoothMotionApis) + ") to " + std::to_string(value) +
+           " (" + SmoothMotionApisText(value) + ") and click Apply changes; this applies to the other game of that "
+           "profile too";
 }
 
 std::string ReadFailure(DrsStatus st, const std::wstring& what, const std::string& error, Report* r) {
@@ -183,6 +197,15 @@ int RunStatusOrOff(const DrsArgs& args, DriverSettingsStore& store, const DrsIo&
         return Finish(args, io, out, r);
     }
     const std::string newValue = std::to_string(r.plan.value) + " (" + SmoothMotionApisText(r.plan.value) + ")";
+    if (IsForeignPredefinedProfile(r.profile.name, r.profile.predefined)) {
+        r.result = "foreign-profile";
+        r.exitCode = kDrsExitForeignProfile;
+        r.message = (off ? std::string("not changed: ")
+                         : std::string("Smooth Motion may take over Assetto Corsa (DX11 is among its APIs), and "
+                                       "smooth-motion off would not change it: ")) +
+                    ForeignProfileText(r.profile.name, r.plan.value);
+        return Finish(args, io, out, r);
+    }
     if (!off) {
         r.result = "read";
         r.message = "Smooth Motion may take over Assetto Corsa (DX11 is among its APIs): smooth-motion off would write " +
@@ -431,7 +454,7 @@ std::string DrsUsageText() {
            "exit codes: 0 done or nothing to change, 1 bad command line, 2 the driver settings could not be\r\n"
            "read, 3 no driver profile holds acs.exe, 4 administrator rights needed, 5 the change failed or\r\n"
            "reads back differently, 6 restore: changed since, left as it is, 7 --json could not be written\r\n"
-           "or read as a record";
+           "or read as a record, 8 another game's predefined driver profile holds acs.exe: not changed";
 }
 
 int RunDrs(const DrsArgs& args, DriverSettingsStore& store, const DrsIo& io) {

@@ -1252,7 +1252,8 @@ function Invoke-ElevatedScript([string]$Script, [string[]]$Arguments, [switch]$W
 
 $script:AcdbSmoothMotionSettingId = '0xB0CC0875'
 # The helper's exit codes (src/drs_tool.h).
-$script:AcdbDrsExit = @{ Ok = 0; Usage = 1; NoDriver = 2; NoProfile = 3; NeedsAdmin = 4; Failed = 5; Changed = 6; File = 7 }
+$script:AcdbDrsExit = @{ Ok = 0; Usage = 1; NoDriver = 2; NoProfile = 3; NeedsAdmin = 4; Failed = 5; Changed = 6; File = 7;
+    ForeignProfile = 8 }
 
 # True when one of the adapters is an RTX 40 or RTX 50 (Ada or Blackwell),
 # the GPUs Smooth Motion runs on.
@@ -1346,6 +1347,9 @@ function Get-DrsExitText([int]$Code, [string]$Exe) {
     if ($Code -eq $script:AcdbDrsExit.Failed) { return 'the driver settings could not be changed, or they read back differently' }
     if ($Code -eq $script:AcdbDrsExit.Changed) { return 'the setting was changed since the install' }
     if ($Code -eq $script:AcdbDrsExit.File) { return 'the helper could not write or read its record' }
+    if ($Code -eq $script:AcdbDrsExit.ForeignProfile) {
+        return "another game's predefined NVIDIA driver profile holds $Exe, and ac-dlssg leaves that profile alone"
+    }
     return "the driver-profile helper ended with exit code $Code"
 }
 

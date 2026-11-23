@@ -88,11 +88,14 @@ bool FindAppProfile(const Api& api, NvDRSSessionHandle session, const std::wstri
     return false;
 }
 
-std::wstring ProfileName(const Api& api, NvDRSSessionHandle session, NvDRSProfileHandle profile) {
+ProfileInfo ReadProfileInfo(const Api& api, NvDRSSessionHandle session, NvDRSProfileHandle profile) {
     auto info = std::make_unique<NVDRS_PROFILE>();
     info->version = NVDRS_PROFILE_VER;
     if (api.GetProfileInfo(session, profile, info.get()) != NVAPI_OK) return {};
-    return FromUnicodeString(info->profileName);
+    ProfileInfo out;
+    out.name = FromUnicodeString(info->profileName);
+    out.predefined = info->isPredefined != 0;
+    return out;
 }
 
 }  // namespace acdb::nvdrs

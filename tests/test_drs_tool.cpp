@@ -141,7 +141,21 @@ std::string Num(const JsonValue& v, const char* key) {
     return JsonUint32(*m, &n) ? std::to_string(n) : std::string("<bad>");
 }
 
+std::string Flag(const JsonValue& v, const char* key) {
+    const JsonValue* m = v.Find(key);
+    if (!m) return "<none>";
+    if (m->type != JsonValue::Type::Bool) return "<bad>";
+    return m->boolean ? "true" : "false";
+}
+
 const std::vector<std::string> kReadOnly = {"read"};
+
+// NVIDIA's predefined profile of another game that holds a bare acs.exe
+// (review finding A-1).
+void MakeForeign(FakeStore& store) {
+    store.profile.name = L"ACS";
+    store.profile.predefined = true;
+}
 
 }  // namespace
 
@@ -193,6 +207,7 @@ TEST(DrsMain_ABadCommandLineChangesNothingAndShowsTheUsage) {
     CHECK(store.calls.empty());
     CHECK(memory.Says("smooth-motion status") && memory.Says("smooth-motion off") && memory.Says("smooth-motion restore"));
     CHECK(DrsUsageText().find("exit code") != std::string::npos);
+    CHECK(DrsUsageText().find("8 another game's predefined driver profile holds acs.exe") != std::string::npos);
 }
 
 // ---------------------------------------------------------------- status
@@ -340,6 +355,77 @@ TEST(DrsOff_NoProfileChangesNothing) {
     CHECK_EQ(Run({L"smooth-motion", L"off", L"--json", L"r.json"}, store, memory), kDrsExitNoProfile);
     CHECK(store.calls == kReadOnly);
     CHECK_EQ(Str(memory.Json(L"r.json"), "result"), std::string("no-profile"));
+}
+
+// ---------------------------------------------------------------- another game's profile
+
+// Review finding A-1: an acs.exe that is not in a folder named assettocorsa
+// gets NVIDIA's predefined "ACS" profile of another game. off changes
+// nothing there, since the change would apply to that game too, and says
+// which profile it is, why, and how to do it by hand.
+TEST(DrsOff_LeavesAnotherGamesPredefinedProfileAlone) {
+    FakeStore store;
+    MakeForeign(store);
+    Memory memory;
+    CHECK_EQ(Run({L"smooth-motion", L"off", L"--json", L"r.json"}, store, memory), kDrsExitForeignProfile);
+    CHECK(store.calls == kReadOnly);
+    CHECK(memory.Says("NVIDIA's predefined profile \"ACS\""));
+    CHECK(memory.Says("only matches an acs.exe in a folder named assettocorsa"));
+    CHECK(memory.Says("NVIDIA Profile Inspector"));
+    CHECK(memory.Says("to 5 (DX12, Vulkan)"));
+    CHECK(memory.Says("the other game"));
+    const JsonValue j = memory.Json(L"r.json");
+    CHECK_EQ(Str(j, "result"), std::string("foreign-profile"));
+    CHECK_EQ(Num(j, "exitCode"), std::string("8"));
+    CHECK_EQ(Str(j, "profile"), std::string("ACS"));
+    CHECK_EQ(Flag(j, "profilePredefined"), std::string("true"));
+    CHECK_EQ(Num(j, "written"), std::string("null"));
+}
+
+TEST(DrsStatus_SaysThatOffLeavesAnotherGamesPredefinedProfileAlone) {
+    FakeStore store;
+    MakeForeign(store);
+    Memory memory;
+    CHECK_EQ(Run({L"smooth-motion", L"status", L"--json", L"s.json"}, store, memory), kDrsExitForeignProfile);
+    CHECK(store.calls == kReadOnly);
+    CHECK(memory.Says("NVIDIA's predefined profile \"ACS\""));
+    const JsonValue j = memory.Json(L"s.json");
+    CHECK_EQ(Str(j, "result"), std::string("foreign-profile"));
+    CHECK_EQ(Num(j, "exitCode"), std::string("8"));
+    REQUIRE(j.Find("plan") != nullptr);
+    CHECK_EQ(Str(*j.Find("plan"), "action"), std::string("write"));
+}
+
+// Without DX11 in effect there is nothing to change, in any profile.
+TEST(DrsOff_AnotherGamesProfileWithoutDx11IsNothingToChange) {
+    FakeStore store;
+    MakeForeign(store);
+    store.profile.apis = Own(5);
+    Memory memory;
+    CHECK_EQ(Run({L"smooth-motion", L"off", L"--json", L"r.json"}, store, memory), kDrsExitOk);
+    CHECK(store.calls == kReadOnly);
+    CHECK(memory.Says("nothing to change"));
+}
+
+// NVIDIA's own "Assetto Corsa" profile is predefined too, and a profile the
+// user made may have any name: off writes into both.
+TEST(DrsOff_WritesIntoNvidiasAcProfileAndIntoProfilesTheUserMade) {
+    {
+        FakeStore store;
+        store.profile.predefined = true;
+        Memory memory;
+        CHECK_EQ(Run({L"smooth-motion", L"off", L"--json", L"r.json"}, store, memory), kDrsExitOk);
+        CHECK(store.profile.apis == Own(5));
+        CHECK_EQ(Flag(memory.Json(L"r.json"), "profilePredefined"), std::string("true"));
+    }
+    {
+        FakeStore store;
+        store.profile.name = L"ACS";
+        Memory memory;
+        CHECK_EQ(Run({L"smooth-motion", L"off", L"--json", L"r.json"}, store, memory), kDrsExitOk);
+        CHECK(store.profile.apis == Own(5));
+        CHECK_EQ(Flag(memory.Json(L"r.json"), "profilePredefined"), std::string("false"));
+    }
 }
 
 // ---------------------------------------------------------------- restore
