@@ -3738,6 +3738,17 @@ Invoke-Case 'DR0: the helper as a tool, the package guard, the RTX 40/50 test an
     Check ($byHand -match 'NVIDIA Profile Inspector' -and $byHand -match '"Assetto Corsa"' -and $byHand -match '0xB0CC0875' -and $byHand -match 'Delete user-defined value') "the steps by hand for a setting the install created ($byHand)"
     $byHand = Get-SmoothMotionManualRestore ([pscustomobject]@{ profile = 'Assetto Corsa'; before = [pscustomobject]@{ present = $true; value = 7 } })
     Check ($byHand -match 'set it back to 7') "and for one it changed ($byHand)"
+    # Review finding A-4: a declined prompt as [Diagnostics.Process]::Start
+    # throws it in Windows PowerShell 5.1, which DR3 and DR8 get the same way.
+    $declined = $null
+    try { [void](Start-DrsElevatedProcess (Join-Path $FakeRoot 'no-such-helper.exe') '' -DeclineUac) } catch { $declined = $_ }
+    Check ($declined -and $declined.Exception -is [System.Management.Automation.MethodInvocationException] -and
+        $declined.Exception.InnerException -is [System.ComponentModel.Win32Exception] -and
+        $declined.Exception.InnerException.NativeErrorCode -eq 1223) "a declined prompt is a MethodInvocationException around Windows error 1223 ($(if ($declined) { $declined.Exception.GetType().FullName }))"
+    Check ($declined -and (Get-DrsStartFailure $declined) -eq 'the Windows prompt for administrator rights was declined') 'Get-DrsStartFailure names a declined prompt'
+    $other = $null
+    try { throw (New-Object System.InvalidOperationException 'This command cannot be run due to the error: The operation was canceled by the user.') } catch { $other = $_ }
+    Check ((Get-DrsStartFailure $other) -match '^the helper could not run \(This command cannot be run') 'an error without Windows error 1223 is named as it is'
     $out = Join-Path $FakeRoot 'package-badhelper'
     $eap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'

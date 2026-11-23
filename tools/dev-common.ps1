@@ -1279,27 +1279,28 @@ function Read-DrsJson([string]$Path) {
 # goes to the log, which the caller shows (an elevated run has its own
 # window). -Elevate: the command changes the driver settings, which needs
 # administrator rights: when this PowerShell has none, Windows asks for them
-# (UAC); a declined prompt throws, and with -NoElevate it is not asked and
-# this throws as well. A .ps1 helper is a stand-in for the tests
-# (test-dev-scripts.ps1): it runs in this console with Windows PowerShell,
-# never elevated. -DeclineUac, for tests only: throws as a declined prompt
-# does (Windows error 1223), without asking.
+# (UAC); a declined prompt throws (Start-DrsElevatedProcess), and with
+# -NoElevate it is not asked and this throws as well. A .ps1 helper is a
+# stand-in for the tests (test-dev-scripts.ps1): it runs in this console
+# with Windows PowerShell, never elevated. -DeclineUac, for tests only:
+# throws as a declined prompt does, without asking.
 function Invoke-DrsHelper([string]$Helper, [string[]]$Arguments, [string]$WorkDir, [switch]$Elevate, [switch]$NoElevate,
     [switch]$DeclineUac) {
     $log = Join-Path $WorkDir ('drs-{0}.log' -f [guid]::NewGuid().ToString('N').Substring(0, 8))
     $all = @($Arguments) + @('--log', $log)
     if ($Helper -like '*.ps1') {
-        if ($Elevate -and $DeclineUac) { throw (New-Object System.ComponentModel.Win32Exception 1223) }
+        if ($Elevate -and $DeclineUac) { [void](Start-DrsElevatedProcess $Helper '' -DeclineUac) }
         & (Join-Path $PSHOME 'powershell.exe') -NoProfile -ExecutionPolicy Bypass -File $Helper @all | Out-Null
         $code = $LASTEXITCODE
     } elseif (-not $Elevate -or (Test-IsAdministrator)) {
         & $Helper @all | Out-Null
         $code = $LASTEXITCODE
     } else {
-        if ($DeclineUac) { throw (New-Object System.ComponentModel.Win32Exception 1223) }
-        if ($NoElevate) { throw 'it needs administrator rights, and -NoElevate keeps Windows from being asked for them' }
+        if ($NoElevate -and -not $DeclineUac) {
+            throw 'it needs administrator rights, and -NoElevate keeps Windows from being asked for them'
+        }
         $text = (@($all | ForEach-Object { ConvertTo-CommandLineArg $_ })) -join ' '
-        $process = Start-Process -FilePath $Helper -ArgumentList $text -Verb RunAs -WindowStyle Hidden -PassThru
+        $process = Start-DrsElevatedProcess $Helper $text -DeclineUac:$DeclineUac
         # Opened now, so that the exit code is still there after the wait.
         [void]$process.Handle
         $process.WaitForExit()
@@ -1310,6 +1311,27 @@ function Invoke-DrsHelper([string]$Helper, [string[]]$Arguments, [string]$WorkDi
         $lines = @([IO.File]::ReadAllLines($log, $script:Utf8NoBom) | Where-Object { $_ })
     }
     return [pscustomobject]@{ Code = $code; Log = $lines }
+}
+
+# Starts $FileName with $Arguments (command-line text) elevated, hidden:
+# Windows shows its UAC prompt. [Diagnostics.Process]::Start, because
+# Start-Process -Verb RunAs in Windows PowerShell 5.1 throws an
+# InvalidOperationException without the Windows error for a declined prompt
+# (review finding A-4); this throws a MethodInvocationException around the
+# Win32Exception with NativeErrorCode 1223 (ERROR_CANCELLED), which
+# Get-DrsStartFailure finds. -DeclineUac, for tests only: throws that same
+# exception through a .NET call, without asking Windows.
+function Start-DrsElevatedProcess([string]$FileName, [string]$Arguments, [switch]$DeclineUac) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FileName
+    $psi.Arguments = $Arguments
+    $psi.Verb = 'runas'
+    $psi.UseShellExecute = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    if ($DeclineUac) {
+        [System.Runtime.ExceptionServices.ExceptionDispatchInfo]::Capture((New-Object System.ComponentModel.Win32Exception 1223)).Throw()
+    }
+    return [System.Diagnostics.Process]::Start($psi)
 }
 
 # Why the helper could not start: a declined Windows prompt, or the error.
