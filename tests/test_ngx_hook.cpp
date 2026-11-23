@@ -683,6 +683,43 @@ TEST(NgxHook_SkipsAliasedModule) {
     FreeLibrary(alias);
 }
 
+// Another mod's hook on CSP's NGX entry point (dlss5-bridge 1.4.12's 14-byte
+// FF 25 jump, as here, or MinHook's E9): the module is not hooked, and the
+// other hook's bytes stay as they are, so that it keeps working.
+TEST(NgxHook_LeavesAModuleWithAnotherModsHookAlone) {
+    REQUIRE(GetModuleHandleW(L"fake_nvngx.dll") == nullptr);  // not resident from a prior test
+    HMODULE fake = LoadFake();
+    REQUIRE(fake != nullptr);
+    auto* fn = reinterpret_cast<uint8_t*>(Create(fake));
+    REQUIRE(fn != nullptr);
+    // The other mod's detour: a ret in memory of no module.
+    auto* detour = static_cast<uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    REQUIRE(detour != nullptr);
+    detour[0] = 0xC3;
+    uint8_t saved[14];
+    std::memcpy(saved, fn, sizeof(saved));
+    uint8_t jump[14] = {0xFF, 0x25, 0, 0, 0, 0};
+    const uint64_t dest = reinterpret_cast<uint64_t>(detour);
+    std::memcpy(jump + 6, &dest, sizeof(dest));
+    DWORD old = 0;
+    REQUIRE(VirtualProtect(fn, sizeof(jump), PAGE_EXECUTE_READWRITE, &old));
+    std::memcpy(fn, jump, sizeof(jump));
+
+    NgxHook::Get().Uninstall();
+    RecSink sink;
+    std::string err;
+    CHECK(NgxHook::Get().Install(&sink, &err));
+    CHECK_EQ(NgxHook::Get().HookedModules(), 0u);
+    CHECK(std::memcmp(fn, jump, sizeof(jump)) == 0);
+    NgxHook::Get().Uninstall();
+
+    std::memcpy(fn, saved, sizeof(saved));
+    VirtualProtect(fn, sizeof(jump), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, sizeof(jump));
+    VirtualFree(detour, 0, MEM_RELEASE);
+    FreeLibrary(fake);
+}
+
 // A dispatcher whose slot has no original (never hooked, removed or detached)
 // must not invent a result: NGX's generic failure goes back, never Success
 // with an unwritten *outHandle (ngx review F2).

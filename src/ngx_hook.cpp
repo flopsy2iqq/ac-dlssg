@@ -3,10 +3,12 @@
 #include <d3d11.h>
 #include <intrin.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 #include "diag_util.h"
 #include "inline_hook.h"
@@ -152,6 +154,9 @@ struct HookState {
     std::atomic<NgxEvaluateSink*> sink{nullptr};
     std::atomic<bool> installed{false};
     std::atomic<uint32_t> hooked{0};  // used layers, for HookedModules
+    // Modules left alone for another mod's hook, so that every rescan after
+    // the first says so at DEBUG only. Guarded by scanLock.
+    std::vector<std::wstring> foreignHooked;
 
     // Written by the callback, drained under scanLock.
     LdrEventQueue events;
@@ -546,6 +551,32 @@ bool HookModuleLocked(HMODULE m, bool isHostExe) {
             LOGD("ngx: %ls resolves to code already hooked in %ls; skipped", path.c_str(), other.path.c_str());
             return true;
         }
+    }
+
+    // Another mod's hook on an entry point (MinHook's 5-byte E9 jump, or a
+    // 14-byte FF 25 jump as dlss5-bridge 1.4.12 writes): our patch over it
+    // would break that hook, and the game with it, at CSP's first DLSS call.
+    // The module is left alone; its owner is named in the log.
+    const struct {
+        const char* name;
+        void* fn;
+    } entries[] = {{"NVSDK_NGX_D3D11_CreateFeature", createT},
+                   {"NVSDK_NGX_D3D11_EvaluateFeature", evalT},
+                   {"NVSDK_NGX_D3D11_EvaluateFeature_C", evalCT}};
+    for (const auto& e : entries) {
+        if (!e.fn) continue;
+        // The module that holds the code: a forwarded export lies in another one.
+        const HMODULE owner = ModuleOf(e.fn);
+        const void* dest = nullptr;
+        if (!IsForeignHook(e.fn, owner, owner ? ImageSizeAt(owner) : 0, &dest)) continue;
+        const bool first =
+            std::find(s.foreignHooked.begin(), s.foreignHooked.end(), path) == s.foreignHooked.end();
+        if (first) s.foreignHooked.push_back(path);
+        LogWrite(first ? LogLevel::Warn : LogLevel::Debug,
+                 "ngx: %ls not hooked: %s already jumps to %s, another mod's hook (DLSS 5 Bridge, RenoDX or "
+                 "similar); it is left intact, and ac-dlssg gets no DLSS input through it",
+                 path.c_str(), e.name, ModuleAddressText(dest).c_str());
+        return true;
     }
 
     Layer& L = s.layers[slot];

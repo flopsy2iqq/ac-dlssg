@@ -166,6 +166,34 @@ bool HasModRMOneByte(uint8_t op) {
 
 }  // namespace
 
+const void* LeadingJumpDestination(const void* code) {
+    if (!code) return nullptr;
+    const auto* p = static_cast<const uint8_t*>(code);
+    uint8_t b[6];
+    if (!ReadCodeSafe(p, b, 5)) return nullptr;
+    if (b[0] == 0xE9) {
+        int32_t rel;
+        std::memcpy(&rel, b + 1, sizeof(rel));
+        return p + 5 + rel;
+    }
+    // FF 25: jmp qword ptr [rip+disp32] (ModRM mod 00, reg /4, rm 101).
+    if (b[0] != 0xFF || b[1] != 0x25 || !ReadCodeSafe(p, b, 6)) return nullptr;
+    int32_t disp;
+    std::memcpy(&disp, b + 2, sizeof(disp));
+    uint64_t dest = 0;
+    if (!ReadCodeSafe(p + 6 + disp, reinterpret_cast<uint8_t*>(&dest), sizeof(dest))) return nullptr;
+    return reinterpret_cast<const void*>(dest);
+}
+
+bool IsForeignHook(const void* code, const void* moduleBase, size_t moduleSize, const void** destination) {
+    const void* dest = LeadingJumpDestination(code);
+    if (destination) *destination = dest;
+    if (!dest) return false;
+    const auto d = reinterpret_cast<uintptr_t>(dest);
+    const auto base = reinterpret_cast<uintptr_t>(moduleBase);
+    return d < base || d - base >= moduleSize;
+}
+
 DecodedInsn DecodeInsn(const uint8_t* p, size_t avail) {
     DecodedInsn d;
     if (avail == 0) return d;

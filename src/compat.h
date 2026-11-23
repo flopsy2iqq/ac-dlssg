@@ -25,7 +25,8 @@ struct CompatInputs {
     // FactoryHook replaces it with the render adapter's D3DKMT state and uses
     // the registry value only when D3DKMT cannot answer (EvaluateChainCompat).
     bool hags_on = false;
-    bool dlss5_bridge_loaded = false;   // GetModuleHandleW(L"dlss5-bridge.addon64")
+    bool dlss5_bridge_loaded = false;   // LoadedDlss5BridgeFile() is not empty
+    std::string dlss5_bridge_file;      // ... and which file it is, for the reason
     bool renodx_dlss5_loaded = false;   // GetModuleHandleW(L"renodx-dlss5.addon64")
 };
 
@@ -45,7 +46,9 @@ struct CompatResult {
 //                                      -> "camera mode <MODE> (VR or triple screen) is not supported"
 //  7. allow_stretching != 1 (missing counts as 0) and both video sizes known
 //     and AspectMismatch(...)          -> "video.ini aspect ratio differs from the window; letterboxed output is not supported in v1"
-//  8. dlss5_bridge_loaded              -> "dlss5-bridge.addon64 is loaded"
+//  8. dlss5_bridge_loaded              -> "DLSS 5 Bridge (<dlss5_bridge_file, else dlss5-bridge.addon64>) is loaded:
+//                                         ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 Bridge
+//                                         for frame generation"
 //  9. renodx_dlss5_loaded              -> "renodx-dlss5.addon64 is loaded"
 // 10. !hags_on                         -> "hardware-accelerated GPU scheduling is off"
 CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned swapHeight);
@@ -61,6 +64,11 @@ CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& d
 // value can be absent while HAGS is on for the GPU (hybrid laptops), so it is
 // only the fallback for the per-adapter state (adapter_caps.h).
 bool ReadHagsEnabled();
+
+// The DLSS 5 Bridge ReShade add-on in the process, by its file name:
+// "dlss5-bridge.addon64", or "dlss5-dx11-bridge.addon64" (its name up to
+// 1.1.0, which ReShade still loads); empty when neither is loaded.
+std::string LoadedDlss5BridgeFile();
 
 // "<Documents>\Assetto Corsa". The environment variable ACDLSSG_DOCS_DIR, when
 // set, replaces the whole result (used by the test app).

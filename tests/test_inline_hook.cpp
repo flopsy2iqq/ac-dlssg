@@ -2,6 +2,8 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -252,4 +254,125 @@ TEST(InlineHook_PreTakenPointerReachesDetour) {
     CHECK_EQ(r, Add(4, 5));  // both go through the detour now
     hook.Remove();
     g_addHook = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Another mod's hook on an NGX entry point (GitHub issue 12, Nexus crash
+// reports): MinHook writes a 5-byte E9 jump, dlss5-bridge 1.4.12 a 14-byte
+// FF 25 absolute jump. A patch of ours over either breaks it (MinHook's
+// trampoline returns into our patch; the relocated FF 25 reads our own
+// detour address), so such a prologue is recognised by its jump and left
+// alone. The fake prologues sit in one buffer that plays the module: its
+// first half is the module's range, its second half lies outside it.
+
+namespace {
+
+struct FakeModule {
+    std::vector<uint8_t> mem = std::vector<uint8_t>(0x200, 0xCC);
+    uint8_t* base() { return mem.data(); }
+    size_t size() const { return 0x100; }       // the "module": mem[0, 0x100)
+    uint8_t* inside(size_t at) { return mem.data() + at; }
+    uint8_t* outside() { return mem.data() + 0x180; }  // past the module's end
+};
+
+void PutE9(uint8_t* at, const void* dest) {
+    at[0] = 0xE9;
+    const int32_t rel = static_cast<int32_t>(static_cast<const uint8_t*>(dest) - (at + 5));
+    std::memcpy(at + 1, &rel, sizeof(rel));
+}
+
+// FF 25 disp32: jmp qword ptr [rip + disp32], the pointer at at + 6 + disp32.
+void PutFf25(uint8_t* at, int32_t disp, uint8_t* slot, const void* dest) {
+    at[0] = 0xFF;
+    at[1] = 0x25;
+    std::memcpy(at + 2, &disp, sizeof(disp));
+    const uint64_t d = reinterpret_cast<uint64_t>(dest);
+    std::memcpy(slot, &d, sizeof(d));
+}
+
+}  // namespace
+
+TEST(ForeignHook_AnE9JumpOutOfTheModuleIsAForeignHook) {
+    FakeModule m;
+    uint8_t* fn = m.inside(0x10);
+    PutE9(fn, m.outside());
+    const void* dest = nullptr;
+    CHECK(IsForeignHook(fn, m.base(), m.size(), &dest));
+    CHECK(dest == m.outside());
+    CHECK(LeadingJumpDestination(fn) == m.outside());
+}
+
+TEST(ForeignHook_AnE9JumpInsideTheModuleIsAThunkNotAHook) {
+    FakeModule m;
+    uint8_t* fn = m.inside(0x10);
+    PutE9(fn, m.inside(0x80));
+    const void* dest = nullptr;
+    CHECK(!IsForeignHook(fn, m.base(), m.size(), &dest));
+    CHECK(LeadingJumpDestination(fn) == m.inside(0x80));
+}
+
+TEST(ForeignHook_AnAbsoluteFf25JumpOutOfTheModuleIsAForeignHook) {
+    FakeModule m;
+    // dlss5-bridge 1.4.12's form: FF 25 00000000 <absolute address>.
+    uint8_t* fn = m.inside(0x10);
+    PutFf25(fn, 0, fn + 6, m.outside());
+    const void* dest = nullptr;
+    CHECK(IsForeignHook(fn, m.base(), m.size(), &dest));
+    CHECK(dest == m.outside());
+    // The pointer elsewhere: FF 25 disp32 with the slot 0x40 bytes on.
+    uint8_t* fn2 = m.inside(0x40);
+    PutFf25(fn2, 0x40, fn2 + 6 + 0x40, m.outside() + 8);
+    CHECK(IsForeignHook(fn2, m.base(), m.size(), &dest));
+    CHECK(dest == m.outside() + 8);
+    // Into the module itself: an import thunk, not a hook.
+    PutFf25(fn, 0, fn + 6, m.inside(0xA0));
+    CHECK(!IsForeignHook(fn, m.base(), m.size(), &dest));
+}
+
+TEST(ForeignHook_ARealPrologueOrAnotherInstructionIsNoHook) {
+    for (const Prologue& p : RealPrologues()) {
+        std::vector<uint8_t> code = p.bytes;
+        code.resize(32, 0xCC);
+        const void* dest = reinterpret_cast<const void*>(1);
+        if (IsForeignHook(code.data(), code.data(), code.size(), &dest)) std::printf("  %s taken for a hook\n", p.name);
+        CHECK(!IsForeignHook(code.data(), code.data(), code.size(), &dest));
+        CHECK(LeadingJumpDestination(code.data()) == nullptr);
+    }
+    // FF 15 is an indirect call, FF 24 a jump through a SIB operand, EB a short jump.
+    std::vector<uint8_t> call = {0xFF, 0x15, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8};
+    CHECK(LeadingJumpDestination(call.data()) == nullptr);
+    std::vector<uint8_t> sib = {0xFF, 0x24, 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(LeadingJumpDestination(sib.data()) == nullptr);
+    std::vector<uint8_t> shortJmp = {0xEB, 0x10, 0xCC, 0xCC, 0xCC, 0xCC};
+    CHECK(LeadingJumpDestination(shortJmp.data()) == nullptr);
+    // Unreadable memory is no jump.
+    const void* dest = nullptr;
+    CHECK(LeadingJumpDestination(nullptr) == nullptr);
+    CHECK(!IsForeignHook(nullptr, nullptr, 0, &dest));
+}
+
+// Our own patch over a function of a module is a jump into another module
+// too (the bridge's detour): a second patch over it would chain into itself,
+// so it is refused like any other.
+TEST(ForeignHook_OurOwnPatchCountsAsAJumpOutOfTheModule) {
+    std::vector<uint8_t> code(64, 0x90);
+    code[0] = 0x48;  // a plain prologue to patch: sub rsp, 0x28; then nops
+    code[1] = 0x83;
+    code[2] = 0xEC;
+    code[3] = 0x28;
+    void* exec = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    REQUIRE(exec != nullptr);
+    std::memcpy(exec, code.data(), code.size());
+    {
+        InlineHook hook;
+        std::string err;
+        static uint8_t detour[16] = {0xC3};
+        REQUIRE(hook.Install(exec, detour, &err));
+        const void* dest = nullptr;
+        CHECK(IsForeignHook(exec, exec, 0x1000, &dest));
+        CHECK(dest == detour);
+        hook.Remove();
+        CHECK(!IsForeignHook(exec, exec, 0x1000, &dest));
+    }
+    VirtualFree(exec, 0, MEM_RELEASE);
 }

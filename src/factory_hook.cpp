@@ -262,7 +262,8 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         }
         // Files come from the bootstrap; add-ons may have loaded since.
         CompatInputs ci = bs.compat;
-        ci.dlss5_bridge_loaded = GetModuleHandleW(L"dlss5-bridge.addon64") != nullptr;
+        ci.dlss5_bridge_file = LoadedDlss5BridgeFile();
+        ci.dlss5_bridge_loaded = !ci.dlss5_bridge_file.empty();
         ci.renodx_dlss5_loaded = GetModuleHandleW(L"renodx-dlss5.addon64") != nullptr;
         compat = EvaluateChainCompat(ci, hags, desc.Width, desc.Height);
         in.compat_ok = compat.ok;

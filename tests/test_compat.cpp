@@ -37,7 +37,9 @@ const char* kHdr = "HDR output is not supported";
 const char* kFsr = "CSP upscaler is not DLSS (need [FSR] ACTIVE=1, OLD_IMPLEMENTATION=3)";
 const char* kMsaa = "MSAA (AASAMPLES>1) is not supported";
 const char* kAspect = "video.ini aspect ratio differs from the window; letterboxed output is not supported in v1";
-const char* kDlss5 = "dlss5-bridge.addon64 is loaded";
+const char* kDlss5 =
+    "DLSS 5 Bridge (dlss5-bridge.addon64) is loaded: ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 "
+    "Bridge for frame generation";
 const char* kRenodx = "renodx-dlss5.addon64 is loaded";
 const char* kHags = "hardware-accelerated GPU scheduling is off";
 
@@ -266,6 +268,38 @@ TEST(Compat_ReadInputsOverrideOnlyAndEmptyTree) {
     CompatInputs in = ReadCompatInputs(game, docs);
     CHECK(in.allow_stretching == std::optional<long long>(1));
     CHECK(!in.old_swapchain.has_value());  // non-numeric reads as missing
+}
+
+// DLSS 5 Bridge replaces CSP's DLSS call and hooks the same NGX functions,
+// so the two cannot run together yet (GitHub issue 12). The panel says so
+// and names the file that was found; its old name, dlss5-dx11-bridge.addon64
+// (1.1.0 and earlier), counts too, because ReShade still loads it.
+TEST(Compat_Dlss5BridgeReasonSaysTheyCannotRunTogether) {
+    auto in = GoodInputs();
+    in.dlss5_bridge_loaded = true;
+    in.dlss5_bridge_file = "dlss5-dx11-bridge.addon64";
+    CHECK_EQ(Reason(in), "DLSS 5 Bridge (dlss5-dx11-bridge.addon64) is loaded: ac-dlssg and DLSS 5 Bridge cannot run "
+                         "together yet; remove DLSS 5 Bridge for frame generation");
+    CHECK(Reason(in).size() < 160);
+    in.dlss5_bridge_file.clear();  // no name known: the current one
+    CHECK_EQ(Reason(in), kDlss5);
+}
+
+TEST(Compat_TheOldDlss5BridgeFileNameCountsAsDlss5Bridge) {
+    REQUIRE(GetModuleHandleW(L"dlss5-bridge.addon64") == nullptr);
+    REQUIRE(GetModuleHandleW(L"dlss5-dx11-bridge.addon64") == nullptr);
+    CHECK(LoadedDlss5BridgeFile().empty());
+    TempDir dir(L"compat_dlss5");
+    const std::wstring copy = dir.Str() + L"\\dlss5-dx11-bridge.addon64";
+    REQUIRE(CopyFileW(L"" ACDB_SPOOF_FIXTURE_PATH, copy.c_str(), FALSE));
+    const HMODULE m = LoadLibraryW(copy.c_str());
+    REQUIRE(m != nullptr);
+    CHECK_EQ(LoadedDlss5BridgeFile(), std::string("dlss5-dx11-bridge.addon64"));
+    const CompatInputs in = ReadCompatInputs(dir.Str() + L"\\game", dir.Str() + L"\\docs");
+    CHECK(in.dlss5_bridge_loaded);
+    CHECK_EQ(in.dlss5_bridge_file, std::string("dlss5-dx11-bridge.addon64"));
+    FreeLibrary(m);
+    CHECK(LoadedDlss5BridgeFile().empty());
 }
 
 TEST(Compat_ReadHagsMatchesRegistry) {

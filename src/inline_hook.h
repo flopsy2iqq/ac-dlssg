@@ -34,6 +34,20 @@ DecodedInsn DecodeInsn(const uint8_t* p, size_t avail);
 // branch is allowed here; Install widens it to rel32 when it copies the prologue.
 size_t PrologueLength(const uint8_t* code, size_t need, std::string* why);
 
+// Where a jump at the very start of code leads: E9 rel32 (code + 5 + rel32)
+// or FF 25 disp32 (jmp qword ptr [rip + disp32], the 8-byte pointer at
+// code + 6 + disp32). nullptr when code starts with anything else or its
+// bytes cannot be read (read through SEH).
+const void* LeadingJumpDestination(const void* code);
+
+// True when code starts with such a jump and it leads outside
+// [moduleBase, moduleBase + moduleSize): a hook another mod wrote there
+// (MinHook's 5-byte E9 jump, or a 14-byte FF 25 absolute jump as dlss5-bridge
+// 1.4.12 writes) or our own patch. Patching over it would break that hook,
+// so the caller must leave the function alone. *destination gets where the
+// jump leads (nullptr when there is none).
+bool IsForeignHook(const void* code, const void* moduleBase, size_t moduleSize, const void** destination);
+
 class InlineHook {
 public:
     InlineHook() = default;

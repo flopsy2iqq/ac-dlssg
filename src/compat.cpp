@@ -59,7 +59,11 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
         AspectMismatch(static_cast<double>(*in.video_width), static_cast<double>(*in.video_height), swapWidth,
                        swapHeight))
         return Refuse("video.ini aspect ratio differs from the window; letterboxed output is not supported in v1");
-    if (in.dlss5_bridge_loaded) return Refuse("dlss5-bridge.addon64 is loaded");
+    if (in.dlss5_bridge_loaded)
+        return Refuse("DLSS 5 Bridge (" + (in.dlss5_bridge_file.empty() ? std::string("dlss5-bridge.addon64")
+                                                                          : in.dlss5_bridge_file) +
+                      ") is loaded: ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 Bridge for "
+                      "frame generation");
     if (in.renodx_dlss5_loaded) return Refuse("renodx-dlss5.addon64 is loaded");
     if (!in.hags_on) return Refuse("hardware-accelerated GPU scheduling is off");
     return CompatResult();
@@ -88,9 +92,21 @@ CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& d
         in.camera_mode = video->Get("CAMERA", "MODE");
     }
     in.hags_on = ReadHagsEnabled();
-    in.dlss5_bridge_loaded = GetModuleHandleW(L"dlss5-bridge.addon64") != nullptr;
+    in.dlss5_bridge_file = LoadedDlss5BridgeFile();
+    in.dlss5_bridge_loaded = !in.dlss5_bridge_file.empty();
     in.renodx_dlss5_loaded = GetModuleHandleW(L"renodx-dlss5.addon64") != nullptr;
     return in;
+}
+
+std::string LoadedDlss5BridgeFile() {
+    for (const wchar_t* name : {L"dlss5-bridge.addon64", L"dlss5-dx11-bridge.addon64"}) {
+        if (GetModuleHandleW(name)) {
+            std::string file;
+            for (const wchar_t* c = name; *c; ++c) file.push_back(static_cast<char>(*c));
+            return file;
+        }
+    }
+    return {};
 }
 
 bool ReadHagsEnabled() {
