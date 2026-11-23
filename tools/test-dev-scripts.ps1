@@ -1700,6 +1700,21 @@ function Get-ZipEntryNames([string]$Zip) {
     try { return @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }) } finally { $archive.Dispose() }
 }
 
+# The text of one zip entry (forward slashes), or $null when there is none.
+function Get-ZipEntryText([string]$Zip, [string]$Name) {
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        $entry = @($archive.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq $Name }) | Select-Object -First 1
+        if (-not $entry) { return $null }
+        $reader = New-Object System.IO.StreamReader($entry.Open(), $utf8)
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally {
+        $archive.Dispose()
+    }
+}
+
 # The package is built once, from the fake bridge DLL; PK checks the build,
 # and the SP cases each use their own copy of it (their own deps\ folder).
 $script:testPackage = $null
@@ -3648,6 +3663,43 @@ Invoke-Case 'Q: helpers (Steam library discovery, PE check on real builds)' {
         } else {
             Write-Host "    skip  no $config build of ac-dlssg.dll"
         }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# collect-logs.ps1 writes collect-logs.txt and its zip even when the
+# documents folder is on a drive that no longer exists, or when one of its
+# sections fails; a failed section is named with the script line.
+Invoke-Case 'CL1: collect-logs.ps1 still writes collect-logs.txt and the zip when the documents folder is missing or a section fails' {
+    $game = New-FakeGame 'CL1'
+    Write-Text (Join-Path $game 'ac-dlssg\logs\bridge.log') "fake bridge log`r`n"
+    $letter = Get-FreeDriveLetter
+    $runs = @()
+    if ($letter) {
+        $runs += @{ Docs = "${letter}:\Users\x\Documents\Assetto Corsa"; Out = 'missing-drive'; Expect = 'documents folder not found' }
+    } else {
+        Write-Host '    skip  no free drive letter for a documents folder on a missing drive'
+    }
+    $runs += @{ Docs = 'C:\bad|name\Assetto Corsa'; Out = 'failing-section'; Expect = 'FAILED: documents: ' }
+    foreach ($run in $runs) {
+        $out = Join-Path $FakeRoot "cl1\$($run.Out)"
+        New-Item -ItemType Directory -Force -Path $out | Out-Null
+        $r = Invoke-Tool (Join-Path $tools 'collect-logs.ps1') @('-GameDir', $game, '-AcDocsDir', $run.Docs, '-SkipSysinfo',
+            '-NoPause', '-OutDir', $out)
+        Check ($r.Code -eq 0) "$($run.Out): collect-logs.ps1 exits 0"
+        $zips = @(Get-ChildItem -LiteralPath $out -Filter 'ac-dlssg-logs-*.zip' -File)
+        Check ($zips.Count -eq 1) "$($run.Out): it writes the zip"
+        if ($zips.Count -ne 1) { continue }
+        $names = @(Get-ZipEntryNames $zips[0].FullName)
+        Check ($names -contains 'ac-dlssg/logs/bridge.log' -and $names -contains 'game-files.txt') `
+            "$($run.Out): the zip still has the game folder's files"
+        $text = Get-ZipEntryText $zips[0].FullName 'collect-logs.txt'
+        Check ($null -ne $text -and $text.Contains($run.Expect)) "$($run.Out): collect-logs.txt says '$($run.Expect)'"
+        if ($run.Out -eq 'failing-section') {
+            Check ($text -match 'FAILED: documents: .+ \(collect-logs\.ps1:\d+\)') 'the FAILED line names the script and the line'
+            Check ($r.Text -match 'FAILED: documents: ') 'the console shows the FAILED line too'
+        }
+        Check (@(Get-ChildItem -LiteralPath $out -Directory).Count -eq 0) "$($run.Out): the staging folder is deleted"
     }
 }
 

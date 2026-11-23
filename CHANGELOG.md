@@ -9,6 +9,7 @@ section of a version as its GitHub release notes.
 ### Fixed
 
 - **"Cannot find drive. A drive with the name 'F' does not exist."** (GitHub issue 13). `install.bat` stopped when Steam's `libraryfolders.vdf` still listed a library on a drive that no longer exists. Such a library is now skipped and the search goes on with the next one; when the game is found in none of them, the message names the skipped libraries and why (for example `F:\SteamLibrary (drive F: does not exist)`) and asks for `-GameDir`. The same applies to `uninstall.bat`, `collect-logs.bat` and the system report.
+- `collect-logs.bat` always writes `collect-logs.txt` and the zip. Before, a documents folder on a missing drive (Documents moved or redirected) stopped it with "FAILED" and no zip at all. Now that is noted as "documents folder not found", and a section that fails for another reason is noted as `FAILED: <section>: <message> (collect-logs.ps1:<line>)` while the other sections are still collected.
 
 ### Changed
 

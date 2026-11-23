@@ -127,6 +127,21 @@ function Get-FileLine([System.IO.FileInfo]$File, [bool]$Hash) {
     return $line
 }
 
+# "<script file>:<line>" of an error record, for the FAILED lines.
+function Get-ErrorPlace($ErrorRecord) {
+    $info = $ErrorRecord.InvocationInfo
+    if (-not $info -or -not $info.ScriptName) { return 'unknown line' }
+    return "$(Split-Path -Leaf $info.ScriptName):$($info.ScriptLineNumber)"
+}
+
+# Every section has its own try/catch: a section that fails is noted as
+# "FAILED: <section>: <message> (<script>:<line>)", and the other sections,
+# collect-logs.txt and the zip still follow, so that there is always a zip
+# to send.
+function Add-FailureNote([string]$Section, $ErrorRecord) {
+    Note "FAILED: ${Section}: $($ErrorRecord.Exception.Message) ($(Get-ErrorPlace $ErrorRecord))"
+}
+
 $code = 0
 $staging = $null
 try {
@@ -141,120 +156,164 @@ try {
     Note "collect-logs.ps1 at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz') from $PSScriptRoot"
 
     $game = $null
-    $common = Find-Helper 'dev-common.ps1'
-    if (-not $common) {
-        Note 'dev-common.ps1 not found next to this script or in scripts\; the game folder must be given with -GameDir'
-        if ($GameDir -and (Test-Path -LiteralPath $GameDir -PathType Container)) { $game = (Resolve-Path -LiteralPath $GameDir).ProviderPath }
-    } else {
-        . $common
-        try {
-            $game = Resolve-GameDir $GameDir
-        } catch {
-            Note "game folder not found: $($_.Exception.Message)"
+    try {
+        $common = Find-Helper 'dev-common.ps1'
+        if (-not $common) {
+            Note 'dev-common.ps1 not found next to this script or in scripts\; the game folder must be given with -GameDir'
+            if ($GameDir -and (Test-Path -LiteralPath $GameDir -PathType Container)) { $game = (Resolve-Path -LiteralPath $GameDir).ProviderPath }
+        } else {
+            . $common
+            try {
+                $game = Resolve-GameDir $GameDir
+            } catch {
+                Note "game folder not found: $($_.Exception.Message)"
+            }
         }
+    } catch {
+        Add-FailureNote 'game folder' $_
     }
 
     if ($game) {
         Note "game folder: $game"
         $data = Join-Path $game 'ac-dlssg'
-        $logs = Join-Path $data 'logs'
-        if (Test-Path -LiteralPath $logs -PathType Container) {
-            foreach ($f in @(Get-ChildItem -LiteralPath $logs -Recurse -File)) {
-                Add-File $f.FullName ('ac-dlssg\logs\' + $f.FullName.Substring($logs.Length + 1)) $staging
+        try {
+            $logs = Join-Path $data 'logs'
+            if (Test-Path -LiteralPath $logs -PathType Container) {
+                foreach ($f in @(Get-ChildItem -LiteralPath $logs -Recurse -File)) {
+                    Add-File $f.FullName ('ac-dlssg\logs\' + $f.FullName.Substring($logs.Length + 1)) $staging
+                }
+            } else {
+                Note "missing: $logs"
             }
-        } else {
-            Note "missing: $logs"
+            Add-File (Join-Path $data 'ac-dlssg.ini') 'ac-dlssg\ac-dlssg.ini' $staging
+            Add-File (Join-Path $data 'install\dev-manifest.json') 'ac-dlssg\install\dev-manifest.json' $staging
+        } catch {
+            Add-FailureNote 'bridge logs' $_
         }
-        Add-File (Join-Path $data 'ac-dlssg.ini') 'ac-dlssg\ac-dlssg.ini' $staging
-        Add-File (Join-Path $data 'install\dev-manifest.json') 'ac-dlssg\install\dev-manifest.json' $staging
 
-        $listing = New-Object System.Collections.Generic.List[string]
-        $listing.Add("game folder $game")
-        foreach ($f in @(Get-ChildItem -LiteralPath $game -File -Force | Sort-Object Name)) {
-            $listing.Add((Get-FileLine $f ($f.Extension -ieq '.dll')))
+        try {
+            $listing = New-Object System.Collections.Generic.List[string]
+            $listing.Add("game folder $game")
+            foreach ($f in @(Get-ChildItem -LiteralPath $game -File -Force | Sort-Object Name)) {
+                $listing.Add((Get-FileLine $f ($f.Extension -ieq '.dll')))
+            }
+            foreach ($sub in @('ac-dlssg\sl', 'ac-dlssg\mfg', 'apps\lua\AcDlssg', 'dlssg_sm86')) {
+                $dir = Join-Path $game $sub
+                if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $listing.Add("($sub not present)"); continue }
+                $listing.Add('')
+                $listing.Add("$sub\")
+                foreach ($f in @(Get-ChildItem -LiteralPath $dir -File -Force | Sort-Object Name)) { $listing.Add((Get-FileLine $f $true)) }
+            }
+            [System.IO.File]::WriteAllLines((Join-Path $staging 'game-files.txt'), [string[]]$listing.ToArray())
+            Note 'wrote game-files.txt'
+        } catch {
+            Add-FailureNote 'game-files.txt' $_
         }
-        foreach ($sub in @('ac-dlssg\sl', 'ac-dlssg\mfg', 'apps\lua\AcDlssg', 'dlssg_sm86')) {
-            $dir = Join-Path $game $sub
-            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $listing.Add("($sub not present)"); continue }
-            $listing.Add('')
-            $listing.Add("$sub\")
-            foreach ($f in @(Get-ChildItem -LiteralPath $dir -File -Force | Sort-Object Name)) { $listing.Add((Get-FileLine $f $true)) }
-        }
-        [System.IO.File]::WriteAllLines((Join-Path $staging 'game-files.txt'), [string[]]$listing.ToArray())
-        Note 'wrote game-files.txt'
 
         # The dlssg_for_sm86 spoof writes one loader and one backend log per run.
-        $spoofLogs = Join-Path $game 'dlssg_sm86\logs'
-        if (Test-Path -LiteralPath $spoofLogs -PathType Container) {
-            $jsonl = @(Get-ChildItem -LiteralPath $spoofLogs -File -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending)
-            foreach ($f in @($jsonl | Select-Object -First $MaxSpoofLogs)) { Add-File $f.FullName "dlssg_sm86\logs\$($f.Name)" $staging }
-            if ($jsonl.Count -gt $MaxSpoofLogs) { Note "dlssg_sm86\logs: $($jsonl.Count - $MaxSpoofLogs) older .jsonl files not collected" }
-            if ($jsonl.Count -eq 0) { Note "no .jsonl files in $spoofLogs" }
-        } else {
-            Note "$spoofLogs not present (no dlssg_for_sm86 spoof)"
+        try {
+            $spoofLogs = Join-Path $game 'dlssg_sm86\logs'
+            if (Test-Path -LiteralPath $spoofLogs -PathType Container) {
+                $jsonl = @(Get-ChildItem -LiteralPath $spoofLogs -File -Filter '*.jsonl' | Sort-Object LastWriteTime -Descending)
+                foreach ($f in @($jsonl | Select-Object -First $MaxSpoofLogs)) { Add-File $f.FullName "dlssg_sm86\logs\$($f.Name)" $staging }
+                if ($jsonl.Count -gt $MaxSpoofLogs) { Note "dlssg_sm86\logs: $($jsonl.Count - $MaxSpoofLogs) older .jsonl files not collected" }
+                if ($jsonl.Count -eq 0) { Note "no .jsonl files in $spoofLogs" }
+            } else {
+                Note "$spoofLogs not present (no dlssg_for_sm86 spoof)"
+            }
+        } catch {
+            Add-FailureNote 'dlssg_for_sm86 logs' $_
         }
 
         # MFG-Unlocker writes its settings next to acs.exe and its log, named
         # after acs.exe's path, into %TEMP%.
-        if (Get-Command Get-MfgOwnFiles -ErrorAction SilentlyContinue) {
-            $mfgFiles = @(Get-MfgOwnFiles $game | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
-            foreach ($f in $mfgFiles) { Add-File $f "mfg-unlocker\$(Split-Path -Leaf $f)" $staging }
-            if ($mfgFiles.Count -eq 0) { Note 'no MFG-Unlocker settings or logs (it is not installed, or has not run)' }
-        }
-    }
-
-    if (-not $AcDocsDir) { $AcDocsDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Assetto Corsa' }
-    $docs = Join-Path $AcDocsDir 'logs'
-    foreach ($f in @('log.txt', 'custom_shaders_patch.log')) {
-        Add-File (Join-Path $docs $f) "documents\$f" $staging
-    }
-    # CSP writes the Lua app's lines into its own log; they are also collected on their own.
-    $cspLog = Join-Path $docs 'custom_shaders_patch.log'
-    if (Test-Path -LiteralPath $cspLog -PathType Leaf) {
         try {
-            $appLines = @(Read-SharedLines $cspLog | Where-Object { $_ -match $LuaAppLinePattern })
-            New-Item -ItemType Directory -Force -Path (Join-Path $staging 'documents') | Out-Null
-            $out = @("# lines of $cspLog matching '$LuaAppLinePattern' (the CSP Lua app AcDlssg)") + $appLines
-            [System.IO.File]::WriteAllLines((Join-Path $staging 'documents\acdlssg-lua-app.txt'), [string[]]$out, (New-Object System.Text.UTF8Encoding $false))
-            Note "wrote documents\acdlssg-lua-app.txt ($($appLines.Count) lines of the Lua app from $cspLog)"
+            if (Get-Command Get-MfgOwnFiles -ErrorAction SilentlyContinue) {
+                $mfgFiles = @(Get-MfgOwnFiles $game | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+                foreach ($f in $mfgFiles) { Add-File $f "mfg-unlocker\$(Split-Path -Leaf $f)" $staging }
+                if ($mfgFiles.Count -eq 0) { Note 'no MFG-Unlocker settings or logs (it is not installed, or has not run)' }
+            }
         } catch {
-            Note "could not read $($cspLog): $($_.Exception.Message)"
+            Add-FailureNote 'MFG-Unlocker files' $_
         }
     }
 
+    # The documents folder may be missing, or on a drive that no longer
+    # exists (Documents moved or redirected): that is noted, not an error.
+    # [IO.Path]::Combine, because Join-Path fails on a drive that does not exist.
     try {
-        $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = @(1000, 1001, 1002); StartTime = (Get-Date).AddDays(-7) } -ErrorAction Stop |
-                Where-Object { $_.Message -match '(?i)acs\.exe' })
-    } catch {
-        $events = @()
-    }
-    $eventText = @($events | ForEach-Object { "=== $($_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) event $($_.Id) $($_.ProviderName)"; $_.Message; '' })
-    if ($eventText.Count -eq 0) { $eventText = @('no Application Error / Windows Error Reporting / hang events naming acs.exe in the last 7 days') }
-    [System.IO.File]::WriteAllLines((Join-Path $staging 'crash-events.txt'), [string[]]$eventText)
-    Note "wrote crash-events.txt ($($events.Count) events)"
-
-    if ($SkipSysinfo) {
-        Note 'system report skipped (-SkipSysinfo)'
-    } else {
-        $sysinfo = Find-Helper 'collect-sysinfo.ps1'
-        if (-not $sysinfo) {
-            Note 'collect-sysinfo.ps1 not found; no system report'
+        if (-not $AcDocsDir) {
+            $myDocuments = [Environment]::GetFolderPath('MyDocuments')
+            if ($myDocuments) { $AcDocsDir = [IO.Path]::Combine($myDocuments, 'Assetto Corsa') }
+        }
+        if (-not $AcDocsDir) {
+            Note 'documents folder not found: Windows names no Documents folder (pass -AcDocsDir)'
+        } elseif (-not (Test-Path -LiteralPath $AcDocsDir -PathType Container)) {
+            Note "documents folder not found: $AcDocsDir"
         } else {
-            Write-Host 'collect-logs: running collect-sysinfo.ps1 (dxdiag takes up to a minute)'
-            # Straight into the staging folder's sysinfo\, so that nothing
-            # stays next to the script (in <game>\ac-dlssg\scripts for the
-            # installed copy).
-            $report = Join-Path $staging 'sysinfo'
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sysinfo -OutDir $report | Out-Host
-            foreach ($f in @('ac-dlssg-sysinfo.txt', 'dxdiag.txt')) {
-                $path = Join-Path $report $f
-                if (Test-Path -LiteralPath $path -PathType Leaf) {
-                    Note "collected sysinfo\$f ($((Get-Item -LiteralPath $path).Length) bytes, from $sysinfo)"
-                } else {
-                    Note "missing: $path"
+            $docs = [IO.Path]::Combine($AcDocsDir, 'logs')
+            foreach ($f in @('log.txt', 'custom_shaders_patch.log')) {
+                Add-File ([IO.Path]::Combine($docs, $f)) "documents\$f" $staging
+            }
+            # CSP writes the Lua app's lines into its own log; they are also collected on their own.
+            $cspLog = [IO.Path]::Combine($docs, 'custom_shaders_patch.log')
+            if (Test-Path -LiteralPath $cspLog -PathType Leaf) {
+                try {
+                    $appLines = @(Read-SharedLines $cspLog | Where-Object { $_ -match $LuaAppLinePattern })
+                    New-Item -ItemType Directory -Force -Path (Join-Path $staging 'documents') | Out-Null
+                    $out = @("# lines of $cspLog matching '$LuaAppLinePattern' (the CSP Lua app AcDlssg)") + $appLines
+                    [System.IO.File]::WriteAllLines((Join-Path $staging 'documents\acdlssg-lua-app.txt'), [string[]]$out, (New-Object System.Text.UTF8Encoding $false))
+                    Note "wrote documents\acdlssg-lua-app.txt ($($appLines.Count) lines of the Lua app from $cspLog)"
+                } catch {
+                    Note "could not read $($cspLog): $($_.Exception.Message)"
                 }
             }
         }
+    } catch {
+        Add-FailureNote 'documents' $_
+    }
+
+    try {
+        try {
+            $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = @(1000, 1001, 1002); StartTime = (Get-Date).AddDays(-7) } -ErrorAction Stop |
+                    Where-Object { $_.Message -match '(?i)acs\.exe' })
+        } catch {
+            $events = @()
+        }
+        $eventText = @($events | ForEach-Object { "=== $($_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) event $($_.Id) $($_.ProviderName)"; $_.Message; '' })
+        if ($eventText.Count -eq 0) { $eventText = @('no Application Error / Windows Error Reporting / hang events naming acs.exe in the last 7 days') }
+        [System.IO.File]::WriteAllLines((Join-Path $staging 'crash-events.txt'), [string[]]$eventText)
+        Note "wrote crash-events.txt ($($events.Count) events)"
+    } catch {
+        Add-FailureNote 'crash-events.txt' $_
+    }
+
+    try {
+        if ($SkipSysinfo) {
+            Note 'system report skipped (-SkipSysinfo)'
+        } else {
+            $sysinfo = Find-Helper 'collect-sysinfo.ps1'
+            if (-not $sysinfo) {
+                Note 'collect-sysinfo.ps1 not found; no system report'
+            } else {
+                Write-Host 'collect-logs: running collect-sysinfo.ps1 (dxdiag takes up to a minute; wait for "done", the zip is made at the end)'
+                # Straight into the staging folder's sysinfo\, so that nothing
+                # stays next to the script (in <game>\ac-dlssg\scripts for the
+                # installed copy).
+                $report = Join-Path $staging 'sysinfo'
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sysinfo -OutDir $report | Out-Host
+                foreach ($f in @('ac-dlssg-sysinfo.txt', 'dxdiag.txt')) {
+                    $path = Join-Path $report $f
+                    if (Test-Path -LiteralPath $path -PathType Leaf) {
+                        Note "collected sysinfo\$f ($((Get-Item -LiteralPath $path).Length) bytes, from $sysinfo)"
+                    } else {
+                        Note "missing: $path"
+                    }
+                }
+            }
+        }
+    } catch {
+        Add-FailureNote 'system report' $_
     }
 
     [System.IO.File]::WriteAllLines((Join-Path $staging 'collect-logs.txt'), [string[]]$notes.ToArray())
@@ -265,7 +324,7 @@ try {
     Write-Host "collect-logs: done. Send this file: $zip"
 } catch {
     $code = 1
-    Write-Host "collect-logs: FAILED: $($_.Exception.Message)"
+    Write-Host "collect-logs: FAILED: $($_.Exception.Message) ($(Get-ErrorPlace $_))"
 } finally {
     if ($staging -and (Test-Path -LiteralPath $staging)) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 }
