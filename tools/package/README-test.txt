@@ -169,8 +169,11 @@ ac-dlssg {VERSION} для Assetto Corsa
   - VR не поддерживается и не планируется: в VR мост сам выключается.
     Для плавности используйте SteamVR Motion Smoothing, Meta ASW или
     перепроекцию рантайма OpenXR.
-  - DLSS 5 Bridge (dlss5-bridge.addon64) пока не может работать вместе с
-    мостом: для генерации кадров уберите его.
+  - Встроенный в CSP Neural Rendering работает вместе с мостом. Сторонние
+    аддоны DLSS 5 Bridge (dlss5-bridge.addon64) и RenoDX DLSS5
+    (renodx-dlss5.addon64) пока не могут работать вместе с мостом:
+    используйте вместо них Neural Rendering из CSP или уберите аддон,
+    чтобы работала генерация кадров.
   - Не поддерживаются тройные мониторы, HDR, MSAA, EXCLUSIVE_FULLSCREEN=1
     и OLD_SWAPCHAIN=1.
   - Разовые предупреждения Streamline в логах (Invalid backbuffer resource

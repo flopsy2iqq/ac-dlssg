@@ -58,10 +58,11 @@ struct CompatResult {
 //                                         <MODE> is not supported"
 //  7. allow_stretching != 1 (missing counts as 0) and both video sizes known
 //     and AspectMismatch(...)          -> "video.ini aspect ratio differs from the window; letterboxed output is not supported in v1"
-//  8. dlss5_bridge_loaded              -> "DLSS 5 Bridge (<dlss5_bridge_file, else dlss5-bridge.addon64>) is loaded:
-//                                         ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 Bridge
-//                                         for frame generation"
-//  9. renodx_dlss5_loaded              -> "renodx-dlss5.addon64 is loaded"
+//  8. dlss5_bridge_loaded              -> "DLSS 5 Bridge (<dlss5_bridge_file, else dlss5-bridge.addon64>) cannot
+//                                         run together with ac-dlssg yet. Use CSP's built-in Neural Rendering
+//                                         instead, which works with ac-dlssg, or remove the add-on for frame
+//                                         generation."
+//  9. renodx_dlss5_loaded              -> the same for "RenoDX DLSS5 (renodx-dlss5.addon64)"
 // 10. !hags_on                         -> "hardware-accelerated GPU scheduling is off"
 CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned swapHeight);
 

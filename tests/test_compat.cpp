@@ -53,10 +53,15 @@ std::string Utf8(const std::wstring& w) {
     return s;
 }
 const char* kAspect = "video.ini aspect ratio differs from the window; letterboxed output is not supported in v1";
-const char* kDlss5 =
-    "DLSS 5 Bridge (dlss5-bridge.addon64) is loaded: ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 "
-    "Bridge for frame generation";
-const char* kRenodx = "renodx-dlss5.addon64 is loaded";
+// The DLSS 5 add-ons: what cannot run with ac-dlssg yet, and what to use
+// instead (CSP's built-in Neural Rendering runs together with ac-dlssg).
+std::string Dlss5AddOn(const std::string& addOn) {
+    return addOn +
+           " cannot run together with ac-dlssg yet. Use CSP's built-in Neural Rendering instead, which works with "
+           "ac-dlssg, or remove the add-on for frame generation.";
+}
+const std::string kDlss5 = Dlss5AddOn("DLSS 5 Bridge (dlss5-bridge.addon64)");
+const std::string kRenodx = Dlss5AddOn("RenoDX DLSS5 (renodx-dlss5.addon64)");
 const char* kHags = "hardware-accelerated GPU scheduling is off";
 
 std::string VrReason(const char* mode) {
@@ -359,11 +364,19 @@ TEST(Compat_Dlss5BridgeReasonSaysTheyCannotRunTogether) {
     auto in = GoodInputs();
     in.dlss5_bridge_loaded = true;
     in.dlss5_bridge_file = "dlss5-dx11-bridge.addon64";
-    CHECK_EQ(Reason(in), "DLSS 5 Bridge (dlss5-dx11-bridge.addon64) is loaded: ac-dlssg and DLSS 5 Bridge cannot run "
-                         "together yet; remove DLSS 5 Bridge for frame generation");
-    CHECK(Reason(in).size() < 160);
+    CHECK_EQ(Reason(in), "DLSS 5 Bridge (dlss5-dx11-bridge.addon64) cannot run together with ac-dlssg yet. Use CSP's "
+                         "built-in Neural Rendering instead, which works with ac-dlssg, or remove the add-on for frame "
+                         "generation.");
+    // The panel shows a pass-through's reason in its 256-character state reason.
+    CHECK(Reason(in).size() < 256);
     in.dlss5_bridge_file.clear();  // no name known: the current one
     CHECK_EQ(Reason(in), kDlss5);
+    // RenoDX DLSS5 gets the same advice.
+    in = GoodInputs();
+    in.renodx_dlss5_loaded = true;
+    CHECK_EQ(Reason(in), "RenoDX DLSS5 (renodx-dlss5.addon64) cannot run together with ac-dlssg yet. Use CSP's "
+                         "built-in Neural Rendering instead, which works with ac-dlssg, or remove the add-on for frame "
+                         "generation.");
 }
 
 TEST(Compat_TheOldDlss5BridgeFileNameCountsAsDlss5Bridge) {

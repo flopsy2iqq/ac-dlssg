@@ -38,6 +38,14 @@ std::string ToUtf8(const std::wstring& w) {
     return s;
 }
 
+// The DLSS 5 add-ons hook CSP's DLSS call; CSP's own Neural Rendering runs
+// together with ac-dlssg, so the reason offers it instead.
+std::string Dlss5AddOnRefusal(const std::string& addOn) {
+    return addOn +
+           " cannot run together with ac-dlssg yet. Use CSP's built-in Neural Rendering instead, which works with "
+           "ac-dlssg, or remove the add-on for frame generation.";
+}
+
 CompatResult Refuse(std::string reason) {
     CompatResult r;
     r.ok = false;
@@ -94,11 +102,11 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
                        swapHeight))
         return Refuse("video.ini aspect ratio differs from the window; letterboxed output is not supported in v1");
     if (in.dlss5_bridge_loaded)
-        return Refuse("DLSS 5 Bridge (" + (in.dlss5_bridge_file.empty() ? std::string("dlss5-bridge.addon64")
-                                                                          : in.dlss5_bridge_file) +
-                      ") is loaded: ac-dlssg and DLSS 5 Bridge cannot run together yet; remove DLSS 5 Bridge for "
-                      "frame generation");
-    if (in.renodx_dlss5_loaded) return Refuse("renodx-dlss5.addon64 is loaded");
+        return Refuse(Dlss5AddOnRefusal("DLSS 5 Bridge (" +
+                                        (in.dlss5_bridge_file.empty() ? std::string("dlss5-bridge.addon64")
+                                                                      : in.dlss5_bridge_file) +
+                                        ")"));
+    if (in.renodx_dlss5_loaded) return Refuse(Dlss5AddOnRefusal("RenoDX DLSS5 (renodx-dlss5.addon64)"));
     if (!in.hags_on) return Refuse("hardware-accelerated GPU scheduling is off");
     return CompatResult();
 }
