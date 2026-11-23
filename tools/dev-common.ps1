@@ -1334,6 +1334,14 @@ function Start-DrsElevatedProcess([string]$FileName, [string]$Arguments, [switch
     return [System.Diagnostics.Process]::Start($psi)
 }
 
+# $Text, which announces the Windows prompt for administrator rights, or ''
+# when this PowerShell has them already and the helper runs without a
+# prompt (review finding A-5). The caller passes Test-IsAdministrator.
+function Get-UacNote([bool]$IsAdministrator, [string]$Text) {
+    if ($IsAdministrator) { return '' }
+    return $Text
+}
+
 # Why the helper could not start: a declined Windows prompt, or the error.
 function Get-DrsStartFailure($ErrorRecord) {
     $e = $ErrorRecord.Exception

@@ -121,6 +121,16 @@ function Step([string]$Message) { Write-Host "  $Message" }
 # NVIDIA Smooth Motion back as it was before the package install (see the
 # description). Never throws: every problem is a warning, and the uninstall
 # goes on.
+# "not set", "7 (DX12, DX11, Vulkan)" or, for NVIDIA's own value in the
+# profile, "7 (DX12, DX11, Vulkan), NVIDIA's predefined value".
+function Format-SmoothMotionRecordValue($Value) {
+    $text = Format-SmoothMotionValue $Value
+    if ($Value -and $Value.present -and $Value.PSObject.Properties['predefined'] -and $Value.predefined) {
+        $text += ", NVIDIA's predefined value"
+    }
+    return $text
+}
+
 function Restore-SmoothMotion([string]$Game, $Manifest) {
     $rec = Get-ManifestDriverProfile $Manifest
     if (-not $rec) { return }
@@ -157,7 +167,8 @@ function Restore-SmoothMotion([string]$Game, $Manifest) {
         }
         $recordJson = Join-Path $work 'record.json'
         Write-Utf8NoBom $recordJson ($rec | ConvertTo-Json -Depth 5)
-        Step "NVIDIA Smooth Motion: restoring the `"$($rec.profile)`" driver profile as it was before the install; Windows asks for administrator rights for this one change."
+        Step ("NVIDIA Smooth Motion: restoring the `"$($rec.profile)`" driver profile as it was before the install" +
+            (Get-UacNote (Test-IsAdministrator) '; Windows asks for administrator rights for this one change') + '.')
         try {
             $run = Invoke-DrsHelper $helper @('smooth-motion', 'restore', '--json', $recordJson) $work -Elevate -NoElevate:$NoElevate -DeclineUac:$DrsDeclineUac
         } catch {
@@ -166,14 +177,18 @@ function Restore-SmoothMotion([string]$Game, $Manifest) {
         }
         foreach ($line in $run.Log) { Step "  $line" }
         if ($run.Code -eq $script:AcdbDrsExit.Ok) {
-            $was = if ($rec.before -and $rec.before.present -and $rec.before.PSObject.Properties['predefined'] -and $rec.before.predefined) {
-                "NVIDIA's own Smooth Motion - Enabled APIs value ($([long]$rec.before.value)) is back in `"$($rec.profile)`""
-            } elseif ($rec.before -and $rec.before.present) {
-                "Smooth Motion - Enabled APIs in `"$($rec.profile)`" is $([long]$rec.before.value) again"
+            # The value read back now, not the recorded one (review finding
+            # A-5): deleting the install's value brings back NVIDIA's value
+            # of now, which a newer driver may have changed.
+            $afterJson = Join-Path $work 'status-after.json'
+            [void](Invoke-DrsHelper $helper @('smooth-motion', 'status', '--exe', $acs, '--json', $afterJson) $work)
+            $after = Read-DrsJson $afterJson
+            if ($after -and [string]$after.profile -eq [string]$rec.profile -and $after.app) {
+                Step ("NVIDIA Smooth Motion: restored: Smooth Motion - Enabled APIs in `"$($rec.profile)`" now reads " +
+                    "$(Format-SmoothMotionRecordValue $after.app) (before the install: $(Format-SmoothMotionRecordValue $rec.before)).")
             } else {
-                "the install's Smooth Motion - Enabled APIs value is gone from `"$($rec.profile)`" again (the profile had none of its own)"
+                Step 'NVIDIA Smooth Motion: restored (the helper read it back, see above).'
             }
-            Step "NVIDIA Smooth Motion: restored: $was."
         } elseif ($run.Code -eq $script:AcdbDrsExit.Changed) {
             Step "NVIDIA Smooth Motion: left as it is: the setting was changed since the install (see above)."
         } elseif ($run.Code -eq $script:AcdbDrsExit.NoProfile) {

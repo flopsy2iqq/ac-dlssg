@@ -561,7 +561,8 @@ function Write-SmoothMotionNotice($Status) {
     }
     Write-Host ("  `"$($Status.profile)`" profile, Smooth Motion - Enabled APIs: $from -> " +
         "$(Format-SmoothMotionValue ([pscustomobject]@{ present = $true; value = $Status.plan.value }))")
-    Write-Host '  Windows now asks for administrator rights for this one change (the NVIDIA driver settings are protected).'
+    $uac = Get-UacNote (Test-IsAdministrator) '  Windows now asks for administrator rights for this one change (the NVIDIA driver settings are protected).'
+    if ($uac) { Write-Host $uac }
 }
 
 # Step 5 (see the description). Never throws and never fails the install:
@@ -607,6 +608,13 @@ function Invoke-SmoothMotionStep([string]$Game) {
             foreach ($line in $run.Log) { Write-Host "  $line" }
             Say ("WARNING: NVIDIA Smooth Motion was not turned off: $(Get-DrsExitText $run.Code $acs) (see above for why, and for " +
                 'the steps by hand). The rest of the install stays.')
+            return
+        }
+        if ($run.Code -eq $script:AcdbDrsExit.NoProfile) {
+            # Read, but there is nothing to change (review finding A-5).
+            foreach ($line in $run.Log) { Write-Host "  $line" }
+            Say ("WARNING: NVIDIA Smooth Motion was not turned off: $(Get-DrsExitText $run.Code $acs), and ac-dlssg changes only the " +
+                'game''s own profile. If frame generation does not start, the AC DLSS-G window names Smooth Motion; the README has the manual steps.')
             return
         }
         if ($run.Code -ne $script:AcdbDrsExit.Ok -or -not $status) {

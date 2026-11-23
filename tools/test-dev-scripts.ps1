@@ -3596,7 +3596,9 @@ $fakeDrsScript = @'
 # acs.exe, empty for none; app and global: their values of 0xB0CC0875, null
 # for not set; saveFails: admin, error or empty; noDriver; foreign: the
 # profile is another game's predefined one; offFails: readback or json, a
-# failure of off after the change was saved), and each call is
+# failure of off after the change was saved; appPredefined: the app value
+# is NVIDIA's; predefinedNow: NVIDIA's value that a restore brings back,
+# null for the recorded one), and each call is
 # a line of calls.txt. Its JSON results and exit codes are those of
 # src/drs_tool.h.
 $ErrorActionPreference = 'Stop'
@@ -3609,9 +3611,9 @@ $opt = @{}
 for ($i = 2; $i + 1 -lt $args.Count; $i += 2) { $opt[[string]$args[$i]] = [string]$args[$i + 1] }
 $lines = New-Object System.Collections.Generic.List[string]
 $lines.Add("fake ac-dlssg-drs: smooth-motion $cmd")
-function Val($v) {
+function Val($v, [bool]$Predefined = $false) {
     if ($null -eq $v) { return [ordered]@{ present = $false; value = $null; predefined = $false } }
-    return [ordered]@{ present = $true; value = [long]$v; predefined = $false }
+    return [ordered]@{ present = $true; value = [long]$v; predefined = $Predefined }
 }
 function Done([int]$Code, $Json) {
     if ($Json -and $opt['--json'] -and $cmd -ne 'restore') { [IO.File]::WriteAllText($opt['--json'], ($Json | ConvertTo-Json -Depth 5), $utf8) }
@@ -3628,7 +3630,11 @@ if ($cmd -eq 'restore') {
     if (-not $state.profile -or [string]$rec.profile -ne [string]$state.profile) { $lines.Add('nothing to restore: the profile is gone'); Done 3 $null }
     if ($null -eq $state.app -or [long]$state.app -ne [long]$rec.written) { $lines.Add("left as it is: $($state.app)"); Done 6 $null }
     if ($state.saveFails -eq 'admin') { $lines.Add('not restored: needs administrator rights'); Done 4 $null }
+    # Deleting the install's value over NVIDIA's predefined one brings back
+    # NVIDIA's value of now (predefinedNow, when a newer driver changed it).
     $state.app = if ($rec.before.present) { [long]$rec.before.value } else { $null }
+    $state.appPredefined = [bool]($rec.before.present -and $rec.before.predefined)
+    if ($state.appPredefined -and $null -ne $state.predefinedNow) { $state.app = [long]$state.predefinedNow }
     Save
     $lines.Add("restored: $($state.app)")
     Done 0 $null
@@ -3644,7 +3650,7 @@ $write = ($effective -band 2) -ne 0
 $value = $effective -band (-bnot [long]2)
 $json = [ordered]@{ tool = 'ac-dlssg-drs fake'; command = $cmd; result = 'read'; exitCode = 0; exe = $opt['--exe']; profile = [string]$state.profile;
     profilePredefined = [bool]$state.foreign; settingId = '0xB0CC0875' }
-$json[$(if ($cmd -eq 'off') { 'before' } else { 'app' })] = Val $state.app
+$json[$(if ($cmd -eq 'off') { 'before' } else { 'app' })] = Val $state.app ([bool]$state.appPredefined)
 $json.global = Val $state.global
 $json.effective = $effective
 $json.source = $source
@@ -3668,6 +3674,7 @@ if ($state.saveFails) {
     Done $code $json
 }
 $state.app = $value
+$state.appPredefined = $false
 Save
 # Saved, then failed (review finding A-3): the read-back (exit 5), or the
 # final record file, which keeps the record written before the change (7).
@@ -3693,13 +3700,13 @@ Done 0 $json
 
 # A stand-in helper of its own for one case, with its driver settings.
 function New-FakeDrs([string]$Name, $App = $null, $GlobalApis = $null, [string]$Profile = 'Assetto Corsa', [string]$SaveFails = '',
-    [switch]$NoDriver, [switch]$Foreign, [string]$OffFails = '') {
+    [switch]$NoDriver, [switch]$Foreign, [string]$OffFails = '', [switch]$AppPredefined) {
     $dir = Join-Path $FakeRoot "drs\$Name"
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $path = Join-Path $dir 'ac-dlssg-drs.ps1'
     Write-Text $path $fakeDrsScript
     Set-FakeDrsState $path ([ordered]@{ profile = $Profile; app = $App; global = $GlobalApis; saveFails = $SaveFails; noDriver = [bool]$NoDriver;
-        foreign = [bool]$Foreign; offFails = $OffFails })
+        foreign = [bool]$Foreign; offFails = $OffFails; appPredefined = [bool]$AppPredefined; predefinedNow = $null })
     return $path
 }
 function Get-FakeDrsState([string]$Fake) { return Read-Manifest (Join-Path (Split-Path -Parent $Fake) 'state.json') }
@@ -3749,6 +3756,9 @@ Invoke-Case 'DR0: the helper as a tool, the package guard, the RTX 40/50 test an
     $other = $null
     try { throw (New-Object System.InvalidOperationException 'This command cannot be run due to the error: The operation was canceled by the user.') } catch { $other = $_ }
     Check ((Get-DrsStartFailure $other) -match '^the helper could not run \(This command cannot be run') 'an error without Windows error 1223 is named as it is'
+    # Review finding A-5: the Windows prompt is announced only without
+    # administrator rights.
+    Check ((Get-UacNote $false 'Windows asks') -eq 'Windows asks' -and (Get-UacNote $true 'Windows asks') -eq '') 'the prompt is announced only without administrator rights'
     $out = Join-Path $FakeRoot 'package-badhelper'
     $eap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -3779,7 +3789,12 @@ Invoke-Case 'DR1: RTX 40: the notice, the change and its record; a re-run keeps 
     Check ($rec -and $rec.profile -eq 'Assetto Corsa' -and $rec.settingId -eq '0xB0CC0875' -and -not $rec.before.present -and
         [long]$rec.written -eq 5 -and $rec.writtenUtc) 'driverProfile: the profile, the setting, before (not set), written 5, when'
     Check ($r.Text -match 'NVIDIA Smooth Motion: turned off for Assetto Corsa' -and $r.Text -match 'uninstall\.bat restores it') 'it says what it did, and that the uninstall restores it'
-    Check ($r.Text -match 'administrator rights') 'it says that Windows asks for administrator rights'
+    # Review finding A-5: the prompt is announced only without administrator rights.
+    if (Test-IsAdministrator) {
+        Check ($r.Text -notmatch 'Windows now asks for administrator rights') 'as administrator it announces no Windows prompt'
+    } else {
+        Check ($r.Text -match 'Windows now asks for administrator rights') 'it says that Windows asks for administrator rights'
+    }
     $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
     Check ($r.Code -eq 0 -and $r.Text -match 'off for Assetto Corsa since an earlier install') 'a re-run finds it off since the earlier install'
     Check ((Get-FakeDrsCalls $fake) -eq 'status,off,status') 'and only reads'
@@ -3788,7 +3803,8 @@ Invoke-Case 'DR1: RTX 40: the notice, the change and its record; a re-run keeps 
     $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
     Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: restored') 'the uninstall restores it'
     Check ($null -eq (Get-FakeDrsState $fake).app) 'the setting the install created is gone again'
-    Check ((Get-FakeDrsCalls $fake) -eq 'status,off,status,status,restore') 'the uninstall reads, then restores'
+    Check ((Get-FakeDrsCalls $fake) -eq 'status,off,status,status,restore,status') 'the uninstall reads, restores, and reads again'
+    Check ($r.Text -match 'restored: Smooth Motion - Enabled APIs in "Assetto Corsa" now reads not set \(before the install: not set\)') 'it says what it read back'
     Check (-not (Test-Path -LiteralPath (Get-ManifestPath $game))) 'the manifest is gone'
 }
 
@@ -3801,7 +3817,7 @@ Invoke-Case 'DR2: an app value of its own over a global one: written over, and w
     $rec = Get-DrsRecord $game
     Check ($rec -and $rec.before.present -and [long]$rec.before.value -eq 7 -and [long]$rec.written -eq 5) 'the record has the old 7'
     $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
-    Check ($r.Code -eq 0 -and (Get-FakeDrsState $fake).app -eq 7 -and $r.Text -match 'Enabled APIs in "Assetto Corsa" is 7 again') 'the uninstall writes 7 back'
+    Check ($r.Code -eq 0 -and (Get-FakeDrsState $fake).app -eq 7 -and $r.Text -match 'Enabled APIs in "Assetto Corsa" now reads 7 \(DX12, DX11, Vulkan\)') 'the uninstall writes 7 back'
 }
 
 Invoke-Case 'DR3: a declined Windows prompt is a warning; the install goes on and records nothing' {
@@ -3878,7 +3894,7 @@ Invoke-Case 'DR7: a failed helper or one that finds nothing to do is a note; the
         @{ Name = 'error'; Fake = @{ SaveFails = 'error' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: the driver settings could not be changed'; Calls = 'status,off,status' },
         @{ Name = 'global'; Fake = @{ GlobalApis = 5 }; Says = 'NVIDIA Smooth Motion: already kept away from Assetto Corsa .*from the global profile, without DX11\); nothing to change'; Calls = 'status' },
         @{ Name = 'nodriver'; Fake = @{ NoDriver = $true }; Says = 'WARNING: NVIDIA Smooth Motion was not checked: the NVIDIA driver settings could not be read'; Calls = 'status' },
-        @{ Name = 'noprofile'; Fake = @{ Profile = '' }; Says = 'WARNING: NVIDIA Smooth Motion was not checked: no NVIDIA driver profile holds'; Calls = 'status' }
+        @{ Name = 'noprofile'; Fake = @{ Profile = '' }; Says = 'WARNING: NVIDIA Smooth Motion was not turned off: no NVIDIA driver profile holds .*, and ac-dlssg changes only the game''s own profile'; Calls = 'status' }
     )
     foreach ($c in $cases) {
         $game = New-FakeGame "DR7-$($c.Name)" -NoDxgi
@@ -3978,6 +3994,25 @@ Invoke-Case 'DR12: a change off saved before it failed is read again, recorded a
         $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
         Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: restored' -and $null -eq (Get-FakeDrsState $fake).app) "$mode`: the uninstall restores it"
     }
+}
+
+# Review finding A-5: a restore that deletes the install's value brings back
+# NVIDIA's predefined one, which a newer driver may have changed: the
+# uninstall says the value it reads back, not the recorded one.
+Invoke-Case 'DR13: the uninstall says the value it reads back, NVIDIA''s predefined one too' {
+    $pkg = New-PackageCopy 'DR13'
+    $game = New-FakeGame 'DR13' -NoDxgi
+    $fake = New-FakeDrs 'DR13' -App 7 -AppPredefined
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    $rec = Get-DrsRecord $game
+    Check ($r.Code -eq 0 -and $rec -and $rec.before.present -and $rec.before.predefined -and [long]$rec.before.value -eq 7) 'the record has NVIDIA''s predefined 7'
+    $state = Get-FakeDrsState $fake
+    $state.predefinedNow = 3
+    Set-FakeDrsState $fake $state
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $r.Text -match ('restored: Smooth Motion - Enabled APIs in "Assetto Corsa" now reads 3 \(DX12, DX11\), NVIDIA''s ' +
+        'predefined value \(before the install: 7 \(DX12, DX11, Vulkan\), NVIDIA''s predefined value\)')) 'the uninstall says what it read back'
+    Check ($r.Text -notmatch 'is back in') 'and does not claim that the recorded value is back'
 }
 
 # ---------------------------------------------------------------------------
