@@ -170,6 +170,8 @@ function Restore-SmoothMotion([string]$Game, $Manifest) {
         Step ("NVIDIA Smooth Motion: restoring the `"$($rec.profile)`" driver profile as it was before the install" +
             (Get-UacNote (Test-IsAdministrator) '; Windows asks for administrator rights for this one change') + '.')
         try {
+            # Without the mark of the web, no SmartScreen before the prompt (review finding A-2).
+            Unblock-DrsHelper $helper
             $run = Invoke-DrsHelper $helper @('smooth-motion', 'restore', '--json', $recordJson) $work -Elevate -NoElevate:$NoElevate -DeclineUac:$DrsDeclineUac
         } catch {
             Step "WARNING: NVIDIA Smooth Motion was not restored: $(Get-DrsStartFailure $_). To restore it by hand: $byHand."

@@ -995,6 +995,12 @@ try {
         $drop = Install-PlannedFile $plan $backupDir $stamp
         if ($drop) { $backupsToDrop += $drop }
     }
+    # After its hash check: the helper runs elevated, and the mark of the web
+    # it kept from a downloaded zip would bring SmartScreen before the UAC
+    # prompt (review finding A-2).
+    foreach ($plan in @($toolPlans | Where-Object { $_.Rel -ieq "$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)" })) {
+        Unblock-DrsHelper $plan.Target
+    }
     foreach ($o in $obsoleteRemove) {
         $drop = Remove-ObsoleteFile $o $backupDir $stamp
         if ($drop) { $backupsToDrop += $drop }

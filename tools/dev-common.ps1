@@ -1334,6 +1334,14 @@ function Start-DrsElevatedProcess([string]$FileName, [string]$Arguments, [switch
     return [System.Diagnostics.Process]::Start($psi)
 }
 
+# Removes the mark of the web (the Zone.Identifier stream that a file from a
+# downloaded zip carries, and that a copy keeps) from the driver-profile
+# helper, which runs elevated: with it Windows shows SmartScreen before the
+# UAC prompt (review finding A-2). The file's bytes stay as they are.
+function Unblock-DrsHelper([string]$Path) {
+    if (Test-Path -LiteralPath $Path -PathType Leaf) { Unblock-File -LiteralPath $Path }
+}
+
 # $Text, which announces the Windows prompt for administrator rights, or ''
 # when this PowerShell has them already and the helper runs without a
 # prompt (review finding A-5). The caller passes Test-IsAdministrator.

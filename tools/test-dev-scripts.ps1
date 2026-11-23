@@ -3996,6 +3996,33 @@ Invoke-Case 'DR12: a change off saved before it failed is read again, recorded a
     }
 }
 
+# Review finding A-2: files from a downloaded zip carry the mark of the web
+# (a Zone.Identifier stream), which a copy keeps; Windows then shows
+# SmartScreen before the UAC prompt of the elevated helper.
+function Test-ZoneMark([string]$Path) {
+    return @(Get-Item -LiteralPath $Path -Stream * -ErrorAction SilentlyContinue | Where-Object { $_.Stream -eq 'Zone.Identifier' }).Count -gt 0
+}
+function Set-ZoneMark([string]$Path) {
+    Set-Content -LiteralPath $Path -Stream 'Zone.Identifier' -Value "[ZoneTransfer]`r`nZoneId=3"
+}
+Invoke-Case 'DR14: the installed helper carries no mark of the web, and the uninstall clears it before its elevated run' {
+    $pkg = New-PackageCopy 'DR14'
+    $pkgHelper = Join-Path $pkg "files\$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)"
+    Set-ZoneMark $pkgHelper
+    Check (Test-ZoneMark $pkgHelper) 'the package''s helper carries the mark of the web, as from a downloaded zip'
+    $game = New-FakeGame 'DR14' -NoDxgi
+    $fake = New-FakeDrs 'DR14'
+    $r = Invoke-PackageInstall $pkg $game (Get-DrsArgs '10DE:2684' $fake)
+    $installed = Join-Path $game "$($script:AcdbDataDirName)\$($script:AcdbDrsHelperName)"
+    Check ($r.Code -eq 0 -and (Test-Path -LiteralPath $installed -PathType Leaf)) 'installed'
+    Check (-not (Test-ZoneMark $installed)) 'the installed helper has no mark of the web'
+    Check ((Get-Sha $installed) -eq (Get-Sha $pkgHelper)) 'and is the package''s helper, byte for byte'
+    Set-ZoneMark $fake
+    $r = Invoke-PackageUninstall $pkg $game -Extra @('-DrsHelper', $fake)
+    Check ($r.Code -eq 0 -and $r.Text -match 'NVIDIA Smooth Motion: restored') 'the uninstall restores the setting'
+    Check (-not (Test-ZoneMark $fake)) 'after clearing the mark of the helper it ran elevated'
+}
+
 # Review finding A-5: a restore that deletes the install's value brings back
 # NVIDIA's predefined one, which a newer driver may have changed: the
 # uninstall says the value it reads back, not the recorded one.
