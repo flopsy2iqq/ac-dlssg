@@ -140,19 +140,19 @@ Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local 
 - 3X and 4X run only where the GPU and driver allow them (RTX 50, RTX 40 through MFG-Unlocker, or RTX 30 and RTX 20 through dlssg_for_sm86); elsewhere the bridge uses 2X and says so in the window.
 - MFG-Unlocker on RTX 40 has not been tested by the author of ac-dlssg, who has no RTX 40 card; please report how it runs.
 - CSP app windows and on-screen UI can show small artifacts during fast motion. A HUD-less colour buffer is planned.
-- The following are not supported: VR (the bridge switches itself off), triple screens (planned for 1.4, see [Triple screens: help wanted](#triple-screens-help-wanted)), HDR output, MSAA, `EXCLUSIVE_FULLSCREEN=1`, `OLD_SWAPCHAIN=1`, and letterboxed output.
+- The following are not supported: VR (the bridge switches itself off), triple screens (frame generation does not work there yet, see [Triple screens: help wanted](#triple-screens-help-wanted)), HDR output, MSAA, `EXCLUSIVE_FULLSCREEN=1`, `OLD_SWAPCHAIN=1`, and letterboxed output.
 - Other CSP upscalers (FSR, XeSS) do not provide the inputs frame generation needs.
 
 ## Triple screens: help wanted
 
-Frame generation does not run on triple screens yet; it is planned for 1.4. For that we need to know how CSP lays out its DLSS for the three screens, and 1.3.0 can log it. If you drive in Assetto Corsa's triple-screen mode, please help:
+Frame generation does not work on triple screens yet. Whether and how it can depends on how CSP lays out its DLSS for the three screens, and only logs from triple-screen setups can tell; 1.3.0 can write them. If you drive in Assetto Corsa's triple-screen mode, please help:
 
 1. Add these two lines at the end of `<game>\ac-dlssg\ac-dlssg.ini`:
    ```ini
    [debug]
    triple_diag=1
    ```
-2. Make sure CSP's DLSS runs in triple mode (Content Manager: Settings, Custom Shaders Patch, EXTRA FX: "Allow in triple"), start a session in triple-screen mode and drive for a minute. Frame generation stays off; the bridge passes the frames through and logs CSP's DLSS calls and the screen layout CSP reports.
+2. Make sure CSP's DLSS runs in triple mode: CSP's DLSS needs Extra FX, which by default stays off in triple-screen mode (Content Manager: Settings, Custom Shaders Patch, EXTRA FX: turn it on, and turn on "Allow in triple or other multi-view modes"). Start a session in triple-screen mode and drive for a minute. Frame generation stays off: the bridge proxies the game's swap chain as usual and writes CSP's DLSS calls into `bridge.log`, and the CSP app writes CSP's triple-screen layout into CSP's own log. When no DLSS call comes, `bridge.log` says so after 600 frames ("no counted DLSS evaluate").
 3. Close the game, double-click `<game>\ac-dlssg\collect-logs.bat` and attach the zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues), with your monitors' resolution.
 4. Set `triple_diag=0` again (or remove the two lines).
 

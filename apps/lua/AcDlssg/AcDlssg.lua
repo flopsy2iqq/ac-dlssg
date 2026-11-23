@@ -1409,11 +1409,11 @@ notice.update = function ()
 end
 
 -- ---------------------------------------------------------------------------
--- Triple screens (ac-dlssg 1.3.0 diagnostics). Frame generation for triple
--- screens is planned for 1.4 and needs to know how CSP lays the three screens
--- out. In triple-screen mode the app writes into CSP's log what CSP tells
--- about them: ac.getTripleConfiguration() at the start and whenever it
--- changes, and whether the camera shows the triple view
+-- Triple screens (ac-dlssg 1.3.0 diagnostics). Frame generation does not work
+-- on triple screens yet; whether and how it can depends on how CSP lays the
+-- three screens out. In triple-screen mode the app writes into CSP's log what
+-- CSP tells about them: ac.getTripleConfiguration() at the start and whenever
+-- it changes, and whether the camera shows the triple view
 -- (isTripleScreenAvailable) whenever that changes. collect-logs.bat collects
 -- these lines; with [debug] triple_diag=1 in ac-dlssg.ini the bridge logs
 -- CSP's DLSS calls next to them. Older CSP builds lack these calls, so they

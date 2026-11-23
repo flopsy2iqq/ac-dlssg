@@ -1,19 +1,22 @@
 #pragma once
-// Triple-screen diagnostics (1.3.0). Frame generation for triple screens is
-// planned for 1.4 and needs to know how CSP lays out its DLSS for the three
-// screens. With [debug] triple_diag=1 in ac-dlssg.ini and AC in triple-screen
-// mode (video.ini [CAMERA] MODE=TRIPLE), the bridge proxies the game's swap
-// chain as usual and keeps frame generation off (kTripleDiagFgReason in
-// fg_policy.h), and bridge.log gets, for kTripleDiagFrames frames from the
-// first DLSS evaluate, every counted CSP DLSS evaluate: its feature, the
-// create's and the block's sizes, the render subrect and the subrect base
-// keys, jitter, MV scale, and the Color, Output, Depth and MotionVectors
-// textures; and for each frame the number of evaluates, those the hook did
-// not count (on a deferred context, or failed), and the swap chain's size. A DLSS feature created later (a resolution change) starts another
-// such window, at most kTripleDiagWindows in a session; a window stops early
-// at kTripleDiagMaxEvaluateLinesPerWindow evaluate lines, and the session
-// at kTripleDiagMaxEvaluateLines. Without the switch, triple-screen mode
-// stays refused (compat.h).
+// Triple-screen diagnostics (1.3.0). Frame generation does not work on triple
+// screens yet; whether and how it can depends on how CSP lays out its DLSS
+// for the three screens, which these logs show. With [debug] triple_diag=1 in
+// ac-dlssg.ini and AC in triple-screen mode (video.ini [CAMERA] MODE=TRIPLE),
+// the bridge proxies the game's swap chain as usual, keeps frame generation
+// off (kTripleDiagFgReason in fg_policy.h) and captures nothing, and
+// bridge.log gets, for kTripleDiagFrames frames from the first DLSS
+// evaluate, every counted CSP DLSS evaluate: its feature, its context and
+// whether that is the game's device, the create's and the block's sizes,
+// the render subrect and the subrect base keys, jitter, MV scale, and the
+// Color, Output, Depth and MotionVectors textures; and for each frame the
+// number of evaluates, those the hook did not count (on a deferred context,
+// or failed), and the swap chain's size. A DLSS feature created later (a
+// resolution change) starts another such window, at most kTripleDiagWindows
+// in a session; a window stops early at kTripleDiagMaxEvaluateLinesPerWindow
+// evaluate lines, and the session at kTripleDiagMaxEvaluateLines. Without a
+// counted evaluate, one line says so after kTripleDiagNoEvaluateFrames
+// frames. Without the switch, triple-screen mode stays refused (compat.h).
 #include <cstdint>
 #include <functional>
 #include <mutex>
