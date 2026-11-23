@@ -17,6 +17,10 @@ $script:AcdbDataDirName = 'ac-dlssg'
 # Windows 10/11 x64 installation. Never VERSION.dll (the spoof's name), the VC
 # runtime, d3d11/d3d12/dxgi or d3dcompiler.
 $script:AcdbImportAllowList = @('KERNEL32.dll', 'USER32.dll', 'ADVAPI32.dll', 'SHELL32.dll', 'ole32.dll')
+# The installer's driver-profile helper, which may run elevated from the game
+# folder: KERNEL32 only (a KnownDLL, never taken from the helper's own folder).
+$script:AcdbDrsHelperName = 'ac-dlssg-drs.exe'
+$script:AcdbHelperImportAllowList = @('KERNEL32.dll')
 # The Streamline runtime the bridge loads from <game>\ac-dlssg\sl (spec 6.3,
 # 12); each DLL must carry NVIDIA's Authenticode signature.
 $script:AcdbSlDirName = 'sl'

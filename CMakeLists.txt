@@ -146,9 +146,19 @@ add_library(acdb_drs STATIC
     src/smooth_motion.cpp
     src/drs_json.cpp
     src/drs_tool.cpp
+    src/drs_store.cpp
 )
 target_include_directories(acdb_drs PUBLIC src)
 target_include_directories(acdb_drs SYSTEM PRIVATE "${ACDB_NVAPI_INCLUDE_DIR}")
+# The NVAPI loading it shares with the bridge (nvapi_drs.cpp); the linker
+# takes only that from acdb_core.
+target_link_libraries(acdb_drs PUBLIC acdb_core)
+# KERNEL32 only, like the bridge's own allow-list but smaller
+# (tools\check-imports.ps1 -Helper).
+add_executable(ac-dlssg-drs src/drs_main.cpp src/drs_version.rc)
+target_link_libraries(ac-dlssg-drs PRIVATE acdb_drs)
+target_compile_definitions(ac-dlssg-drs PRIVATE ACDB_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+                           ACDB_VERSION_MINOR=${PROJECT_VERSION_MINOR} ACDB_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 
 enable_testing()
 add_executable(acdb_tests
@@ -191,6 +201,8 @@ add_executable(acdb_tests
     tests/test_smooth_motion.cpp
     tests/test_drs_json.cpp
     tests/test_drs_tool.cpp
+    tests/test_drs_store.cpp
+    tests/test_drs_exe.cpp
     tests/test_version.rc
     tests/gpu_test_devices.cpp
 )
@@ -203,6 +215,9 @@ target_compile_definitions(acdb_tests PRIVATE ACDB_SOURCE_DIR="${CMAKE_SOURCE_DI
 # The test app's CSP stand-ins (tools/testapp/fake_csp.h) are tested here too.
 target_include_directories(acdb_tests PRIVATE tests tools/testapp)
 add_dependencies(acdb_tests ac-dlssg)
+# The helper's process-level tests run the built ac-dlssg-drs.exe.
+target_compile_definitions(acdb_tests PRIVATE ACDB_DRS_EXE_PATH=L"$<TARGET_FILE:ac-dlssg-drs>")
+add_dependencies(acdb_tests ac-dlssg-drs)
 # An unsigned, loadable DLL for StreamlineRuntime's signature check: its
 # DllMain leaves a mark, so a test can prove it was never loaded.
 add_library(acdb_unsigned_fixture SHARED tests/unsigned_fixture.cpp)
@@ -294,6 +309,8 @@ add_test(NAME unit COMMAND acdb_tests)
 # The import allow-list of spec 6.1 and 12.
 add_test(NAME imports COMMAND powershell -NoProfile -ExecutionPolicy Bypass
          -File "${CMAKE_SOURCE_DIR}/tools/check-imports.ps1" -Dll "$<TARGET_FILE:ac-dlssg>")
+add_test(NAME imports_drs COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+         -File "${CMAKE_SOURCE_DIR}/tools/check-imports.ps1" -Dll "$<TARGET_FILE:ac-dlssg-drs>" -Helper)
 # The D3D runtime keeps a shader-cache folder per test executable under
 # %LOCALAPPDATA%\D3DSCache; it is removed after the GPU tests.
 add_test(NAME clean_shader_cache COMMAND powershell -NoProfile -ExecutionPolicy Bypass

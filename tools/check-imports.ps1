@@ -11,19 +11,29 @@
   import directories itself. CMake registers this script as the "imports"
   test.
 
+  With -Helper it checks the installer's driver-profile helper
+  ac-dlssg-drs.exe against its own, smaller list (KERNEL32.dll only,
+  $script:AcdbHelperImportAllowList): the helper may run with administrator
+  rights from the game folder, so it must not load a DLL that could be taken
+  from there. CMake registers that as the "imports_drs" test.
+
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-imports.ps1 -Dll build\Release\ac-dlssg.dll
+
+.EXAMPLE
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-imports.ps1 -Dll build\Release\ac-dlssg-drs.exe -Helper
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Dll
+    [string]$Dll,
+    [switch]$Helper
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'dev-common.ps1')
 
 # One list for this check and for dev-install's Test-BridgeDll.
-$allowList = $script:AcdbImportAllowList
+$allowList = if ($Helper) { $script:AcdbHelperImportAllowList } else { $script:AcdbImportAllowList }
 
 if (-not (Test-Path -LiteralPath $Dll -PathType Leaf)) {
     Write-Host "check-imports: file not found: $Dll"
@@ -60,7 +70,7 @@ $offenders = @($dependencies | Where-Object {
         -not ($allowList | Where-Object { $_ -ieq $name })
     })
 
-Write-Host "check-imports: $dllPath"
+Write-Host "check-imports: $dllPath$(if ($Helper) { ' (the driver-profile helper)' })"
 Write-Host ("  dependencies: " + ($(if ($dependencies.Count) { $dependencies -join ', ' } else { '(none)' })))
 if ($offenders.Count -gt 0) {
     Write-Host 'check-imports: FAILED, dependencies outside the allow-list:'
