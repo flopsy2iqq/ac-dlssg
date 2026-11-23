@@ -111,6 +111,7 @@ add_library(acdb_core STATIC
     src/mfg_loader.cpp
     src/streamline_runtime.cpp
     src/driver_profile.cpp
+    src/nvapi_drs.cpp
     src/camera_channel.cpp
     src/camera_layout.h
     src/frame_constants.cpp
