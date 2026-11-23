@@ -122,6 +122,33 @@ TEST(TripleDiagLog_EvaluatesWithoutAnEndStopAtTheCaps) {
     CHECK_EQ(lines.Count("triple-diag: frame "), 15u);  // the evaluate lines only, no frame line after the stop
 }
 
+// Review finding B-6: without a counted DLSS evaluate the diagnostics would
+// stay empty. After so many presented frames, one line says so, with what
+// CSP needs for DLSS in triple-screen mode and what the hook saw but did not
+// count; the first evaluate still opens the window.
+TEST(TripleDiagLog_SaysOnceWhenNoEvaluateCame) {
+    static_assert(kTripleDiagNoEvaluateFrames == 600);
+    Lines lines;
+    TripleDiagLog log(lines.Sink(), 3, 2, 3000, 6000, 5);
+    log.OnUncountedEvaluate(true, kNgxSuccess);
+    for (int i = 0; i < 4; ++i) log.EndFrame(5760, 1080, 28);
+    CHECK(lines.all.empty());
+    for (int i = 0; i < 20; ++i) log.EndFrame(5760, 1080, 28);
+    lines.Print();
+    CHECK_EQ(lines.all.size(), 1u);
+    CHECK_EQ(lines.Count("triple-diag: no counted DLSS evaluate in 5 frames (not counted: 1 on a deferred context): "), 1u);
+    CHECK_EQ(lines.Count("Extra FX"), 1u);
+    CHECK_EQ(lines.Count("extra_fx.ini [BASIC] ALLOW_IN_TRIPLE=1"), 1u);
+    CHECK(log.WantsEvaluates());
+    log.OnEvaluate(Evaluate(1));
+    CHECK_EQ(lines.Count("triple-diag: window 1 of 2"), 1u);
+    // Without uncounted evaluates the line has no count of them.
+    Lines quiet;
+    TripleDiagLog none(quiet.Sink(), 3, 2, 3000, 6000, 2);
+    for (int i = 0; i < 3; ++i) none.EndFrame(5760, 1080, 28);
+    CHECK_EQ(quiet.Count("triple-diag: no counted DLSS evaluate in 2 frames: "), 1u);
+}
+
 // Review finding B-5: while a window is open, the frame line counts the
 // evaluates the hook does not count, on a deferred context and failed ones
 // with the last result.

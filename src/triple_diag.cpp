@@ -171,32 +171,44 @@ std::string TripleDiagEvaluateLine(uint32_t frame, uint32_t index, const TripleD
     return line;
 }
 
+namespace {
+
+// "not counted: 2 on a deferred context, 1 failed (last result 0x...)", or
+// empty when the hook counted every evaluate.
+std::string UncountedText(const TripleDiagFrameCounts& c) {
+    if (!c.deferred && !c.failed) return {};
+    std::string text = "not counted: ";
+    if (c.deferred) text += std::to_string(c.deferred) + " on a deferred context";
+    if (c.failed) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%s%u failed (last result 0x%08X)", c.deferred ? ", " : "", c.failed,
+                      c.lastFailResult);
+        text += buf;
+    }
+    return text;
+}
+
+}  // namespace
+
 std::string TripleDiagFrameLine(const TripleDiagFrameCounts& c, uint32_t swapWidth, uint32_t swapHeight,
                                 uint32_t swapFormat) {
     char buf[160];
     std::snprintf(buf, sizeof(buf), "triple-diag: frame %u: %u DLSS evaluates; ", c.frame, c.evaluates);
     std::string line = buf;
-    if (c.deferred || c.failed) {
-        line += "not counted: ";
-        if (c.deferred) line += std::to_string(c.deferred) + " on a deferred context";
-        if (c.failed) {
-            std::snprintf(buf, sizeof(buf), "%s%u failed (last result 0x%08X)", c.deferred ? ", " : "", c.failed,
-                          c.lastFailResult);
-            line += buf;
-        }
-        line += "; ";
-    }
+    const std::string uncounted = UncountedText(c);
+    if (!uncounted.empty()) line += uncounted + "; ";
     std::snprintf(buf, sizeof(buf), "swap chain %ux%u format %u", swapWidth, swapHeight, swapFormat);
     return line + buf;
 }
 
 TripleDiagLog::TripleDiagLog(std::function<void(const std::string&)> log, uint32_t frames, uint32_t windows,
-                             uint32_t maxLinesPerWindow, uint32_t maxLines)
+                             uint32_t maxLinesPerWindow, uint32_t maxLines, uint32_t noEvaluateFrames)
     : log_(std::move(log)),
       frames_(frames),
       windows_(windows),
       maxLinesPerWindow_(maxLinesPerWindow),
-      maxLines_(maxLines) {}
+      maxLines_(maxLines),
+      noEvaluateFrames_(noEvaluateFrames) {}
 
 void TripleDiagLog::Log(const std::string& line) {
     if (log_) log_(line);
@@ -271,17 +283,30 @@ void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t s
     std::vector<std::string> lines;
     {
         std::lock_guard<std::mutex> lock(mu_);
-        if (framesLeft_ == 0) return;
-        counts_.frame = frame_;
-        lines.push_back(TripleDiagFrameLine(counts_, swapWidth, swapHeight, swapFormat));
-        counts_ = TripleDiagFrameCounts();
-        ++frame_;
-        if (--framesLeft_ == 0) {
-            lines.push_back("triple-diag: window " + std::to_string(windowsUsed_) + " done after " +
-                            std::to_string(frames_) + " frames; " +
-                            (windowsUsed_ < windows_ ? "a DLSS feature created later starts window " +
-                                                           std::to_string(windowsUsed_ + 1)
-                                                     : std::string("that was the last window")));
+        if (framesLeft_ == 0) {
+            // Review finding B-6: before the first window, once, that no
+            // counted evaluate came, and what CSP needs for one.
+            if (windowsUsed_ == 0 && idleFrames_ < noEvaluateFrames_ && ++idleFrames_ == noEvaluateFrames_) {
+                const std::string uncounted = UncountedText(before_);
+                lines.push_back("triple-diag: no counted DLSS evaluate in " + std::to_string(noEvaluateFrames_) +
+                                " frames" + (uncounted.empty() ? std::string() : " (" + uncounted + ")") +
+                                ": CSP runs DLSS only with Extra FX on, and in triple-screen mode only with its "
+                                "\"Allow in triple\" option (extra_fx.ini [BASIC] ALLOW_IN_TRIPLE=1), and with DLSS as "
+                                "its upscaler; the compat lines at the start show both. The diagnostics start with "
+                                "the first evaluate");
+            }
+        } else {
+            counts_.frame = frame_;
+            lines.push_back(TripleDiagFrameLine(counts_, swapWidth, swapHeight, swapFormat));
+            counts_ = TripleDiagFrameCounts();
+            ++frame_;
+            if (--framesLeft_ == 0) {
+                lines.push_back("triple-diag: window " + std::to_string(windowsUsed_) + " done after " +
+                                std::to_string(frames_) + " frames; " +
+                                (windowsUsed_ < windows_ ? "a DLSS feature created later starts window " +
+                                                               std::to_string(windowsUsed_ + 1)
+                                                         : std::string("that was the last window")));
+            }
         }
     }
     for (const std::string& l : lines) Log(l);
@@ -289,12 +314,15 @@ void TripleDiagLog::EndFrame(uint32_t swapWidth, uint32_t swapHeight, uint32_t s
 
 void TripleDiagLog::OnUncountedEvaluate(bool deferred, NgxResult result) {
     std::lock_guard<std::mutex> lock(mu_);
-    if (framesLeft_ == 0) return;
+    // In the open window's frame; before the first window, for the line of
+    // noEvaluateFrames_ (review finding B-6).
+    TripleDiagFrameCounts* c = framesLeft_ > 0 ? &counts_ : windowsUsed_ == 0 ? &before_ : nullptr;
+    if (!c) return;
     if (deferred) {
-        ++counts_.deferred;
+        ++c->deferred;
     } else {
-        ++counts_.failed;
-        counts_.lastFailResult = static_cast<uint32_t>(result);
+        ++c->failed;
+        c->lastFailResult = static_cast<uint32_t>(result);
     }
 }
 

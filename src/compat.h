@@ -15,6 +15,10 @@ struct CompatInputs {
     std::optional<long long> hdr_enabled;            // dxgi_tweaks.ini [HDR] ENABLED
     std::optional<long long> fsr_active;             // graphics_adjustments.ini [FSR] ACTIVE
     std::optional<long long> fsr_old_implementation; // graphics_adjustments.ini [FSR] OLD_IMPLEMENTATION
+    // Only logged (review finding B-6): CSP runs DLSS only with Extra FX on,
+    // and in triple-screen mode only with its "Allow in triple", 0 by default.
+    std::optional<long long> extra_fx_enabled;          // extra_fx.ini [BASIC] ENABLED
+    std::optional<long long> extra_fx_allow_in_triple;  // extra_fx.ini [BASIC] ALLOW_IN_TRIPLE
     // AC keys, from <docs>\cfg\video.ini.
     std::optional<long long> aasamples;              // [VIDEO] AASAMPLES
     std::optional<long long> video_width;            // [VIDEO] WIDTH

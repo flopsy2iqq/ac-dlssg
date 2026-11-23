@@ -155,6 +155,8 @@ CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& d
     const auto tweaksOver = IniFile::Load(cspOver + L"dxgi_tweaks.ini");
     const auto gfxBase = IniFile::Load(cspBase + L"graphics_adjustments.ini");
     const auto gfxOver = IniFile::Load(cspOver + L"graphics_adjustments.ini");
+    const auto fxBase = IniFile::Load(cspBase + L"extra_fx.ini");
+    const auto fxOver = IniFile::Load(cspOver + L"extra_fx.ini");
     const std::wstring videoPath = Join(docsAcDir, L"cfg\\video.ini");
     const auto video = IniFile::Load(videoPath);
 
@@ -165,6 +167,8 @@ CompatInputs ReadCompatInputs(const std::wstring& gameDir, const std::wstring& d
     in.hdr_enabled = ToInt(LayeredGet(tweaksBase, tweaksOver, "HDR", "ENABLED"));
     in.fsr_active = ToInt(LayeredGet(gfxBase, gfxOver, "FSR", "ACTIVE"));
     in.fsr_old_implementation = ToInt(LayeredGet(gfxBase, gfxOver, "FSR", "OLD_IMPLEMENTATION"));
+    in.extra_fx_enabled = ToInt(LayeredGet(fxBase, fxOver, "BASIC", "ENABLED"));
+    in.extra_fx_allow_in_triple = ToInt(LayeredGet(fxBase, fxOver, "BASIC", "ALLOW_IN_TRIPLE"));
     in.video_ini_path = ToUtf8(videoPath);
     if (video) {
         in.aasamples = ToInt(video->Get("VIDEO", "AASAMPLES"));

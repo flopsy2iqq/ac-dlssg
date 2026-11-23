@@ -200,6 +200,10 @@ ac-dlssg {VERSION} для Assetto Corsa
   - Тройные мониторы пока не поддерживаются: генерация кадров для них
     планируется в 1.4. Если вы ездите на трёх мониторах, помогите логами:
     добавьте в конец ac-dlssg\ac-dlssg.ini строки [debug] и triple_diag=1,
+    в Content Manager (Настройки, Custom Shaders Patch, слева в группе
+    Graphics пункт EXTRA FX) включите Extra FX и «Allow in triple or other
+    multi-view modes»: без этого CSP в тройном режиме не запускает DLSS, и
+    логировать нечего. Затем
     проедьте минуту в тройном режиме (генерация кадров при этом выключена),
     закройте игру, запустите ac-dlssg\collect-logs.bat и пришлите zip.
     Подробно в docs\README.ru.md, раздел «Тройные мониторы: нужна помощь».

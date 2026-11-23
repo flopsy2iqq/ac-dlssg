@@ -31,6 +31,9 @@ constexpr uint32_t kTripleDiagWindows = 4;
 // per window (10 a frame on average), and in the whole session.
 constexpr uint32_t kTripleDiagMaxEvaluateLinesPerWindow = 3000;
 constexpr uint32_t kTripleDiagMaxEvaluateLines = 6000;
+// Presented frames without a counted DLSS evaluate before the diagnostics
+// say so, once (review finding B-6).
+constexpr uint32_t kTripleDiagNoEvaluateFrames = 600;
 
 // Pure: the switch is set and the camera mode is TRIPLE (case-insensitive).
 bool TripleDiagActive(bool configured, const std::optional<std::string>& cameraMode);
@@ -97,7 +100,8 @@ public:
     explicit TripleDiagLog(std::function<void(const std::string&)> log, uint32_t frames = kTripleDiagFrames,
                            uint32_t windows = kTripleDiagWindows,
                            uint32_t maxLinesPerWindow = kTripleDiagMaxEvaluateLinesPerWindow,
-                           uint32_t maxLines = kTripleDiagMaxEvaluateLines);
+                           uint32_t maxLines = kTripleDiagMaxEvaluateLines,
+                           uint32_t noEvaluateFrames = kTripleDiagNoEvaluateFrames);
     // A counted CreateFeature: logged, and the next evaluate starts a new
     // window while windows remain.
     void OnCreate(uint64_t featureKey, uint32_t width, uint32_t height, uint32_t outWidth, uint32_t outHeight);
@@ -116,7 +120,7 @@ private:
     void Log(const std::string& line);
 
     std::function<void(const std::string&)> log_;
-    const uint32_t frames_, windows_, maxLinesPerWindow_, maxLines_;
+    const uint32_t frames_, windows_, maxLinesPerWindow_, maxLines_, noEvaluateFrames_;
     mutable std::mutex mu_;
     uint32_t windowsUsed_ = 0;
     uint32_t framesLeft_ = 0;  // > 0 while a window is open
@@ -126,6 +130,10 @@ private:
     uint32_t creates_ = 0;     // creates logged in this session
     uint32_t windowLines_ = 0;  // evaluate lines of the open window
     uint32_t lines_ = 0;        // evaluate lines of the session
+    // Before the first window: presented frames, and the evaluates the hook
+    // did not count, for the line of kTripleDiagNoEvaluateFrames.
+    uint32_t idleFrames_ = 0;
+    TripleDiagFrameCounts before_;
 };
 
 }  // namespace acdb

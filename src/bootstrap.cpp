@@ -215,6 +215,11 @@ void LogCompatInputs(const CompatInputs& c) {
          Opt(c.hdr_enabled).c_str());
     LOGI("compat: graphics_adjustments.ini [FSR] ACTIVE=%s OLD_IMPLEMENTATION=%s", Opt(c.fsr_active).c_str(),
          Opt(c.fsr_old_implementation).c_str());
+    // Review finding B-6: CSP's DLSS needs Extra FX, and in triple-screen
+    // mode its "Allow in triple" too.
+    LOGI("compat: extra_fx.ini [BASIC] ENABLED=%s ALLOW_IN_TRIPLE=%s (CSP's DLSS needs Extra FX on, and in "
+         "triple-screen mode ALLOW_IN_TRIPLE=1)",
+         Opt(c.extra_fx_enabled).c_str(), Opt(c.extra_fx_allow_in_triple).c_str());
     LOGI("compat: video.ini AASAMPLES=%s WIDTH=%s HEIGHT=%s [CAMERA] MODE=%s", Opt(c.aasamples).c_str(),
          Opt(c.video_width).c_str(), Opt(c.video_height).c_str(),
          c.camera_mode ? c.camera_mode->c_str() : "unset");

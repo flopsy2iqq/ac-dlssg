@@ -426,6 +426,16 @@ TEST(Compat_ReadInputsLayered) {
     CHECK(!in.dlss5_bridge_loaded);
     CHECK(!in.renodx_dlss5_loaded);
 
+    // Review finding B-6: CSP runs DLSS only with Extra FX on, and in
+    // triple-screen mode only with its "Allow in triple" (extra_fx.ini
+    // [BASIC] ALLOW_IN_TRIPLE), which is 0 by default.
+    CHECK(!in.extra_fx_enabled.has_value() && !in.extra_fx_allow_in_triple.has_value());
+    dir.Write(L"game\\extension\\config\\extra_fx.ini", "[BASIC]\r\nENABLED=0\r\nALLOW_IN_TRIPLE=0 ; Allow in triple\r\n");
+    dir.Write(L"docs\\cfg\\extension\\extra_fx.ini", "[BASIC]\r\nENABLED=1\r\n");
+    CompatInputs fx = ReadCompatInputs(game, docs);
+    CHECK(fx.extra_fx_enabled == std::optional<long long>(1));
+    CHECK(fx.extra_fx_allow_in_triple == std::optional<long long>(0));
+
     // Trailing separators on the directories make no difference.
     CompatInputs in2 = ReadCompatInputs(game + L"\\", docs + L"\\");
     CHECK(in2.hdr_enabled == std::optional<long long>(1));
