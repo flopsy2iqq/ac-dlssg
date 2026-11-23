@@ -19,6 +19,7 @@ It takes about 5 minutes.
 3. **Unpack it.** Right-click the zip and choose **Extract All**.
 4. **Double-click `install.bat`.**
    - If Windows asks "Do you want to allow this app to make changes?", click **Yes**.
+   - **RTX 40 or RTX 50:** the installer also turns NVIDIA Smooth Motion off for Assetto Corsa (the driver's own frame generation, which frame generation cannot run on top of). It says so first, then Windows asks for administrator rights for this one change ("ac-dlssg driver profile helper"): click **Yes**. The uninstaller puts the setting back. To leave the driver profile alone, run `install.bat -KeepSmoothMotion` instead; the README's section "NVIDIA Smooth Motion" explains it.
    - Wait until the window says it is done, then press **Enter**.
    - Done. You can now delete the unpacked folder and the zip. Everything the mod needs, its uninstaller too, is in the game folder.
 5. **Turn on DLSS before you start the game.** Frame generation needs it.
@@ -39,7 +40,7 @@ It takes about 5 minutes.
 - **No FPS gain:** check that DLSS is on (step 5), then open the **AC DLSS-G** window. It says why frame generation is off.
 - **Ghosting** (a trail behind moving things) **with DLAA:** untick FXAA (step 5).
 - **Ghosting at night or behind lights:** set CSP's DLSS preset to **M** (Content Manager: Settings, Custom Shaders Patch, ADJUSTMENTS, Upscaling, DLSS preset). The tested setup uses M.
-- **The window says "NVIDIA Smooth Motion ... is active"** (RTX 40 and RTX 50): the NVIDIA driver's own frame generation took over the game, even if the NVIDIA App shows it off. In [NVIDIA Profile Inspector](https://github.com/Orbmu2k/nvidiaProfileInspector), choose the profile **Assetto Corsa**, set **Smooth Motion - Enabled APIs** (`0xB0CC0875`) to **5**, click **Apply changes** and restart the game. If it still says so, set the same in the global profile (**_GLOBAL_DRIVER_PROFILE**). See the README for details.
+- **The window says "NVIDIA Smooth Motion ... is active"** (RTX 40 and RTX 50): the NVIDIA driver's own frame generation took over the game, even if the NVIDIA App shows it off. Run `install.bat` again and click **Yes** when Windows asks: it turns Smooth Motion off for Assetto Corsa. Then restart the game. By hand: in [NVIDIA Profile Inspector](https://github.com/Orbmu2k/nvidiaProfileInspector), choose the profile **Assetto Corsa**, set **Smooth Motion - Enabled APIs** (`0xB0CC0875`) to **5**, click **Apply changes** and restart the game. If it still says so, set the same in the global profile (**_GLOBAL_DRIVER_PROFILE**). See the README for details.
 - **VR** is not supported and not planned: ac-dlssg switches itself off in VR. Use SteamVR Motion Smoothing, Meta ASW or your OpenXR runtime's reprojection instead.
 - **Neural rendering:** CSP's built-in Neural Rendering works together with ac-dlssg. The ReShade add-ons DLSS 5 Bridge and RenoDX DLSS5 cannot run together with ac-dlssg yet: use CSP's built-in Neural Rendering instead, or remove the add-on (or untick it in ReShade's Add-ons tab) for frame generation.
 - **Streamline warnings** in the logs, such as `Invalid backbuffer resource extent` once at start or `Out of order frame` after frame generation switches off, are harmless.
@@ -56,7 +57,7 @@ Download the new zip, unpack it and double-click its `install.bat`, as above. It
 
 1. **Open the game folder.** In Steam, right-click **Assetto Corsa**, choose **Manage**, then **Browse local files**.
 2. **Open the `ac-dlssg` folder** and double-click **`uninstall.bat`**.
-3. Wait until the window says it is done, then press **Enter**. The uninstaller removes itself too.
+3. Wait until the window says it is done, then press **Enter**. The uninstaller removes itself too. If the installer turned NVIDIA Smooth Motion off, the uninstaller puts the setting back, and Windows asks for administrator rights again.
 
 Your settings and logs stay in `ac-dlssg`. After the uninstall you can simply delete the `ac-dlssg` folder.
 

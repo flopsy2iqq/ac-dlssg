@@ -39,6 +39,10 @@ SOFTWARE.
 -------------------------------------------------------------------------------
 2. NVIDIA NVAPI headers (compiled in)
    https://github.com/NVIDIA/nvapi
+   Used at build time for ac-dlssg.dll, which reads the NVIDIA driver
+   profile, and for ac-dlssg-drs.exe, the installer's driver-profile helper,
+   which changes one setting of it (NVIDIA Smooth Motion for Assetto Corsa).
+   Both load nvapi64.dll from System32 at runtime; NVAPI is not shipped.
 
 SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: MIT

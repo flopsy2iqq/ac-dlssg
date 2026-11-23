@@ -190,8 +190,13 @@ ac-dlssg {VERSION} для Assetto Corsa
     (renodx-dlss5.addon64) пока не могут работать вместе с мостом:
     используйте вместо них Neural Rendering из CSP или уберите аддон,
     чтобы работала генерация кадров.
-  - Не поддерживаются тройные мониторы, HDR, MSAA, EXCLUSIVE_FULLSCREEN=1
-    и OLD_SWAPCHAIN=1.
+  - Не поддерживаются HDR, MSAA, EXCLUSIVE_FULLSCREEN=1 и OLD_SWAPCHAIN=1.
+  - Тройные мониторы пока не поддерживаются: генерация кадров для них
+    планируется в 1.4. Если вы ездите на трёх мониторах, помогите логами:
+    добавьте в конец ac-dlssg\ac-dlssg.ini строки [debug] и triple_diag=1,
+    проедьте минуту в тройном режиме (генерация кадров при этом выключена),
+    закройте игру, запустите ac-dlssg\collect-logs.bat и пришлите zip.
+    Подробно в docs\README.ru.md, раздел «Тройные мониторы: нужна помощь».
   - Разовые предупреждения Streamline в логах (Invalid backbuffer resource
     extent при запуске, Out of order frame после выключения генерации)
     безвредны.
