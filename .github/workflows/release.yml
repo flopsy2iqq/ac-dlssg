@@ -4,7 +4,9 @@
 # ac-dlssg.dll and the driver-profile helper ac-dlssg-drs.exe (GitHub build
 # provenance), and creates the GitHub release with the zip attached. The
 # release notes are the version's CHANGELOG.md section, the SHA-256 of those
-# files and the command that verifies them.
+# files and the command that verifies them. Then, when the repository
+# variable NEXUSMODS_FILE_ID is set, the nexus job uploads the same zip to
+# Nexus Mods as a new version of that file (see the job).
 name: release
 
 on:
@@ -68,3 +70,45 @@ jobs:
           gh release create $env:GITHUB_REF_NAME "dist\package\ac-dlssg-$env:VERSION.zip" --verify-tag `
               --title "ac-dlssg $env:VERSION" --notes-file dist\release-notes.md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # Uploads the zip to Nexus Mods (https://www.nexusmods.com/assettocorsa/mods/124)
+  # as a new version of its main file, with Nexus Mods' own upload action
+  # (v3 Upload API), pinned to the commit of its tag. It runs only when the
+  # repository variable NEXUSMODS_FILE_ID holds that file's ID (Nexus: Files
+  # tab, the file's Advanced option) and reads the personal API key from the
+  # secret NEXUSMODS_API_KEY (https://www.nexusmods.com/settings/api-keys).
+  # The previous version is archived, the mod's version follows, and mod
+  # manager downloads stay off as on the page (the mod needs install.bat).
+  # The page description and the changelog entry are not part of it.
+  nexus:
+    needs: [build, release]
+    if: ${{ vars.NEXUSMODS_FILE_ID != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Download the release zip
+        uses: actions/download-artifact@v4
+        with:
+          name: ac-dlssg-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Upload the zip to Nexus Mods
+        uses: Nexus-Mods/upload-action@98532f7670c27cbecc78fae03fa3e278147827e2 # v1.0.0-beta.11
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ vars.NEXUSMODS_FILE_ID }}
+          filename: dist/package/ac-dlssg-${{ needs.build.outputs.version }}.zip
+          version: ${{ needs.build.outputs.version }}
+          display_name: ac-dlssg ${{ needs.build.outputs.version }}
+          description: >-
+            Release ${{ needs.build.outputs.version }}. Unpack, run install.bat. It downloads NVIDIA Streamline;
+            on RTX 20/30 also dlssg_for_sm86, on RTX 40 MFG-Unlocker (third-party). On RTX 40/50 its helper
+            ac-dlssg-drs.exe asks for admin rights to turn NVIDIA Smooth Motion off for AC only.
+          category: main
+          archive_existing_version: 'true'
+          update_mod_version: 'true'
+          show_requirements_pop_up: 'true'
+          primary_mod_manager_download: 'false'
+          allow_mod_manager_download: 'false'

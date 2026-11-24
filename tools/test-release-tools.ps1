@@ -410,6 +410,35 @@ Invoke-Case 'RP2: without -Version, make-test-package.ps1 names the zip after th
     }
 }
 
+# release.yml's nexus job (static): it gets the Nexus Mods API key and
+# publishes, so its guard, pin, permissions and texts are pinned here.
+Invoke-Case 'RP3: release.yml uploads to Nexus Mods only when configured, after the GitHub release, with the pinned official action' {
+    $yml = [IO.File]::ReadAllText((Join-Path $repo '.github\workflows\release.yml')) -replace "`r`n", "`n"
+    $m = [regex]::Match($yml, '(?ms)^  nexus:\n(?<body>.*?)(?=^  [a-z][a-z0-9_-]*:\n|\z)')
+    Check $m.Success 'release.yml has a nexus job'
+    if (-not $m.Success) { return }
+    $job = $m.Groups['body'].Value
+    Check ($job -match '(?m)^    needs: \[build, release\]$') 'it runs after the build and the GitHub release'
+    Check ($job -match '(?m)^    if: \$\{\{ vars\.NEXUSMODS_FILE_ID != '''' \}\}$') 'only when the repository variable NEXUSMODS_FILE_ID is set'
+    Check ($job -match '(?m)^    permissions:\n      contents: read$' -and $job -notmatch ': write') 'with read permissions only'
+    Check ($job -match '(?m)^        uses: Nexus-Mods/upload-action@[0-9a-f]{40} # v\S+$') 'the official Nexus-Mods/upload-action, pinned to a full commit SHA with its tag in a comment'
+    Check ($job -match '(?m)^          api_key: \$\{\{ secrets\.NEXUSMODS_API_KEY \}\}$') 'the API key comes only from the secret NEXUSMODS_API_KEY'
+    Check ($job -match '(?m)^          file_id: \$\{\{ vars\.NEXUSMODS_FILE_ID \}\}$') 'the file id from the variable'
+    Check ($job -match '(?m)^          filename: dist/package/ac-dlssg-\$\{\{ needs\.build\.outputs\.version \}\}\.zip$') 'it uploads the zip the GitHub release attaches'
+    Check ($job -match "(?m)^          allow_mod_manager_download: 'false'$" -and $job -match "(?m)^          primary_mod_manager_download: 'false'$") 'no mod manager downloads (the mod needs install.bat), as on the Nexus page'
+    Check ($job -match "(?m)^          archive_existing_version: 'true'$" -and $job -match "(?m)^          update_mod_version: 'true'$") 'the old version is archived and the mod version follows'
+    $d = [regex]::Match($job, '(?m)^          description: >-\n(?<text>(?:^            [^\n]*\n)+)')
+    Check $d.Success 'a file description'
+    if ($d.Success) {
+        $text = (($d.Groups['text'].Value -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' ')
+        $long = $text.Replace('${{ needs.build.outputs.version }}', '10.10.10')
+        Check ($text.Contains('${{ needs.build.outputs.version }}') -and $long.Length -le 255) "it names the version and fits Nexus's 255 characters with a version like 10.10.10 ($($long.Length))"
+    }
+    $n = [regex]::Match($job, '(?m)^          display_name: (?<name>.+)$')
+    $name = $n.Groups['name'].Value.Replace('${{ needs.build.outputs.version }}', '10.10.10')
+    Check ($n.Success -and $name.Length -le 50 -and $name -match "^[a-zA-Z0-9 _'().-]+$") "a display name Nexus accepts ($name)"
+}
+
 Write-Host ''
 Write-Host "test-release-tools: $($script:passed) passed, $($script:failed) failed"
 if ($script:failed -gt 0) {
