@@ -456,4 +456,40 @@ bool StatusPollClock::Due(bool dlssgOn) const { return dlssgOn && since_ >= kFra
 
 void StatusPollClock::Polled() { since_ = 0; }
 
+bool FgStatusRetryable(uint32_t status) {
+    constexpr uint32_t kResolutionTooLow = 1u << 0;  // sl::DLSSGStatus::eFailResolutionTooLow
+    constexpr uint32_t kHdrFormat = 1u << 2;         // sl::DLSSGStatus::eFailHDRFormatNotSupported
+    return (status & (kResolutionTooLow | kHdrFormat)) == 0;
+}
+
+uint64_t FgFailureRetry::Failed(bool retryable, uint64_t nowMs) {
+    if (!retryable) {
+        pending_ = false;
+        return 0;
+    }
+    constexpr uint64_t kDelaysMs[] = {5000, 10000, 20000, 40000};
+    constexpr unsigned kSteps = sizeof(kDelaysMs) / sizeof(kDelaysMs[0]);
+    const uint64_t delay = failures_ < kSteps ? kDelaysMs[failures_] : 60000;
+    ++failures_;
+    pending_ = true;
+    due_ = nowMs + delay;
+    return delay;
+}
+
+bool FgFailureRetry::Due(uint64_t nowMs) {
+    if (!pending_ || nowMs < due_) return false;
+    pending_ = false;
+    last_retry_ = nowMs;
+    return true;
+}
+
+void FgFailureRetry::Ok(uint64_t nowMs) {
+    if (!pending_ && failures_ > 0 && nowMs - last_retry_ >= kHealthyMs) failures_ = 0;
+}
+
+void FgFailureRetry::Reset() {
+    failures_ = 0;
+    pending_ = false;
+}
+
 }  // namespace acdb

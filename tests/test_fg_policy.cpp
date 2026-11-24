@@ -427,6 +427,61 @@ TEST(FgState_StatusPollSurvivesDlssgTogglingOffForSingleFrames) {
     CHECK_EQ(polls, 5);
 }
 
+// ---------------------------------------------------------------- failure retry
+
+TEST(FgRetry_OnlyResolutionAndHdrFailuresWaitForAToggleOrResize) {
+    CHECK(!FgStatusRetryable(1u << 0));                // eFailResolutionTooLow
+    CHECK(!FgStatusRetryable(1u << 2));                // eFailHDRFormatNotSupported
+    CHECK(!FgStatusRetryable((1u << 1) | (1u << 2)));  // one such bit is enough
+    CHECK(FgStatusRetryable(1u << 1));                 // eFailReflexNotDetectedAtRuntime
+    CHECK(FgStatusRetryable(1u << 3));                 // eFailCommonConstantsInvalid
+    CHECK(FgStatusRetryable(1u << 4));                 // eFailGetCurrentBackBufferIndexNotCalled
+    CHECK(FgStatusRetryable(1u << 7));                 // a bit this build does not know
+    FgFailureRetry r;
+    CHECK_EQ(r.Failed(false, 1000), uint64_t(0));
+    CHECK(!r.Due(10000000));
+}
+
+TEST(FgRetry_AFailureIsRetriedAfter5_10_20And40SecondsThenEveryMinute) {
+    FgFailureRetry r;
+    uint64_t now = 1000;
+    const uint64_t expected[] = {5000, 10000, 20000, 40000, 60000, 60000};
+    unsigned attempt = 0;
+    for (uint64_t delay : expected) {
+        CHECK_EQ(r.Failed(true, now), delay);
+        CHECK_EQ(r.Attempt(), ++attempt);
+        CHECK(!r.Due(now + delay - 1));
+        CHECK(r.Due(now + delay));
+        CHECK(!r.Due(now + delay + 1));  // once
+        now += delay + 500;              // DLSS-G fails again half a second after the retry
+    }
+}
+
+TEST(FgRetry_AToggleOrResizeRetriesAtOnceAndStartsTheBackoffOver) {
+    FgFailureRetry r;
+    r.Failed(true, 0);
+    CHECK(r.Due(5000));
+    CHECK_EQ(r.Failed(true, 6000), uint64_t(10000));
+    r.Reset();  // the toggle itself clears the failure; nothing stays scheduled
+    CHECK(!r.Due(1000000));
+    CHECK_EQ(r.Attempt(), 0u);
+    CHECK_EQ(r.Failed(true, 2000000), uint64_t(5000));
+}
+
+TEST(FgRetry_AMinuteWithoutAFailureAfterARetryStartsTheBackoffOver) {
+    FgFailureRetry r;
+    r.Failed(true, 0);
+    CHECK(r.Due(5000));
+    CHECK_EQ(r.Failed(true, 6000), uint64_t(10000));
+    CHECK(r.Due(16000));
+    r.Ok(16000 + 59999);  // eOk, but less than a minute after the retry
+    CHECK_EQ(r.Failed(true, 80000), uint64_t(20000));
+    CHECK(r.Due(100000));
+    r.Ok(100000 + 60000);  // a minute of eOk after the retry
+    CHECK_EQ(r.Attempt(), 0u);
+    CHECK_EQ(r.Failed(true, 170000), uint64_t(5000));
+}
+
 // ---------------------------------------------------------------- multi frame generation
 
 TEST(FgMult_ValidMultipliersAre2To4) {

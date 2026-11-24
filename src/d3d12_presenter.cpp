@@ -356,6 +356,7 @@ struct D3D12Presenter::Impl {
     bool vsync_available = false;  // bIsVsyncSupportAvailable == eTrue
     bool polled_state = false;     // slDLSSGGetState answered at least once while on
     StatusPollClock status_clock;  // when the answer's status is acted on
+    FgFailureRetry failure_retry;  // when a failure status is retried by itself (spec 9)
     unsigned state_answers_logged = 0;
     uint32_t last_mvec_w = 0;
     uint32_t last_mvec_h = 0;
@@ -849,6 +850,7 @@ void D3D12Presenter::Impl::SetUserOn(bool on, const char* source) {
     user_source = source;
     prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
     state_failure.clear();   // spec 9: a failure status is retried after a toggle
+    failure_retry.Reset();
     LOGI("fg: %s -> %s", source, on ? "on" : "off");
 }
 
@@ -995,6 +997,13 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     g.userOn = fg_user_on;
     g.userSource = user_source;
     g.supported = fg_supported;
+    if (!state_failure.empty() && failure_retry.Due(GetTickCount64())) {
+        // Spec 9: a failure is also retried by itself, not only after a
+        // toggle or a resize (FgFailureRetry).
+        LOGI("fg: DLSS-G is retried by itself (attempt %u) after: %s", failure_retry.Attempt(), state_failure.c_str());
+        state_failure.clear();
+        prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
+    }
     g.stateFailure = state_failure;
     g.stalled = stalled;
     g.windowMinimized = IsIconic(hwnd) != FALSE;
@@ -1245,6 +1254,7 @@ void D3D12Presenter::Impl::ApplyPendingMultiplier() {
     LOGI("fg: multiplier %uX -> %uX requested", before, mult.Requested());
     prev_had_inputs = false;  // spec 8: the next DLSS-G frame has reset
     state_failure.clear();    // spec 9: a failure status is retried
+    failure_retry.Reset();
     status_due = true;        // the panel shows the request at the end of this frame
 }
 
@@ -1324,8 +1334,8 @@ void D3D12Presenter::Impl::LogMode(bool on, const std::string& reason, bool perF
 // DLSS-G Present, slDLSSGGetState without options (only the estimate is
 // expensive, DLSS-G guide 13.0) gives that Present's generated frames
 // (review finding SL-1). Every 60 frames (StatusPollClock) the same answer's
-// status, or a failed call, keeps DLSS-G off until the next resize or toggle
-// (spec 6.8, 9).
+// status, or a failed call, keeps DLSS-G off until the next resize or toggle,
+// or until FgFailureRetry retries it by itself (spec 6.8, 9).
 void D3D12Presenter::Impl::PollState(bool presentedOn) {
     if (!sl || !fg_supported) return;
     status_clock.Frame();
@@ -1337,7 +1347,10 @@ void D3D12Presenter::Impl::PollState(bool presentedOn) {
     if (r != sl::Result::eOk) {
         if (!statusDue) return;  // the runtime logs the failure, throttled
         state_failure = std::string("query failed: ") + SlResultName(r);
-        LOGW("fg: slDLSSGGetState failed (%s); DLSS-G stays off until the next resize or toggle", SlResultName(r));
+        const uint64_t retryMs = failure_retry.Failed(true, GetTickCount64());
+        LOGW("fg: slDLSSGGetState failed (%s); DLSS-G stays off, is retried by itself in %llu s (attempt %u), or at "
+             "the next resize or toggle",
+             SlResultName(r), static_cast<unsigned long long>(retryMs / 1000), failure_retry.Attempt());
         return;
     }
     vsync_available = st.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
@@ -1365,7 +1378,16 @@ void D3D12Presenter::Impl::PollState(bool presentedOn) {
     const uint32_t status = static_cast<uint32_t>(st.status);
     if (status != 0) {
         state_failure = DlssgStatusText(status);
-        LOGW("fg: DLSS-G status %s; DLSS-G stays off until the next resize or toggle", state_failure.c_str());
+        const uint64_t retryMs = failure_retry.Failed(FgStatusRetryable(status), GetTickCount64());
+        if (retryMs > 0) {
+            LOGW("fg: DLSS-G status %s; DLSS-G stays off, is retried by itself in %llu s (attempt %u), or at the next "
+                 "resize or toggle",
+                 state_failure.c_str(), static_cast<unsigned long long>(retryMs / 1000), failure_retry.Attempt());
+        } else {
+            LOGW("fg: DLSS-G status %s; DLSS-G stays off until the next resize or toggle", state_failure.c_str());
+        }
+    } else {
+        failure_retry.Ok(GetTickCount64());
     }
 }
 
@@ -1462,6 +1484,7 @@ void D3D12Presenter::Impl::BeforeChainChange(D3D12Presenter& self) {
     prev_had_inputs = false;
     if (!sl) return;
     state_failure.clear();  // spec 9: retried after the next resize
+    failure_retry.Reset();
     const bool wasOn = mode_on;
     if (wasOn) {
         SetMode(false);

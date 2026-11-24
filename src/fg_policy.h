@@ -452,4 +452,37 @@ private:
     uint32_t since_ = 0;
 };
 
+// A failure status, or a failed slDLSSGGetState, keeps DLSS-G off (spec 9).
+// Before 1.3.0 only a toggle or a resize retried it; now it is retried by
+// itself, except for the statuses that only a toggle or a resize can change:
+// eFailResolutionTooLow and eFailHDRFormatNotSupported. Unknown bits are
+// retried.
+bool FgStatusRetryable(uint32_t status);
+
+// When a DLSS-G failure is retried by itself: 5, 10, 20 and 40 s after the
+// failure, then every 60 s. A toggle or a resize retries at once (the
+// presenter clears the failure then) and starts the backoff over, as does a
+// minute of eOk after the last retry. Times are GetTickCount64 milliseconds.
+class FgFailureRetry {
+public:
+    static constexpr uint64_t kHealthyMs = 60000;
+    // A failure at nowMs. Not retryable: nothing is scheduled, 0. Else the
+    // delay until the retry in ms, and the attempt counts up.
+    uint64_t Failed(bool retryable, uint64_t nowMs);
+    // True once, when the scheduled retry is due.
+    bool Due(uint64_t nowMs);
+    // DLSS-G reported eOk at nowMs.
+    void Ok(uint64_t nowMs);
+    // A toggle or a resize: nothing stays scheduled, and the backoff starts over.
+    void Reset();
+    // The number of the scheduled or last retry, from 1; 0 after a reset.
+    unsigned Attempt() const { return failures_; }
+
+private:
+    unsigned failures_ = 0;
+    bool pending_ = false;
+    uint64_t due_ = 0;
+    uint64_t last_retry_ = 0;
+};
+
 }  // namespace acdb
