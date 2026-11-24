@@ -118,9 +118,28 @@ Set-StrictMode -Version 2.0
 function Say([string]$Message) { Write-Host "dev-uninstall: $Message" }
 function Step([string]$Message) { Write-Host "  $Message" }
 
-# NVIDIA Smooth Motion back as it was before the package install (see the
-# description). Never throws: every problem is a warning, and the uninstall
-# goes on.
+# The names in <game>\ac-dlssg that stay after the uninstall: not the tools
+# in $ToolPaths, which the running uninstaller removes at its end
+# (-KeepTools), and not scripts\ when it holds nothing but tools.
+function Get-KeptDataNames([string]$DataDir, [string[]]$ToolPaths) {
+    $tools = @{}
+    foreach ($p in @($ToolPaths | Where-Object { $_ })) { $tools[(Get-NormalizedPath $p).ToLowerInvariant()] = $true }
+    $names = @()
+    foreach ($item in @(Get-ChildItem -LiteralPath $DataDir -Force -ErrorAction SilentlyContinue)) {
+        if ($item.PSIsContainer) {
+            if ($item.Name -ieq $script:AcdbToolsScriptsDirName) {
+                $others = @(Get-ChildItem -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue |
+                        Where-Object { $_.PSIsContainer -or -not $tools.ContainsKey((Get-NormalizedPath $_.FullName).ToLowerInvariant()) })
+                if ($others.Count -eq 0) { continue }
+            }
+        } elseif ($tools.ContainsKey((Get-NormalizedPath $item.FullName).ToLowerInvariant())) {
+            continue
+        }
+        $names += $item.Name
+    }
+    return $names
+}
+
 # "not set", "7 (DX12, DX11, Vulkan)" or, for NVIDIA's own value in the
 # profile, "7 (DX12, DX11, Vulkan), NVIDIA's predefined value".
 function Format-SmoothMotionRecordValue($Value) {
@@ -131,6 +150,9 @@ function Format-SmoothMotionRecordValue($Value) {
     return $text
 }
 
+# NVIDIA Smooth Motion back as it was before the package install (see the
+# description). Never throws: every problem is a warning, and the uninstall
+# goes on.
 function Restore-SmoothMotion([string]$Game, $Manifest) {
     $rec = Get-ManifestDriverProfile $Manifest
     if (-not $rec) { return }
@@ -543,7 +565,7 @@ try {
         Remove-Item -LiteralPath $manifestPath -Force
         Step "deleted $manifestPath"
         if (@(Get-ChildItem -LiteralPath $installDir -Force).Count -eq 0) { Remove-Item -LiteralPath $installDir -Force }
-        $kept = @(Get-ChildItem -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        $kept = @(Get-KeptDataNames $dataDir $toolPaths)
         if ($kept.Count -gt 0) { Step "kept $dataDir ($($kept -join ', ')); pass -RemoveData to delete it" }
     }
     Say 'done.'

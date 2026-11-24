@@ -2820,6 +2820,10 @@ Invoke-Case 'IT1: the uninstaller in the game folder works after the package is 
     $r = Invoke-InstalledUninstall $game @('-NoPause', '-NoElevate')
     Check ($r.Code -eq 0) 'the installed uninstall.bat exits 0'
     Check ($r.StdErr.Trim().Length -eq 0) "nothing on stderr, no 'The batch file cannot be found' ($($r.StdErr.Trim()))"
+    # The tools remove themselves after this line, so it names only what stays.
+    $keptLine = [regex]::Match($r.Text, '\\ac-dlssg \((?<names>[^)\r\n]*)\); pass -RemoveData to delete it')
+    $keptNames = @($keptLine.Groups['names'].Value -split ', ' | Sort-Object)
+    Check ($keptLine.Success -and ($keptNames -join '|') -eq ((@('ac-dlssg.ini', 'logs') | Sort-Object) -join '|')) "the uninstall names as kept only the settings and the logs, not the tools that remove themselves at its end ($($keptLine.Value))"
     Check (Test-SameBytes (Read-Bytes $ini) $original) 'ReShade.ini is byte-identical to before the install'
     Check (-not (Test-Path -LiteralPath (Join-Path $game 'ac-dlssg\uninstall.bat')) -and (Test-NoTools $game)) 'uninstall.bat, collect-logs.bat and scripts\ are gone'
     $left = @(Get-ChildItem -LiteralPath (Join-Path $game 'ac-dlssg') -Recurse -Force | ForEach-Object { $_.FullName.Substring($game.Length + 1) } | Sort-Object)
