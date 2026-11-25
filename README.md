@@ -78,9 +78,11 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 
 1. Close Assetto Corsa and Content Manager's game session.
 2. Download `ac-dlssg-<version>.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `docs`, `files`, `scripts` and `tools`.
-3. Double-click `install.bat`. That is all: the installer asks nothing. It finds the game through Steam, downloads Streamline (and on an RTX 30, RTX 2050 or RTX 20 dlssg_for_sm86, on an RTX 40 MFG-Unlocker), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. On an RTX 40 or RTX 50 it also turns NVIDIA Smooth Motion off for Assetto Corsa, and Windows asks for administrator rights for that one change (see [NVIDIA Smooth Motion](#nvidia-smooth-motion-rtx-40-and-rtx-50)). At the end the window waits for Enter. Afterwards you can delete the unpacked folder and the zip: the uninstaller and the log collector are in the game folder, in `ac-dlssg`.
+3. Double-click `install.bat`. A window opens first, with the game folder the installer found through Steam selected: check it and click **Select folder** (or choose the folder that holds `acs.exe`). Then it downloads Streamline (and on an RTX 30, RTX 2050 or RTX 20 dlssg_for_sm86, on an RTX 40 MFG-Unlocker), prints where NVIDIA's license files are (installing means you accept them) and installs. If the game is under `C:\Program Files (x86)`, Windows asks for administrator rights; confirm, and the install goes on in a new window. On an RTX 40 or RTX 50 it also turns NVIDIA Smooth Motion off for Assetto Corsa, and Windows asks for administrator rights for that one change (see [NVIDIA Smooth Motion](#nvidia-smooth-motion-rtx-40-and-rtx-50)). At the end the window waits for Enter. Afterwards you can delete the unpacked folder and the zip: the uninstaller and the log collector are in the game folder, in `ac-dlssg`.
 4. Before you start the game, turn on DLSS in CSP: in Content Manager, Settings, Custom Shaders Patch, ADJUSTMENTS (under Graphics), Upscaling: tick Active and set Method to NVIDIA DLSS (EXTRA FX must be active too). In Settings, Assetto Corsa, Video, set Anti-aliasing (MSAA) to Off, in every DLSS mode. With DLAA (Quality: DLAA (100%)), also untick FXAA there and keep post-processing on, or moving things ghost. Then start the game as usual.
 5. Drive. Frame generation turns on by itself once CSP's DLSS runs; it stays off in the pause menu and the main menu.
+
+**Advanced:** `install.bat -GameDir "D:\Games\assettocorsa"` installs into that folder without the window, and `install.bat -NoFolderDialog` takes the folder found through Steam without asking. If a download fails ("remote server error", for example), the installer says which address to open in a web browser and which file to put next to `install.bat`; the next run uses that file after the same checks as a download (see [If something goes wrong](#if-something-goes-wrong)).
 
 **Upgrading:** run `install.bat` of the new package over the old install. It replaces the files of the old build, the uninstaller in `ac-dlssg` included, removes the ones the new build no longer ships, and switches between ReShade and standalone mode by itself when ReShade was installed or removed since. It stops only for files that are clearly not this project's, such as another mod's `dxgi.dll`. It does not download Streamline again when the installed files are intact (each matches its pinned SHA-256 and carries NVIDIA's signature; it then says "Streamline 2.14.1 is already installed and verified; not downloaded again"), and the same goes for dlssg_for_sm86 on an RTX 30 or RTX 20 and MFG-Unlocker on an RTX 40.
 
@@ -111,6 +113,7 @@ The bridge itself never changes driver settings; only the installer does, with t
   - Under the video memory line, a note in orange says "video memory is tight ... frame generation on anyway" when the bridge turned frame generation on with little memory to spare. When it keeps frame generation off, the status line says "Off: not enough video memory ... lower CSP texture quality, shadows or the render resolution".
   - After **Save as default** the window says **Restart the game to apply**: the saved switches are the ones the game starts with next time (the current session already uses them).
 - CSP's own FPS counter shows real frames. Use the NVIDIA overlay (Alt+R), RTSS or another external counter to see the frames on screen.
+- While CSP makes an accumulation screenshot (a motion shot), frame generation turns off by itself, so that the shot comes out right; it turns on again afterwards.
 - Settings are in `<game>\ac-dlssg\ac-dlssg.ini`: `start_with_fg`, `hotkey`, `log_level`, `fg_multiplier` (2, 3 or 4; **Save as default** writes it too), `fg_vram_headroom_mib` and `mfg_unlocker` (1, the default, loads the MFG-Unlocker the installer put into `ac-dlssg\mfg` on an RTX 40; 0 keeps NVIDIA's 2X).
   - `fg_vram_headroom_mib=auto` (the default) is the video memory kept free on top of what frame generation needs, adapted to the GPU: none when the card's video memory budget is below 6 GB, 256 MiB above. With `auto`, frame generation also turns on when 2X falls short by at most 128 MiB (or a tenth of what it needs, if that is more), as long as at least half of what it needs is free. A number of MiB instead keeps exactly that much free and never turns frame generation on short. When that number is what keeps frame generation off and `auto` would let it run, the mod fixes it by itself: it switches to `auto` at once, saves `fg_vram_headroom_mib=auto` in `ac-dlssg.ini`, and the window says "Video memory setting fixed". No restart is needed.
   - Upgrading from an older build replaces an old default `fg_vram_headroom_mib=512` or `=0` (with the comment line the installer wrote above it) by `auto`; a value you set yourself stays.
@@ -121,6 +124,7 @@ Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local 
 
 ## If something goes wrong
 
+- **"download of ... failed" (or "remote server error") during the install.** A download from GitHub failed. The message names the address: open it in a web browser, which saves the file the message names (for example `streamline-sdk-v2.14.1.zip`), put that file next to `install.bat` and run `install.bat` again. The installer uses it instead of the download, after the same checks (size, SHA-256 and NVIDIA's signatures); a file that does not match is refused.
 - **The game starts but the frame rate does not change.** Look at `<game>\ac-dlssg\logs\bridge.log`. The line `fg: DLSS-G on` means frame generation runs. A line `fg: frame without DLSS-G: <reason>`, or `DLSS-G is not supported on this adapter (...)`, says why it does not.
 - **"Not enough video memory" in the window.** Frame generation needs the memory the window names. Lower CSP's texture quality, shadows or the render resolution; the bridge checks again every 60 frames and turns frame generation on when it fits.
 - **Stutter or a poor 1% low while frame generation runs, on a G-Sync or FreeSync monitor.** This happens when the frames on screen go above the monitor's refresh rate with VSync off (for example 2X at 83 real fps, so 166 fps, on a 144 Hz monitor). Set NVIDIA Control Panel > Manage 3D settings > Program settings > Assetto Corsa (`acs.exe`): **Vertical sync = On**, and keep G-Sync on. Reflex then caps the output just below the refresh rate, which is the setup NVIDIA recommends for frame generation ([issue 3](https://github.com/flopsy2iqq/ac-dlssg/issues/3)).
@@ -140,12 +144,29 @@ Open the game folder (in Steam: right-click Assetto Corsa, Manage, Browse local 
 - 3X and 4X run only where the GPU and driver allow them (RTX 50, RTX 40 through MFG-Unlocker, or RTX 30 and RTX 20 through dlssg_for_sm86); elsewhere the bridge uses 2X and says so in the window.
 - MFG-Unlocker on RTX 40 has not been tested by the author of ac-dlssg, who has no RTX 40 card; please report how it runs.
 - CSP app windows and on-screen UI can show small artifacts during fast motion. A HUD-less colour buffer is planned.
-- The following are not supported: VR (the bridge switches itself off), triple screens (frame generation does not work there yet, see [Triple screens: help wanted](#triple-screens-help-wanted)), HDR output, MSAA, `EXCLUSIVE_FULLSCREEN=1`, `OLD_SWAPCHAIN=1`, and letterboxed output.
+- The following are not supported: VR (the bridge switches itself off), triple screens (experimental, flat screens only, see [Triple screens (experimental)](#triple-screens-experimental)), HDR output, MSAA, `EXCLUSIVE_FULLSCREEN=1`, `OLD_SWAPCHAIN=1`, and letterboxed output.
 - Other CSP upscalers (FSR, XeSS) do not provide the inputs frame generation needs.
 
-## Triple screens: help wanted
+<a id="triple-screens-help-wanted"></a>
 
-Frame generation does not work on triple screens yet. Whether and how it can depends on how CSP lays out its DLSS for the three screens, and only logs from triple-screen setups can tell; 1.3.0 can write them. If you drive in Assetto Corsa's triple-screen mode, please help:
+## Triple screens (experimental)
+
+CSP renders all three screens of Assetto Corsa's triple-screen mode in one frame, with one DLSS call. When the three screens are flat and placed symmetrically (no angled side screens), one camera describes that whole frame, and frame generation can run on it as on one screen. 1.3.0 tries this behind a switch. Add these two lines at the end of `<game>\ac-dlssg\ac-dlssg.ini`:
+
+```ini
+[experimental]
+triple_fg=1
+```
+
+- CSP's DLSS needs Extra FX, which stays off in triple-screen mode by default: in Content Manager, Settings, Custom Shaders Patch, EXTRA FX, turn it on and turn on "Allow in triple or other multi-view modes".
+- In the cockpit view the CSP app takes the camera from CSP's triple-screen layout; in a chase camera the whole window is one view and works as on one screen. With angled or asymmetric side screens frame generation stays off, and the window says "triple screens: frame generation works only with flat, symmetric screens for now (angled side screens are not supported)".
+- The window says "Experimental: triple-screen frame generation (flat screens only)." It is new: please report how it runs, with your monitors' resolution and the zip of `<game>\ac-dlssg\collect-logs.bat`, in a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues).
+
+Without the switch, triple-screen mode stays off as before, and the window names the switch.
+
+### Triple screens: diagnostics
+
+For setups where frame generation does not work yet, the bridge can log how CSP lays out its DLSS for the three screens; those logs decide whether and how it can. `triple_diag=1` keeps frame generation off, also with `triple_fg=1`.
 
 1. Add these two lines at the end of `<game>\ac-dlssg\ac-dlssg.ini`:
    ```ini
@@ -156,7 +177,7 @@ Frame generation does not work on triple screens yet. Whether and how it can dep
 3. Close the game, double-click `<game>\ac-dlssg\collect-logs.bat` and attach the zip to a [GitHub issue](https://github.com/flopsy2iqq/ac-dlssg/issues), with your monitors' resolution.
 4. Set `triple_diag=0` again (or remove the two lines).
 
-Without `triple_diag=1`, triple-screen mode stays off as before ("camera mode TRIPLE (triple screen) is not supported"). AC's triple-screen mode also runs in a window on one monitor, so the diagnostics can be tried without three monitors; logs from real triple setups are what helps most.
+AC's triple-screen mode also runs in a window on one monitor, so both can be tried without three monitors; logs from real triple setups are what helps most.
 
 <a id="looking-for-an-rtx-20-tester"></a>
 

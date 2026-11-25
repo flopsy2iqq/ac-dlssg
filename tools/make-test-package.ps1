@@ -31,7 +31,8 @@
                          given, on an RTX 30 also dlssg_for_sm86 0.3.5 (unless
                          -NoSpoof), on RTX 40 GPUs only MFG-Unlocker 1.5.0-hotfix.1
                          (unless -NoMfgUnlocker), runs dev-install.ps1 -AutoUpgrade (default
-                         -Mode Auto); it asks nothing
+                         -Mode Auto); it asks only for the game folder, in a
+                         folder window (not with -GameDir or -NoFolderDialog)
     scripts\uninstall.ps1
                          tools\package\uninstall.ps1: runs dev-uninstall.ps1
     scripts\collect-logs.ps1
