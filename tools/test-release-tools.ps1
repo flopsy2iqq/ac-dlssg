@@ -425,7 +425,7 @@ Invoke-Case 'RP3: release.yml uploads to Nexus Mods only when configured, after 
     Check ($job -match '(?m)^          api_key: \$\{\{ secrets\.NEXUSMODS_API_KEY \}\}$') 'the API key comes only from the secret NEXUSMODS_API_KEY'
     Check ($job -match '(?m)^          file_id: \$\{\{ vars\.NEXUSMODS_FILE_ID \}\}$') 'the file id from the variable'
     Check ($job -match '(?m)^          filename: dist/package/ac-dlssg-\$\{\{ needs\.build\.outputs\.version \}\}\.zip$') 'it uploads the zip the GitHub release attaches'
-    Check ($job -match "(?m)^          allow_mod_manager_download: 'false'$" -and $job -match "(?m)^          primary_mod_manager_download: 'false'$") 'no mod manager downloads (the mod needs install.bat), as on the Nexus page'
+    Check ($job -match "(?m)^          allow_mod_manager_download: 'false'$" -and $job -match "(?m)^          primary_mod_manager_download: 'false'$") 'no mod manager downloads (the mod needs install.bat)'
     Check ($job -match "(?m)^          archive_existing_version: 'true'$" -and $job -match "(?m)^          update_mod_version: 'true'$") 'the old version is archived and the mod version follows'
     $d = [regex]::Match($job, '(?m)^          description: >-\n(?<text>(?:^            [^\n]*\n)+)')
     Check $d.Success 'a file description'

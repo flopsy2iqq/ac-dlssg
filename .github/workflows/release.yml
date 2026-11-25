@@ -78,7 +78,7 @@ jobs:
   # tab, the file's Advanced option) and reads the personal API key from the
   # secret NEXUSMODS_API_KEY (https://www.nexusmods.com/settings/api-keys).
   # The previous version is archived, the mod's version follows, and mod
-  # manager downloads stay off as on the page (the mod needs install.bat).
+  # manager downloads are off (the mod needs install.bat; 1.2.0's file had them on).
   # The page description and the changelog entry are not part of it.
   nexus:
     needs: [build, release]
