@@ -43,6 +43,9 @@ struct PresenterEnvironment {
     // The triple-screen diagnostics run (TripleDiagActive, triple_diag.h):
     // DLSS-G stays off, and CSP's DLSS evaluates are logged.
     bool triple_diag = false;
+    // Experimental triple-screen frame generation runs (TripleFgActive): the
+    // gate lets triple-screen mode through, and the panel shows a note.
+    bool triple_fg = false;
     const CameraChannel* camera = nullptr;  // nullptr: CameraChannel::Get()
     // Spec 6.9, the in-game panel: the status section the presenter publishes
     // into and the control section it reads the Lua app's requests from, and

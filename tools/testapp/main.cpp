@@ -152,6 +152,7 @@ struct Options {
     std::string passthrough_reason;  // --expect-passthrough-reason: the text the pass-through must name
     bool fake_ngx = false;           // CSP's DLSS calls against fake_nvngx.dll
     bool fake_camera = false;        // the CSP Lua app's camera writer
+    int camera_flags = 0;            // --camera-flags: CameraFlags in every fake camera record
     bool fake_panel = false;         // the CSP Lua app's settings window
     bool fake_nvpresent = false;     // NVIDIA Smooth Motion: the chain is created from a module named NvPresent64.dll
     ExpectFg expect_fg = ExpectFg::None;
@@ -1220,7 +1221,8 @@ void WriteFakeCamera(App& a, int frame) {
     const float rw = static_cast<float>(a.opt.fake_ngx ? a.ngx.RenderWidth() : a.width);
     const float rh = static_cast<float>(a.opt.fake_ngx ? a.ngx.RenderHeight() : a.height);
     const float dt = static_cast<float>((now - a.camera_last_ms) / 1000.0);
-    a.camera.Write(testapp::PathPose(frame / kFakeCameraFps), rw, rh, dt, frame * 1000.0 / kFakeCameraFps);
+    a.camera.Write(testapp::PathPose(frame / kFakeCameraFps), rw, rh, dt, frame * 1000.0 / kFakeCameraFps,
+                   static_cast<uint32_t>(a.opt.camera_flags));
     a.camera_last_ms = now;
     ++a.camera_writes;
 }
@@ -1726,6 +1728,8 @@ void Usage() {
         "                        NVIDIA Smooth Motion creates it; the bridge must pass it through\n"
         "  --fake-camera         the CSP Lua app's camera: Local\\AcDlssg.Camera.v1 written before every frame\n"
         "                        (refused while acs.exe runs, which shares that section)\n"
+        "  --camera-flags N      with --fake-camera: these CameraFlags in every record, as the Lua app sets them\n"
+        "                        (272: triple-screen mode, the triple view of flat screens)\n"
         "  --expect-fg MODE      pipeline: the bridge log shows the capture, camera, constants and first-tags\n"
         "                        lines, and the statistics captures, camera_fresh and tagged at 90% of base_fps;\n"
         "                        no-camera: captures, but no fresh camera and no tags, and a warning naming\n"
@@ -1795,6 +1799,8 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
             o->fake_nvpresent = true;
         } else if (arg == L"--fake-camera") {
             o->fake_camera = true;
+        } else if (arg == L"--camera-flags" && hasValue) {
+            if (!ParseInt(argv[++i], 0, &o->camera_flags)) return false;
         } else if (arg == L"--fake-panel") {
             o->fake_panel = true;
         } else if (arg == L"--expect-fg" && hasValue) {
@@ -1817,6 +1823,7 @@ bool ParseArgs(int argc, wchar_t** argv, Options* o) {
     if (o->expect_fg != ExpectFg::None && !o->fake_ngx) return false;
     if (o->expect_fg == ExpectFg::Pipeline && !o->fake_camera) return false;
     if (o->expect_fg == ExpectFg::NoCamera && o->fake_camera) return false;
+    if (o->camera_flags && !o->fake_camera) return false;
     // fg_mult is checked with the rest of the statistics of --expect-fg.
     if (o->expect_fg_mult && o->expect_fg == ExpectFg::None) return false;
     // The panel's checks need a presenter and the whole request sequence.

@@ -331,6 +331,9 @@ struct D3D12Presenter::Impl {
     // The triple-screen diagnostics (env.triple_diag); before the
     // coordinator, which reports to it, so that it outlives it.
     std::unique_ptr<TripleDiagLog> triple_diag;
+    // Experimental triple-screen frame generation (env.triple_fg): the view
+    // the camera showed at the last line about it.
+    uint32_t triple_view_logged = UINT32_MAX;
     std::unique_ptr<CaptureCoordinator> coordinator;
     bool ngx_attached = false;
     uint32_t ngx_modules_logged = UINT32_MAX;
@@ -698,6 +701,10 @@ bool D3D12Presenter::Impl::Init(D3D12Presenter& self, const PresenterCreateInfo&
         }
         coordinator = std::make_unique<CaptureCoordinator>(deps);
     }
+    if (env.triple_fg)
+        LOGI("triple-fg: on ([experimental] triple_fg=1 and video.ini [CAMERA] MODE=TRIPLE): frame generation runs in "
+             "the single view and in the triple view of flat, symmetric screens; an angled or asymmetric layout keeps it "
+             "off (experimental)");
     if (!CreateSharedTexture(width, height, err)) return false;
     if (!FetchBuffers(self, err)) return false;
     for (UINT i = 0; i < kBuffers; ++i) {
@@ -929,6 +936,7 @@ void D3D12Presenter::Impl::PublishStatus() {
         s.rtx30 = PanelSpoofGpu(spoof_gpu);
         s.rtx40 = rtx40 ? 1u : 0u;
         s.mfgUnlockerLoaded = env.mfg_loaded ? 1u : 0u;
+        s.tripleFg = env.triple_fg ? 1u : 0u;
         s.vsyncNote = vsync_note ? 1u : 0u;
         s.cameraFlipHandedness = config.camera_flip_handedness ? 1u : 0u;
         s.cameraNegateSide = config.camera_negate_side ? 1u : 0u;
@@ -994,6 +1002,7 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     FrameDecision d;
     FgGateInputs g;
     g.tripleDiag = env.triple_diag;
+    g.tripleFg = env.triple_fg;
     g.userOn = fg_user_on;
     g.userSource = user_source;
     g.supported = fg_supported;
@@ -1016,6 +1025,19 @@ D3D12Presenter::Impl::FrameDecision D3D12Presenter::Impl::Decide(const FrameCapt
     g.cameraReason = CameraReadResultText(cap.cameraResult);
     g.cameraFresh = cap.cameraFresh;
     g.cameraFlags = g.cameraOk ? cap.camera.flags : 0;
+    // Experimental triple-screen frame generation: the view the camera shows,
+    // once per change.
+    if (env.triple_fg && g.cameraOk) {
+        const uint32_t view = g.cameraFlags & (kCamTriple | kCamTripleFlat | kCamTripleLayout);
+        if (view != triple_view_logged) {
+            triple_view_logged = view;
+            const char* what = (view & kCamTripleFlat)     ? "the triple view of flat, symmetric screens: one camera for the whole frame"
+                               : (view & kCamTripleLayout) ? "the triple view of an angled or asymmetric layout: frame generation stays off"
+                               : (view & kCamTriple)       ? "a single view (the whole window is one view)"
+                                                           : "no triple-screen view";
+            LOGI("triple-fg: the camera shows %s (vertical FOV %.2f)", what, cap.camera.fovVDeg);
+        }
+    }
     if (cap.captured && g.cameraOk) {
         CameraLayout cur = cap.camera;
         CameraLayout prev = prev_camera;

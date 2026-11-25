@@ -46,6 +46,10 @@ const char* kSmoothForeign =
     "NVIDIA Smooth Motion is on for AC; DLSS-G cannot run with it. acs.exe gets another game's NVIDIA profile "
     "\"ACS\", which install.bat leaves alone: in NVIDIA Profile Inspector set its Smooth Motion - Enabled APIs to 5, "
     "then restart AC.";
+// Triple-screen mode without [experimental] triple_fg=1 names the switch.
+const char* kTripleRefusal =
+    "camera mode TRIPLE (triple screen) is not supported yet; [experimental] triple_fg=1 in ac-dlssg.ini tries "
+    "frame generation on flat triple screens";
 const char* kOld = "OLD_SWAPCHAIN=1 is not supported";
 const char* kExcl = "EXCLUSIVE_FULLSCREEN=1 is not supported";
 const char* kHdr = "HDR output is not supported";
@@ -179,7 +183,7 @@ TEST(Compat_EachRuleAlone) {
 
     in = GoodInputs();
     in.camera_mode = "TRIPLE";
-    CHECK_EQ(Reason(in), "camera mode TRIPLE (triple screen) is not supported");
+    CHECK_EQ(Reason(in), kTripleRefusal);
     in.camera_mode = "OCULUS";
     CHECK_EQ(Reason(in), VrReason("OCULUS"));
 
@@ -285,7 +289,7 @@ TEST(Compat_VrModesGetTheVrReason) {
 TEST(Compat_OtherCameraModesNameWhatTheyAre) {
     auto in = GoodInputs();
     in.camera_mode = "TRIPLE";
-    CHECK_EQ(Reason(in), "camera mode TRIPLE (triple screen) is not supported");
+    CHECK_EQ(Reason(in), kTripleRefusal);
     in.camera_mode = "__EXT_360";
     CHECK_EQ(Reason(in), "custom rendering mode __EXT_360 (360, fisheye or split screen) is not supported");
     in.camera_mode = "__ext_splitscreen";
@@ -312,6 +316,26 @@ TEST(Compat_TripleDiagLetsTripleScreenThrough) {
     in.triple_diag = true;
     in.hags_on = false;
     CHECK_EQ(Reason(in), "hardware-accelerated GPU scheduling is off");
+}
+
+// [experimental] triple_fg=1 (1.3.0): triple-screen mode is let through,
+// so that the bridge proxies the swap chain as for one screen; every other
+// rule still applies, and the other camera modes stay refused.
+TEST(Compat_TripleFgLetsTripleScreenThrough) {
+    CHECK(std::string(kTripleRefusal).size() < 256);
+    auto in = GoodInputs();
+    in.camera_mode = "TRIPLE";
+    CHECK_EQ(Reason(in), kTripleRefusal);
+    in.triple_fg = true;
+    CHECK(Reason(in).empty());
+    in.aasamples = 4;
+    CHECK_EQ(Reason(in), kMsaa);
+    in = GoodInputs();
+    in.triple_fg = true;
+    in.camera_mode = "OPENVR";
+    CHECK_EQ(Reason(in), VrReason("OPENVR"));
+    in.camera_mode = "__EXT_360";
+    CHECK_EQ(Reason(in), "custom rendering mode __EXT_360 (360, fisheye or split screen) is not supported");
 }
 
 TEST(Compat_TripleDiagKeepsTheOtherModesRefused) {

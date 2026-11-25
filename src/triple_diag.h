@@ -41,6 +41,10 @@ constexpr uint32_t kTripleDiagNoEvaluateFrames = 600;
 // Pure: the switch is set and the camera mode is TRIPLE (case-insensitive).
 bool TripleDiagActive(bool configured, const std::optional<std::string>& cameraMode);
 
+// Pure: experimental triple-screen frame generation runs ([experimental]
+// triple_fg=1 and the camera mode TRIPLE), unless the diagnostics run.
+bool TripleFgActive(bool tripleFg, bool tripleDiag, const std::optional<std::string>& cameraMode);
+
 // One texture of an evaluate.
 struct TripleDiagTexture {
     bool present = false;    // the key holds a resource

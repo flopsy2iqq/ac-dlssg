@@ -115,6 +115,42 @@ TEST(FgGate_TripleDiagnosticsKeepItOffFirst) {
     CHECK(std::string(kTripleDiagFgReason).size() < 160);
 }
 
+// [experimental] triple_fg=1 (1.3.0): triple-screen mode runs frame
+// generation like one screen: the single view (a chase camera) and the
+// triple view of flat, symmetric screens, for which the CSP app writes one
+// camera for the whole frame. An angled or asymmetric layout keeps it off
+// with its own reason, frame by frame. VR is unchanged.
+TEST(FgGate_TripleFgRunsFlatTripleScreens) {
+    FgGateInputs in = AllowAll();
+    in.tripleFg = true;
+    in.cameraFlags = kCamTriple;
+    CHECK(DecideFg(in).on);
+    in.cameraFlags = kCamTriple | kCamTripleFlat;
+    CHECK(DecideFg(in).on);
+    in.cameraFlags = kCamTriple | kCamTripleLayout;
+    FgGateResult r = DecideFg(in);
+    CHECK(!r.on && r.perFrame);
+    CHECK_EQ(r.reason, std::string(kTripleLayoutFgReason));
+    CHECK(std::string(kTripleLayoutFgReason).size() < 160);
+    CHECK(Contains(r.reason, "flat, symmetric screens"));
+    in.cameraFlags = kCamVR;
+    CHECK(Contains(DecideFg(in).reason, "VR or triple-screen"));
+    // Without the switch, triple-screen mode stays off as before.
+    in.tripleFg = false;
+    in.cameraFlags = kCamTriple | kCamTripleFlat;
+    CHECK(Contains(DecideFg(in).reason, "VR or triple-screen"));
+    // The diagnostics win.
+    in.tripleFg = true;
+    in.tripleDiag = true;
+    CHECK_EQ(DecideFg(in).reason, std::string(kTripleDiagFgReason));
+    // tag_without_fg names the layout too.
+    in = AllowAll();
+    in.tripleFg = true;
+    in.supported = false;
+    in.cameraFlags = kCamTriple | kCamTripleLayout;
+    CHECK_EQ(TagPathReason(in, DecideFg(in), true), std::string(kTripleLayoutFgReason));
+}
+
 TEST(FgGate_ReplayAndCameraJumpDoNotTurnItOff) {
     FgGateInputs in = AllowAll();
     in.cameraFlags = kCamReplay | kCamJumped;

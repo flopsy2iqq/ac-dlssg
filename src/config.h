@@ -62,6 +62,11 @@ struct Config {
     // chain with frame generation off and logs CSP's DLSS evaluates; 0 keeps
     // triple-screen mode refused.
     bool triple_diag = false;  // [debug] triple_diag=0|1
+    // Section [experimental]. Frame generation in triple-screen mode (1.3.0):
+    // compat lets triple-screen mode through, and the CSP app writes one
+    // camera for the whole frame of flat, symmetric screens; triple_diag=1
+    // wins and keeps frame generation off.
+    bool triple_fg = false;  // [experimental] triple_fg=0|1
     std::vector<std::string> warnings;    // human-readable parse problems
 };
 

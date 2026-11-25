@@ -39,11 +39,18 @@ struct FgGateInputs {
     std::string constantsWhy;     // its why otherwise
     std::string vramRefusal;      // non-empty: the video memory guard keeps DLSS-G off
     bool tripleDiag = false;      // the triple-screen diagnostics run (triple_diag.h)
+    bool tripleFg = false;        // experimental triple-screen frame generation (TripleFgActive)
 };
 
 // Why DLSS-G stays off while the triple-screen diagnostics run.
 constexpr char kTripleDiagFgReason[] =
     "triple-screen diagnostics ([debug] triple_diag=1): frame generation stays off; the DLSS calls are logged";
+
+// Why DLSS-G stays off in the triple view of a layout that no single camera
+// describes (kCamTripleLayout).
+constexpr char kTripleLayoutFgReason[] =
+    "triple screens: frame generation works only with flat, symmetric screens for now (angled side screens are not "
+    "supported)";
 
 struct FgGateResult {
     bool on = false;
@@ -70,7 +77,9 @@ struct FgGateResult {
 // 11. !cameraFresh     "camera not fresh"                       (per frame)
 // 12. kCamPaused       "game paused"                            (per frame)
 // 13. kCamMainMenu     "in-game menu open"                      (per frame)
-// 14. kCamVR/kCamTriple "VR or triple-screen mode"              (per frame)
+// 14. kCamVR, or kCamTriple without tripleFg
+//                      "VR or triple-screen mode"               (per frame)
+// 14a. kCamTripleLayout kTripleLayoutFgReason                   (per frame)
 // 15. !constantsOk     "frame constants refused: <constantsWhy>" (per frame)
 // 16. vramRefusal      vramRefusal
 // kCamReplay and kCamJumped never turn DLSS-G off (a jump only sets reset).

@@ -42,7 +42,9 @@ FgGateResult DecideFg(const FgGateInputs& in) {
     if (!in.cameraFresh) return Off("camera not fresh", true);
     if (in.cameraFlags & kCamPaused) return Off("game paused", true);
     if (in.cameraFlags & kCamMainMenu) return Off("in-game menu open", true);
-    if (in.cameraFlags & (kCamVR | kCamTriple)) return Off("VR or triple-screen mode", true);
+    if ((in.cameraFlags & kCamVR) || ((in.cameraFlags & kCamTriple) && !in.tripleFg))
+        return Off("VR or triple-screen mode", true);
+    if (in.cameraFlags & kCamTripleLayout) return Off(kTripleLayoutFgReason, true);
     if (in.cameraFlags & kCamCustomMode) return Off("custom rendering mode (360, fisheye or split screen)", true);
     if (!in.constantsOk) return Off("frame constants refused: " + in.constantsWhy, true);
     if (!in.vramRefusal.empty()) return Off(in.vramRefusal, false);

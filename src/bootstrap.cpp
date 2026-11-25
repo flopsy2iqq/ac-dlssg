@@ -331,7 +331,7 @@ void Run(BootstrapState* s) {
          c.tag_without_fg ? 1 : 0,
          c.fg_vram_headroom_auto ? "auto" : std::to_string(c.fg_vram_headroom_mib).c_str(),
          c.spoof_load_any ? 1 : 0, c.fg_multiplier, c.mfg_unlocker ? 1 : 0);
-    LOGI("config: [debug] triple_diag=%d", c.triple_diag ? 1 : 0);
+    LOGI("config: [debug] triple_diag=%d [experimental] triple_fg=%d", c.triple_diag ? 1 : 0, c.triple_fg ? 1 : 0);
     for (const auto& w : c.warnings) LOGW("config: %s", w.c_str());
 
     const PredictedAdapter renderAdapter = PredictRenderAdapter(LogAdapters());
@@ -344,7 +344,21 @@ void Run(BootstrapState* s) {
     LOGI("documents dir: %s", s->docs_ac_dir.empty() ? "(not found)" : ToUtf8(s->docs_ac_dir).c_str());
     s->compat = ReadCompatInputs(s->game_dir, s->docs_ac_dir);
     s->compat.triple_diag = c.triple_diag;
+    s->compat.triple_fg = c.triple_fg;
     LogCompatInputs(s->compat);
+    if (c.triple_fg) {
+        if (c.triple_diag) {
+            LOGI("triple-fg: [experimental] triple_fg=1, but [debug] triple_diag=1 wins: frame generation stays off "
+                 "while the diagnostics run");
+        } else if (TripleFgActive(c.triple_fg, c.triple_diag, s->compat.camera_mode)) {
+            LOGI("triple-fg: [experimental] triple_fg=1 in triple-screen mode: if the bridge proxies the game's swap "
+                 "chain, frame generation runs in the single view and in the triple view of flat, symmetric "
+                 "screens (experimental)");
+        } else {
+            LOGI("triple-fg: [experimental] triple_fg=1, but video.ini [CAMERA] MODE is %s, not TRIPLE: nothing to do",
+                 s->compat.camera_mode ? s->compat.camera_mode->c_str() : "unset");
+        }
+    }
     if (c.triple_diag) {
         if (TripleDiagActive(c.triple_diag, s->compat.camera_mode)) {
             // Before the swap chain is decided on (review finding B-7): the

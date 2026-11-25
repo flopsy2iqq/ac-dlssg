@@ -89,6 +89,7 @@ const FieldSpec kStatusFields[] = {
     // Appended for RTX 40: NVIDIA's 2X limit there and MFG-Unlocker.
     STATUS_FIELD("uint32_t", rtx40, 1),
     STATUS_FIELD("uint32_t", mfgUnlockerLoaded, 1),
+    STATUS_FIELD("uint32_t", tripleFg, 1),
 };
 #undef STATUS_FIELD
 
@@ -754,6 +755,65 @@ TEST(LuaApp_LogsTheTripleConfigurationInTripleScreenModeOnly) {
     CHECK(lua.find("'isTripleScreenAvailable'") != std::string::npos);
     const std::string script = lua.substr(lua.find("function script.update(dt)"));
     CHECK(InOrder(script, {"if triple.update then triple.update() end", "if not opened or sceneReadyFired then return end"}));
+}
+
+// Experimental triple-screen frame generation ([experimental] triple_fg=1).
+// The layout of ac.getTripleConfiguration() is worked out at the start and
+// when CSP reports a change, never per frame: one camera describes the whole
+// frame when every edge is at one distance z (within 1e-3), the screens are
+// side by side, of one height and one scale, and placed symmetrically; its
+// vertical FOV is then 2 * atan((height / 2) / z). In the triple view fill()
+// writes that FOV and the flat flag, or for any other layout the flag that
+// keeps frame generation off; the single view writes the camera as before.
+// What is written is logged once per change.
+TEST(LuaApp_TripleViewWritesTheLayoutsCameraWhenItIsFlat) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    auto function = [&lua](const char* head) {
+        const size_t begin = lua.find(head);
+        if (begin == std::string::npos) return std::string();
+        const size_t end = lua.find("\nend", begin);
+        return end == std::string::npos ? std::string() : lua.substr(begin, end - begin);
+    };
+    const std::string compute = function("triple.compute = function ()");
+    REQUIRE(!compute.empty());
+    CHECK(InOrder(compute, {"triple.flat, triple.fovVDeg, triple.why = false, 0, nil", "ac.getTripleConfiguration()",
+                            "screens[0]", "screens[1]", "screens[2]", "local tol = triple.TOLERANCE",
+                            "math.abs(s.left.y - z) > tol or math.abs(s.right.y - z) > tol", "'angled screens'",
+                            "math.abs(s.height - s0.height) > tol * s0.height", "(s.right.x - s.left.x) / share",
+                            "math.abs(s0.right.x - s1.left.x) > tol * width", "math.abs(s0.left.x + s2.right.x) > tol * width",
+                            "'asymmetric screens'", "triple.flat = true",
+                            "triple.fovVDeg = math.deg(2 * math.atan((s0.height / 2) / z))"}));
+    CHECK(lua.find("TOLERANCE = 1e-3") != std::string::npos);
+    const std::string fill = acdb_test::LuaFunctionBody(lua, "fill");
+    REQUIRE(!fill.empty());
+    CHECK(InOrder(fill, {"local fov = sim.cameraFOV", "if simHas.isTripleMode and sim.isTripleMode then",
+                         "simHas.isTripleScreenAvailable and sim.isTripleScreenAvailable", "if view and triple.flat then",
+                         "choice, fov, tripleFlags = 'flat', triple.fovVDeg, FLAG_TRIPLE + triple.FLAG_FLAT",
+                         "elseif view then", "choice, tripleFlags = 'layout', FLAG_TRIPLE + triple.FLAG_LAYOUT",
+                         "if choice ~= triple.choice", "triple.noteFov(",
+                         "math.abs(fov - prevFov) > JUMP.maxFovDeg", "flags = flags + tripleFlags"}));
+    // Never per frame: the layout comes from the start and CSP's change event.
+    CHECK(fill.find("getTripleConfiguration") == std::string::npos);
+    const std::string update = function("triple.update = function ()");
+    CHECK(InOrder(update, {"if not triple.started then", "pcall(triple.compute)",
+                           "pcall(ac.onTripleConfigurationChanged,", "pcall(triple.compute)", "triple.choice = nil"}));
+    const std::string note = function("triple.noteFov = function (choice, cameraFov, written)");
+    REQUIRE(!note.empty());
+    CHECK(InOrder(note, {"'flat'", "cameraFov", "written", "triple.say("}));
+    // The table is declared before fill(), which reads it.
+    CHECK(lua.find("local triple = {") < lua.find("local function fill()"));
+}
+
+// While experimental triple-screen frame generation runs, the window says so.
+TEST(LuaApp_WindowSaysThatTripleScreenFrameGenerationIsExperimental) {
+    const std::string lua = acdb_test::ReadLuaAppFile("AcDlssg.lua");
+    REQUIRE(!lua.empty());
+    const std::string window = lua.substr(lua.find("function script.windowMain(dt)"));
+    CHECK(window.find("if s.tripleFg ~= 0 then noteCard(cards.tripleFg, nil, "
+                      "'Experimental: triple-screen frame generation (flat screens only).', C.muted)") !=
+          std::string::npos);
+    CHECK(lua.find("tripleFg = newCard()") != std::string::npos);
 }
 
 TEST(LuaApp_TheMainChunkStaysUnderLuaJitsLocalLimit) {

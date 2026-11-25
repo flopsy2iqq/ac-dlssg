@@ -145,9 +145,13 @@ struct StatusLayout {
     // can tell NVIDIA's limit from an unlock that did not work.
     uint32_t rtx40;
     uint32_t mfgUnlockerLoaded;
+    // Appended for experimental triple-screen frame generation: 1 while it
+    // runs ([experimental] triple_fg=1 in triple-screen mode, TripleFgActive),
+    // so that the window says that it is experimental.
+    uint32_t tripleFg;
 };
 
-static_assert(sizeof(StatusLayout) == 1700);
+static_assert(sizeof(StatusLayout) == 1704);
 static_assert(alignof(StatusLayout) == 4);
 static_assert(offsetof(StatusLayout, magic) == 0);
 static_assert(offsetof(StatusLayout, version) == 4);
@@ -192,6 +196,7 @@ static_assert(offsetof(StatusLayout, restartNote) == 1148);
 static_assert(offsetof(StatusLayout, autoFixNote) == 1308);
 static_assert(offsetof(StatusLayout, rtx40) == 1692);
 static_assert(offsetof(StatusLayout, mfgUnlockerLoaded) == 1696);
+static_assert(offsetof(StatusLayout, tripleFg) == 1700);
 
 struct ControlLayout {
     uint32_t magic;           // kControlMagic once the app has written a request

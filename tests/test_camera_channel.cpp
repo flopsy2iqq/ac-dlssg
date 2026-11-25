@@ -85,6 +85,7 @@ static_assert(kCameraMagic == 0x47534C44u);
 static_assert(kCameraVersion == 1u);
 static_assert(kCamJumped == 1u && kCamPaused == 2u && kCamReplay == 4u && kCamVR == 8u && kCamTriple == 16u &&
               kCamMainMenu == 32u && kCamWriteFailed == 64u);
+static_assert(kCamCustomMode == 128u && kCamTripleFlat == 256u && kCamTripleLayout == 512u);
 
 TEST(CameraLayout_MagicReadsDlsgInMemory) {
     const uint32_t magic = kCameraMagic;
@@ -154,6 +155,19 @@ long long LuaConstant(const std::string& lua, const std::string& name) {
     return std::stoll(m[1].str(), nullptr, 0);
 }
 
+// A number field of a table the app declares as `local <table> = { ... }`,
+// from that constructor: -1 when it is not there.
+long long LuaTableConstant(const std::string& lua, const std::string& table, const std::string& name) {
+    const std::regex re("local\\s+" + table + "\\s*=\\s*\\{([^}]*)\\}");
+    std::smatch m;
+    if (!std::regex_search(lua, m, re)) return -1;
+    const std::string body = m[1].str();
+    const std::regex field("\\b" + name + "\\s*=\\s*(0[xX][0-9A-Fa-f]+|\\d+)\\b");
+    std::smatch f;
+    if (!std::regex_search(body, f, field)) return -1;
+    return std::stoll(f[1].str(), nullptr, 0);
+}
+
 }  // namespace
 
 TEST(LuaApp_LayoutStringMatchesTheStructFieldByField) {
@@ -186,6 +200,11 @@ TEST(LuaApp_ConstantsMatchTheCppSide) {
     CHECK_EQ(LuaConstant(lua, "FLAG_MAIN_MENU"), static_cast<long long>(kCamMainMenu));
     CHECK_EQ(LuaConstant(lua, "FLAG_WRITE_FAILED"), static_cast<long long>(kCamWriteFailed));
     CHECK_EQ(LuaConstant(lua, "FLAG_CUSTOM_MODE"), static_cast<long long>(kCamCustomMode));
+    // The triple view's flags (experimental triple-screen frame generation)
+    // are fields of the app's triple table: its main chunk is near LuaJIT's
+    // limit of local variables.
+    CHECK_EQ(LuaTableConstant(lua, "triple", "FLAG_FLAT"), static_cast<long long>(kCamTripleFlat));
+    CHECK_EQ(LuaTableConstant(lua, "triple", "FLAG_LAYOUT"), static_cast<long long>(kCamTripleLayout));
 
     // ac.writeMemoryMappedFile takes the name without "Local\" (CSP SDK,
     // common/ac_extras_connectmmf.lua) and persists the mapping.

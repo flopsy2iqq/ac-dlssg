@@ -53,6 +53,16 @@ local FLAG_MAIN_MENU = 32
 local FLAG_WRITE_FAILED = 64
 local FLAG_CUSTOM_MODE = 128 -- CSP's custom rendering modes: 360, fisheye, split screen
 
+-- Triple-screen mode (ac-dlssg 1.3.0), in one table: the main chunk is near
+-- LuaJIT's limit of local variables. The diagnostics' log lines, and for
+-- experimental triple-screen frame generation ([experimental] triple_fg=1)
+-- the layout of the triple view and the camera flags that fill() writes for
+-- it: FLAG_FLAT for flat, symmetric screens, where fovVDeg is the whole
+-- frame's (one camera describes the frame); FLAG_LAYOUT for an angled or
+-- asymmetric layout, which no single camera describes. The single view (a
+-- chase camera: the whole window is one view) has neither.
+local triple = { started = false, available = nil, lines = 0, FLAG_FLAT = 256, FLAG_LAYOUT = 512 }
+
 -- A camera cut: the camera moved further in one frame than anything in AC
 -- drives (1 m plus 150 m/s over the frame's real or simulated time, whichever
 -- is longer, so fast-forwarded replays do not count), turned by more than
@@ -137,7 +147,27 @@ local function fill()
   local carCamera = simHas.carCameraIndex and sim.carCameraIndex or -1
   local trackSet = simHas.trackCamerasSet and sim.trackCamerasSet or -1
 
-  local jumped = (simHas.cameraJumped and sim.cameraJumped) or not havePrev or mode ~= prevMode or driveable ~= prevDriveable
+  -- Triple-screen mode. In the triple view of flat, symmetric screens one
+  -- camera describes the whole frame: its vertical FOV from the layout
+  -- (triple.compute) and FLAG_FLAT; any other layout gets FLAG_LAYOUT, which
+  -- keeps frame generation off. The single view stays as it is.
+  local tripleFlags = 0
+  if simHas.isTripleMode and sim.isTripleMode then
+    tripleFlags = FLAG_TRIPLE
+    local view = simHas.isTripleScreenAvailable and sim.isTripleScreenAvailable
+    local choice = 'single'
+    if view and triple.flat then
+      choice, fov, tripleFlags = 'flat', triple.fovVDeg, FLAG_TRIPLE + triple.FLAG_FLAT
+    elseif view then
+      choice, tripleFlags = 'layout', FLAG_TRIPLE + triple.FLAG_LAYOUT
+    end
+    if choice ~= triple.choice or (choice == 'flat' and fov ~= triple.fovWritten) then
+      triple.choice, triple.fovWritten = choice, fov
+      if triple.noteFov then triple.noteFov(choice, sim.cameraFOV, fov) end
+    end
+  end
+
+  local jumped =(simHas.cameraJumped and sim.cameraJumped) or not havePrev or mode ~= prevMode or driveable ~= prevDriveable
     or carCamera ~= prevCarCamera or focused ~= prevFocused or trackSet ~= prevTrackSet
   if not jumped then
     local dx, dy, dz = px - prevX, py - prevY, pz - prevZ
@@ -156,7 +186,7 @@ local function fill()
   if sim.isReplayActive then flags = flags + FLAG_REPLAY end
   if sim.isVRMode or (simHas.isVRConnected and sim.isVRConnected) or (simHas.isOpenXRMode and sim.isOpenXRMode) then flags = flags + FLAG_VR end
   if simHas.isCustomVideoMode and sim.isCustomVideoMode then flags = flags + FLAG_CUSTOM_MODE end
-  if simHas.isTripleMode and sim.isTripleMode then flags = flags + FLAG_TRIPLE end
+  flags = flags + tripleFlags
   if sim.isInMainMenu then flags = flags + FLAG_MAIN_MENU end
 
   -- The 3D render size fed to the upscaler; the window size until CSP has one,
@@ -245,8 +275,8 @@ end
 -- The notices outside the window: their functions are set at the end of
 -- this file, where the window's status functions exist (see there).
 local notice = { welcomeDone = false, reasonShown = false, started = nil, nextCheck = 0, stored = nil }
--- The triple-screen diagnostics: their functions are set at the end too.
-local triple = { started = false, available = nil, lines = 0 }
+-- The functions of the triple table (declared before fill()) are set at the
+-- end too.
 
 function script.update(dt)
   -- The first-run and pass-through notices, at most once per second.
@@ -283,6 +313,7 @@ local STATUS_LAYOUT = [[
   char fgMultNote[160]; char vramNote[160]; char restartNote[160];
   char autoFixNote[384];
   uint32_t rtx40; uint32_t mfgUnlockerLoaded;
+  uint32_t tripleFg;
 ]]
 
 local CONTROL_SECTION = 'AcDlssg.Control.v1'
@@ -384,7 +415,7 @@ local function newStatus()
     bridgeGpuMs = -1, vramUsageMib = 0, vramBudgetMib = 0, capturesPerSec = 0, cameraFreshPerSec = 0,
     taggedPerSec = 0, reason = '', stateReason = '', warning = '', gpuName = '', hotkey = '', bridgeVersion = '',
     fgMultRequested = 0, fgMultUsed = 0, fgMultMax = 0, fgMultNote = '', vramNote = '', restartNote = '',
-    autoFixNote = '', rtx40 = 0, mfgUnlockerLoaded = 0,
+    autoFixNote = '', rtx40 = 0, mfgUnlockerLoaded = 0, tripleFg = 0,
     -- Not a field: the version of a record with our magic that this window
     -- cannot read, else 0.
     otherVersion = 0
@@ -491,6 +522,7 @@ local function readStatus()
     c.autoFixNote = ffi.string(st.autoFixNote)
     c.rtx40 = st.rtx40
     c.mfgUnlockerLoaded = st.mfgUnlockerLoaded
+    c.tripleFg = st.tripleFg
   end
   memoryBarrier()
   if st.seq ~= s1 then return false end
@@ -925,7 +957,7 @@ end
 
 local cards = {
   autoFix = newCard(), restart = newCard(), vsync = newCard(), driver = newCard(), state = newCard(),
-  problem = newCard(),
+  problem = newCard(), tripleFg = newCard(),
 }
 
 local function noteCard(card, title, text, accent)
@@ -1309,6 +1341,7 @@ function script.windowMain(dt)
   -- The video memory guard's note: tight (on anyway), or not enough (off).
   if texts.vramNote ~= '' then wrappedText(texts.vramNote, COLOR_WARN) end
   if s.vsyncNote ~= 0 then noteCard(cards.vsync, nil, TEXT_VSYNC, C.muted) else cards.vsync.alpha = 0 end
+  if s.tripleFg ~= 0 then noteCard(cards.tripleFg, nil, 'Experimental: triple-screen frame generation (flat screens only).', C.muted) else cards.tripleFg.alpha = 0 end
   if s.driverWarning ~= 0 then noteCard(cards.driver, nil, texts.warning, s.driverWarning == DRIVER_NOTE and C.muted or COLOR_WARN) else cards.driver.alpha = 0 end
 
   saveButton(now)
@@ -1420,6 +1453,86 @@ end
 -- are guarded, and at most MAX_LINES lines are written in a session.
 
 triple.MAX_LINES = 40
+triple.TOLERANCE = 1e-3
+triple.why = 'the layout is not read yet'
+
+-- One line into CSP's log, at most MAX_LINES in a session.
+triple.say = function (text)
+  if triple.lines >= triple.MAX_LINES then return end
+  triple.lines = triple.lines + 1
+  ac.log('AcDlssg: triple: ' .. text)
+end
+
+-- Experimental triple-screen frame generation: whether one camera describes
+-- the whole frame of the triple view. That holds for flat screens (every
+-- edge at one distance z) side by side, of one height and one scale (the
+-- same width per share of the frame) and placed symmetrically: the frame is
+-- then one planar perspective, whose vertical FOV is 2 * atan((height / 2) /
+-- z), and whose horizontal extent fits the frame's aspect. Called at the
+-- start and when CSP reports a change, never per frame.
+triple.compute = function ()
+  triple.flat, triple.fovVDeg, triple.why = false, 0, nil
+  if not ac.getTripleConfiguration then
+    triple.why = 'this CSP build has no ac.getTripleConfiguration()'
+    return
+  end
+  local config = ac.getTripleConfiguration()
+  local screens = config and config.screens
+  local s0, s1, s2 = screens and screens[0], screens and screens[1], screens and screens[2]
+  if not (s0 and s1 and s2) then
+    triple.why = 'no screens'
+    return
+  end
+  local tol = triple.TOLERANCE
+  local z = s0.left.y
+  local width = s2.right.x - s0.left.x
+  if not (z > tol and width > tol and s0.height > tol) then
+    triple.why = 'no screen in front of the camera'
+    return
+  end
+  for _, s in ipairs({ s0, s1, s2 }) do
+    if math.abs(s.left.y - z) > tol or math.abs(s.right.y - z) > tol then
+      triple.why = 'angled screens'
+      return
+    end
+    if math.abs(s.height - s0.height) > tol * s0.height then
+      triple.why = 'screens of different heights'
+      return
+    end
+    local share = s.xTo - s.xFrom
+    if not (share > tol) or math.abs((s.right.x - s.left.x) / share - width) > tol * width then
+      triple.why = 'screens of different scales'
+      return
+    end
+  end
+  if math.abs(s0.right.x - s1.left.x) > tol * width or math.abs(s1.right.x - s2.left.x) > tol * width then
+    triple.why = 'screens that are not side by side'
+    return
+  end
+  if math.abs(s0.left.x + s2.right.x) > tol * width then
+    triple.why = 'asymmetric screens'
+    return
+  end
+  triple.flat = true
+  triple.fovVDeg = math.deg(2 * math.atan((s0.height / 2) / z))
+end
+
+-- Once per change of what fill() writes in triple-screen mode: CSP's camera
+-- FOV, the layout's, and which of them the bridge gets.
+triple.noteFov = function (choice, cameraFov, written)
+  local text
+  if choice == 'flat' then
+    text = string.format("the triple view of flat, symmetric screens: CSP's camera FOV %.2f, the layout's %.2f;"
+      .. " writing the layout's", cameraFov, written)
+  elseif choice == 'layout' then
+    text = string.format("the triple view of a layout that no single camera describes (%s): CSP's camera FOV"
+      .. " %.2f; writing it, and frame generation stays off", tostring(triple.why), cameraFov)
+  else
+    text = string.format("a single view: CSP's camera FOV %.2f, the layout's %s; writing CSP's", cameraFov,
+      triple.flat and string.format('%.2f', triple.fovVDeg) or 'none (' .. tostring(triple.why) .. ')')
+  end
+  triple.say(text)
+end
 
 triple.log = function (why)
   if triple.lines >= triple.MAX_LINES then return end
@@ -1451,12 +1564,22 @@ triple.update = function ()
   if not (simHas.isTripleMode and sim.isTripleMode) then return end
   if not triple.started then
     triple.started = true
+    local computed, why = pcall(triple.compute)
+    if not computed then
+      triple.why = tostring(why)
+      ac.warn('AcDlssg: triple: ' .. tostring(why))
+    end
     local ok, err = pcall(triple.log, 'at start')
     if not ok then ac.warn('AcDlssg: triple: ' .. tostring(err)) end
     if ac.onTripleConfigurationChanged then
       -- In pcall too: a CSP build whose call fails must not stop the update.
+      -- A new layout is worked out again, and fill() then logs what it writes.
       local subscribed, subscription = pcall(ac.onTripleConfigurationChanged,
-        function () pcall(triple.log, 'configuration changed') end)
+        function ()
+          pcall(triple.compute)
+          triple.choice = nil
+          pcall(triple.log, 'configuration changed')
+        end)
       if subscribed then
         triple.subscription = subscription
       else

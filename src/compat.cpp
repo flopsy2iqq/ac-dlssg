@@ -125,11 +125,14 @@ CompatResult EvaluateCompat(const CompatInputs& in, unsigned swapWidth, unsigned
     // Triple-screen mode with [debug] triple_diag=1 goes on to the next
     // rules: the diagnostics of triple_diag.h.
     if (in.camera_mode && !EqualsNoCase(*in.camera_mode, "DEFAULT") &&
-        !(in.triple_diag && EqualsNoCase(*in.camera_mode, "TRIPLE"))) {
+        !((in.triple_diag || in.triple_fg) && EqualsNoCase(*in.camera_mode, "TRIPLE"))) {
         const std::string vr = VrRefusal(in.camera_mode);
         if (!vr.empty()) return Refuse(vr);
         const std::string& mode = *in.camera_mode;
-        if (EqualsNoCase(mode, "TRIPLE")) return Refuse("camera mode " + mode + " (triple screen) is not supported");
+        if (EqualsNoCase(mode, "TRIPLE"))
+            return Refuse("camera mode " + mode +
+                          " (triple screen) is not supported yet; [experimental] triple_fg=1 in ac-dlssg.ini tries "
+                          "frame generation on flat triple screens");
         if (mode.size() > 6 && EqualsNoCase(mode.substr(0, 6), "__EXT_"))
             return Refuse("custom rendering mode " + mode + " (360, fisheye or split screen) is not supported");
         return Refuse("camera mode " + mode + " is not supported");

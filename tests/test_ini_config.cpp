@@ -540,6 +540,19 @@ TEST(Config_TripleDiagIsADebugSwitch) {
     CHECK(c.warnings[0].find("triple_diag") != std::string::npos);
 }
 
+// [experimental] triple_fg=1 (1.3.0): frame generation on flat triple
+// screens; 0 by default, and only in [experimental].
+TEST(Config_TripleFgIsAnExperimentalSwitch) {
+    CHECK(!ParseConfig(IniFile::Parse("")).triple_fg);
+    CHECK(ParseConfig(IniFile::Parse("[experimental]\ntriple_fg=1\n")).triple_fg);
+    CHECK(!ParseConfig(IniFile::Parse("[experimental]\ntriple_fg=0\n")).triple_fg);
+    CHECK(!ParseConfig(IniFile::Parse("[debug]\ntriple_fg=1\n")).triple_fg);
+    Config c = ParseConfig(IniFile::Parse("[experimental]\ntriple_fg=yes\n"));
+    CHECK(!c.triple_fg);
+    REQUIRE(c.warnings.size() == 1);
+    CHECK(c.warnings[0].find("triple_fg") != std::string::npos);
+}
+
 // mfg_unlocker=0 keeps the bridge from loading the MFG-Unlocker that the
 // installer put into ac-dlssg\mfg on an RTX 40; a missing key loads it.
 TEST(Config_MfgUnlockerIsOnUnlessSetToZero) {

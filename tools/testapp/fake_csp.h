@@ -135,8 +135,9 @@ public:
     bool IsOpen() const { return view_ != nullptr; }
 
     // One record, as the Lua app's publish(): the first write after Open has
-    // no previous camera and is flagged as a jump.
-    void Write(const CameraPose& pose, float renderW, float renderH, float dt, double simTimeMs) {
+    // no previous camera and is flagged as a jump; flags are added to every
+    // record (--camera-flags).
+    void Write(const CameraPose& pose, float renderW, float renderH, float dt, double simTimeMs, uint32_t flags = 0) {
         if (!view_) return;
         volatile uint32_t* seq = &view_->seq;
         const uint32_t s = (*seq | 1u) & 0x7FFFFFFFu;
@@ -156,7 +157,7 @@ public:
         view_->originShift[0] = view_->originShift[1] = view_->originShift[2] = 0.0f;
         view_->renderW = renderW;
         view_->renderH = renderH;
-        view_->flags = havePrev_ ? 0u : static_cast<uint32_t>(acdb::kCamJumped);
+        view_->flags = (havePrev_ ? 0u : static_cast<uint32_t>(acdb::kCamJumped)) | flags;
         view_->dt = dt;
         view_->simTimeMs = simTimeMs;
         havePrev_ = true;

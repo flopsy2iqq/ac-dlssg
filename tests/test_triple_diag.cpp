@@ -60,6 +60,17 @@ TEST(TripleDiag_RunsOnlyWithTheSwitchInTripleScreenMode) {
     CHECK(!TripleDiagActive(true, std::nullopt));
 }
 
+// [experimental] triple_fg=1 (1.3.0): frame generation in triple-screen
+// mode, unless the diagnostics run, which keep it off.
+TEST(TripleFg_RunsWithTheSwitchInTripleScreenModeWithoutTheDiagnostics) {
+    CHECK(TripleFgActive(true, false, std::string("TRIPLE")));
+    CHECK(TripleFgActive(true, false, std::string("triple")));
+    CHECK(!TripleFgActive(true, true, std::string("TRIPLE")));
+    CHECK(!TripleFgActive(false, false, std::string("TRIPLE")));
+    CHECK(!TripleFgActive(true, false, std::string("DEFAULT")));
+    CHECK(!TripleFgActive(true, false, std::nullopt));
+}
+
 TEST(TripleDiagLog_NothingBeforeTheFirstEvaluate) {
     Lines lines;
     TripleDiagLog log(lines.Sink(), 3, 2);

@@ -341,6 +341,7 @@ bool TryProxy(IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_
         env.mfg_loaded = bs.mfg_loaded;
         env.allow_stretching = bs.compat.allow_stretching.value_or(0) == 1;
         env.triple_diag = TripleDiagActive(bs.config.triple_diag, bs.compat.camera_mode);
+        env.triple_fg = TripleFgActive(bs.config.triple_fg, bs.config.triple_diag, bs.compat.camera_mode);
         // Spec 6.9: only a process that owns the panel's status reads its requests.
         if (PanelStatusChannel::Get().Owned()) {
             env.status = &PanelStatusChannel::Get();

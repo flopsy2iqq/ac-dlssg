@@ -205,6 +205,20 @@ $scenarios = @(
     # statistics lines for the heartbeat.
     @{ Name = 'panel';              Args = @('--fake-panel', '--frames', '1500', '--fps-cap', '500', '--expect-proxy');
        Ini = @('start_with_fg=1'); Panel = $true },
+    # Experimental triple-screen frame generation ([experimental] triple_fg=1):
+    # the triple fixture and the Lua app's camera of the triple view of flat
+    # screens (--camera-flags 272: kCamTriple | kCamTripleFlat). The whole
+    # pipeline runs as for one screen (captures, a fresh camera, constants
+    # and tags; tag_without_fg=1, since DLSS-G itself may be unsupported here),
+    # and nothing names the triple-screen refusal or the layout reason.
+    @{ Name = 'triple-fg';          Args = @('--fixture', 'triple', '--fake-ngx', '--fake-camera', '--camera-flags', '272',
+                                             '--frames', '3000', '--fps-cap', '500', '--expect-proxy', '--expect-fg',
+                                             'pipeline');
+       Ini = @('tag_without_fg=1', '[experimental]', 'triple_fg=1'); Camera = $true;
+       LogMust = @(' INFO config: \[debug\] triple_diag=0 \[experimental\] triple_fg=1', ' INFO triple-fg: on \(',
+           ' INFO triple-fg: the camera shows the triple view of flat, symmetric screens');
+       LogMustNot = @('camera mode TRIPLE \(triple screen\) is not supported', 'VR or triple-screen mode',
+           'flat, symmetric screens for now', 'triple-diag: on') },
     # The triple-screen diagnostics (see the description): 600 frames at 500
     # fps, so that a window of 300 frames ends inside the run.
     @{ Name = 'triple-diag';        Args = @('--fixture', 'triple', '--fake-ngx', '--fake-camera', '--frames', '600',

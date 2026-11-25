@@ -100,6 +100,10 @@ bool TripleDiagActive(bool configured, const std::optional<std::string>& cameraM
     return configured && cameraMode && EqualsNoCase(*cameraMode, "TRIPLE");
 }
 
+bool TripleFgActive(bool tripleFg, bool tripleDiag, const std::optional<std::string>& cameraMode) {
+    return tripleFg && !tripleDiag && TripleDiagActive(true, cameraMode);
+}
+
 TripleDiagEvaluate ReadTripleDiagEvaluate(const NgxEvaluateInputs& in, const NgxCreateInfo* create) {
     TripleDiagEvaluate e;
     e.featureKey = in.featureKey;

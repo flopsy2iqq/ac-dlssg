@@ -50,6 +50,10 @@ struct CompatInputs {
     // config): triple-screen mode is let through for the diagnostics of
     // triple_diag.h.
     bool triple_diag = false;
+    // ac-dlssg.ini [experimental] triple_fg=1 (the bootstrap sets it from the
+    // config): triple-screen mode is let through for experimental frame
+    // generation on flat triple screens.
+    bool triple_fg = false;
 };
 
 struct CompatResult {
@@ -68,9 +72,10 @@ struct CompatResult {
 //                                         game start); set Anti-aliasing to Off in Content Manager > Settings >
 //                                         Assetto Corsa > Video" (in every DLSS mode, not only DLAA)
 //  6. camera_mode present and not DEFAULT (case-insensitive), and not TRIPLE
-//     with triple_diag (the diagnostics of triple_diag.h)
+//     with triple_diag (the diagnostics of triple_diag.h) or triple_fg
 //                                      -> VrRefusal for a VR mode; "camera mode TRIPLE (triple screen) is not
-//                                         supported"; "custom rendering mode <MODE> (360, fisheye or split
+//                                         supported yet; [experimental] triple_fg=1 in ac-dlssg.ini tries frame
+//                                         generation on flat triple screens"; "custom rendering mode <MODE> (360, fisheye or split
 //                                         screen) is not supported" for CSP's __EXT_ modes; else "camera mode
 //                                         <MODE> is not supported"
 //  7. allow_stretching != 1 (missing counts as 0) and both video sizes known
