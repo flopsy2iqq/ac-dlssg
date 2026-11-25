@@ -86,7 +86,17 @@ param(
     [string]$MfgSourceDir = '',
     # Mfg, for tests only: a JSON file with the pins of that zip (see
     # Get-MfgPins in dev-common.ps1).
-    [string]$MfgPins = ''
+    [string]$MfgPins = '',
+    # The folder next to install.bat (the unpacked package; install.ps1
+    # passes it). A file there with the name of a pinned download
+    # (streamline-sdk-v2.14.1.zip, version.dll and dlssg_sm86.ini of
+    # dlssg_for_sm86, the MFG-Unlocker release zip) is used instead of the
+    # download and gets the same checks; one that does not match its pins is
+    # refused and left where it is. When a download fails, the message says
+    # which address to open in a browser and which file to put there.
+    [string]$LocalDir = '',
+    # For tests only: every download fails at once, as without a network.
+    [switch]$FailDownloads
 )
 
 $ErrorActionPreference = 'Stop'
@@ -148,8 +158,33 @@ function Remove-IfEmptyDir([string]$Path) {
     }
 }
 
+# A file the user put into -LocalDir by hand, by the name of the download it
+# stands for; '' when there is none.
+function Get-LocalFile([string]$Name) {
+    if (-not $LocalDir) { return '' }
+    $path = Join-Path $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LocalDir) $Name
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+    return ''
+}
+
+# Why a download failed; with -LocalDir also how to get the file by hand.
+function Get-DownloadFailure([string]$Url, [string]$Message, [string]$Name) {
+    $text = "download of $Url failed: $Message"
+    if ($LocalDir -and $Name) {
+        $text += (". To get it by hand: open $Url in a web browser, which saves the file $Name; put that file next to " +
+            "install.bat (into $LocalDir) and run install.bat again. It uses that file instead of the download, after " +
+            'the same checks.')
+    }
+    return $text
+}
+
 # Downloads to <OutFile>.partial with TLS 1.2 and three attempts, then renames.
-function Invoke-Download([string]$Url, [string]$OutFile) {
+# Name: the file's name for the message of a failure (Get-DownloadFailure).
+function Invoke-Download([string]$Url, [string]$OutFile, [string]$Name = '') {
+    if ($FailDownloads) {
+        Write-Host '  download failed: simulated failure (-FailDownloads)'
+        Stop-Fetch (Get-DownloadFailure $Url 'simulated failure (-FailDownloads)' $Name)
+    }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $partial = "$OutFile.partial"
     $parent = Split-Path -Parent $OutFile
@@ -169,7 +204,7 @@ function Invoke-Download([string]$Url, [string]$OutFile) {
             if ($attempt -lt 3) { Start-Sleep -Seconds (2 * $attempt) }
         }
     }
-    Stop-Fetch "download of $Url failed: $lastError"
+    Stop-Fetch (Get-DownloadFailure $Url $lastError $Name)
 }
 
 # --- NVAPI -----------------------------------------------------------------
@@ -250,12 +285,18 @@ function Invoke-StreamlineFetch {
         return
     }
 
-    # Pick the zip: the caller's (never deleted), or ours in <DepsDir>\download.
+    # Pick the zip: the caller's or the one put next to install.bat by hand
+    # (never deleted), or ours in <DepsDir>\download.
     $ownZip = $false
+    $local = ''
+    if (-not $StreamlineZip) { $local = Get-LocalFile $SlZipName }
     if ($StreamlineZip) {
         if (-not (Test-Path -LiteralPath $StreamlineZip -PathType Leaf)) { Stop-Fetch "-StreamlineZip not found: $StreamlineZip" }
         $zip = (Resolve-Path -LiteralPath $StreamlineZip).Path
         Write-Host "  using $zip"
+    } elseif ($local) {
+        $zip = $local
+        Write-Host "  using $zip (put next to install.bat by hand; checked like a download)"
     } else {
         $ownZip = $true
         $zip = Join-Path (Join-Path $DepsDir 'download') $SlZipName
@@ -265,7 +306,7 @@ function Invoke-StreamlineFetch {
             Write-Host "  reusing $zip"
         } else {
             Write-Host "  downloading $SlZipUrl ($SlZipSize bytes)"
-            Invoke-Download $SlZipUrl $zip
+            Invoke-Download $SlZipUrl $zip $SlZipName
         }
     }
 
@@ -273,7 +314,9 @@ function Invoke-StreamlineFetch {
     $sha = Get-Sha256Hex $zip
     if ($size -ne $SlZipSize -or $sha -ne $SlZipSha256) {
         if ($ownZip) { Remove-IfPresent $zip }
-        Stop-Fetch "$zip is $size bytes with SHA-256 $sha; expected $SlZipSize bytes with SHA-256 $SlZipSha256"
+        $hint = ''
+        if ($local) { $hint = "; it is not NVIDIA's file: delete it and download it again from $SlZipUrl" }
+        Stop-Fetch "$zip is $size bytes with SHA-256 $sha; expected $SlZipSize bytes with SHA-256 $SlZipSha256$hint"
     }
     Write-Host "  $SlZipName verified (SHA-256 $sha)"
 
@@ -416,19 +459,29 @@ function Invoke-SpoofFetch {
         foreach ($name in $todo) {
             $temp = Join-Path $downloadDir $name
             $pending += $temp
+            $local = ''
+            if (-not $source) { $local = Get-LocalFile $name }
             if ($source) {
                 $from = Join-Path $source $name
                 Write-Host "  copying $from (-SpoofSourceDir, no download)"
                 if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { Stop-Fetch "-SpoofSourceDir has no $name" }
                 New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
                 Copy-Item -LiteralPath $from -Destination $temp -Force
+            } elseif ($local) {
+                Write-Host "  copying $local (put next to install.bat by hand; checked like a download)"
+                New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+                Copy-Item -LiteralPath $local -Destination $temp -Force
             } else {
                 $size = ''
                 if ($null -ne $pins[$name].size) { $size = " ($($pins[$name].size) bytes)" }
                 Write-Host "  downloading $(Get-SpoofUrl $name)$size"
-                Invoke-Download (Get-SpoofUrl $name) $temp
+                Invoke-Download (Get-SpoofUrl $name) $temp $name
             }
             $problem = Get-SpoofFileProblem $temp $pins[$name]
+            if ($problem -and $local) {
+                Stop-Fetch ("$local does not match its pins ($problem): it is not the pinned file. Delete it and download " +
+                    "it again from $(Get-SpoofUrl $name)")
+            }
             if ($problem) { Stop-Fetch "the downloaded $problem; the download was deleted" }
             $what = "git blob SHA-1 $($pins[$name].gitSha1)"
             if ($pins[$name].sha256) { $what += ", SHA-256 $($pins[$name].sha256)" }
@@ -475,6 +528,8 @@ function Invoke-MfgFetch {
     }
     $zip = Join-Path $downloadDir $asset
     $temp = Join-Path $downloadDir $dllName
+    $local = ''
+    if (-not $MfgSourceDir) { $local = Get-LocalFile $asset }
     try {
         if ($MfgSourceDir) {
             $from = Join-Path $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($MfgSourceDir) $asset
@@ -482,13 +537,21 @@ function Invoke-MfgFetch {
             if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { Stop-Fetch "-MfgSourceDir has no $asset" }
             New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
             Copy-Item -LiteralPath $from -Destination $zip -Force
+        } elseif ($local) {
+            Write-Host "  copying $local (put next to install.bat by hand; checked like a download)"
+            New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+            Copy-Item -LiteralPath $local -Destination $zip -Force
         } else {
             Write-Host "  downloading $(Get-MfgUrl) ($($pins.ZipSize) bytes)"
-            Invoke-Download (Get-MfgUrl) $zip
+            Invoke-Download (Get-MfgUrl) $zip $asset
         }
         $size = (Get-Item -LiteralPath $zip).Length
         $sha = Get-Sha256Hex $zip
         if ($size -ne $pins.ZipSize -or $sha -ne $pins.ZipSha256) {
+            if ($local) {
+                Stop-Fetch ("$local is $size bytes with SHA-256 $sha; expected $($pins.ZipSize) bytes with SHA-256 " +
+                    "$($pins.ZipSha256): it is not the release zip. Delete it and download it again from $(Get-MfgUrl)")
+            }
             Stop-Fetch "the downloaded $asset is $size bytes with SHA-256 $sha; expected $($pins.ZipSize) bytes with SHA-256 $($pins.ZipSha256); the download was deleted"
         }
         Write-Host "  $asset verified ($size bytes, SHA-256 $sha)"

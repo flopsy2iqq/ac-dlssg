@@ -189,15 +189,19 @@ function Test-UnderFakeRoot([string]$Path) {
 # administrator rights (a UAC prompt) when the game folder is not writable.
 function Assert-PackageArguments([string]$Script, [string[]]$Arguments) {
     $leaf = Split-Path -Leaf $Script
-    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoSpoof' -and $Arguments -notcontains '-SpoofSourceDir') {
+    # -FailDownloads makes every download fail at once, as without a network.
+    $noDownload = $Arguments -contains '-FailDownloads'
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoSpoof' -and $Arguments -notcontains '-SpoofSourceDir' -and
+        -not $noDownload) {
         throw "refusing to run $Script without -NoSpoof or -SpoofSourceDir; it could download dlssg_for_sm86"
     }
-    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoMfgUnlocker' -and $Arguments -notcontains '-MfgSourceDir') {
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-NoMfgUnlocker' -and $Arguments -notcontains '-MfgSourceDir' -and
+        -not $noDownload) {
         throw "refusing to run $Script without -NoMfgUnlocker or -MfgSourceDir; it could download MFG-Unlocker"
     }
     # Without -StreamlineDir the install gets Streamline with fetch-deps.ps1:
     # only with the stand-in for the download staged in <package>\files\deps.
-    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-StreamlineDir') {
+    if (@('install.ps1', 'install.bat') -contains $leaf -and $Arguments -notcontains '-StreamlineDir' -and -not $noDownload) {
         $pkgRoot = Split-Path -Parent $Script
         if ($leaf -eq 'install.ps1') { $pkgRoot = Split-Path -Parent $pkgRoot }
         if (-not (Test-Path -LiteralPath (Join-Path $pkgRoot 'files\deps\streamline-2.14.1.sha256') -PathType Leaf)) {
@@ -4044,6 +4048,72 @@ Invoke-Case 'DR13: the uninstall says the value it reads back, NVIDIA''s predefi
     Check ($r.Code -eq 0 -and $r.Text -match ('restored: Smooth Motion - Enabled APIs in "Assetto Corsa" now reads 3 \(DX12, DX11\), NVIDIA''s ' +
         'predefined value \(before the install: 7 \(DX12, DX11, Vulkan\), NVIDIA''s predefined value\)')) 'the uninstall says what it read back'
     Check ($r.Text -notmatch 'is back in') 'and does not claim that the recorded value is back'
+}
+
+# ---------------------------------------------------------------------------
+# Files downloaded by hand (an OverTake review: "remote server error"). A
+# failed download says which address to open in a browser and which file to
+# put next to install.bat; a rerun uses that file after the checks a
+# download gets, and refuses one that does not match its pins. The runs pass
+# -FailDownloads: every download fails at once, as without a network.
+
+Invoke-Case 'DL1: a failed Streamline download says how to get the zip by hand; a wrong zip next to install.bat is refused' {
+    $pkg = New-PackageCopy 'DL1'
+    $game = New-FakeGame 'DL1' -NoDxgi
+    $args1 = @('-NoSpoof', '-NoMfgUnlocker', '-FailDownloads')
+    $r = Invoke-PackageInstallFromDeps $pkg $game $args1
+    Check ($r.Code -ne 0 -and $r.Text -match 'getting Streamline failed' -and $r.Text -match 'Nothing was installed') 'the install stops'
+    Check ($r.Text -match [regex]::Escape('https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.1/streamline-sdk-v2.14.1.zip')) 'it names the address'
+    Check ($r.Text -match 'open https://\S+ in a web browser' -and $r.Text -match 'saves the file streamline-sdk-v2\.14\.1\.zip' -and
+        $r.Text -match 'next to install\.bat' -and $r.Text -match 'run install\.bat again') 'and says what to do by hand'
+    Check (-not (Test-Path -LiteralPath (Get-GameDxgi $game))) 'nothing is installed'
+    # A file of that name that is not NVIDIA's zip.
+    $local = Join-Path $pkg 'streamline-sdk-v2.14.1.zip'
+    Write-Text $local 'not the zip'
+    $r = Invoke-PackageInstallFromDeps $pkg $game $args1
+    Check ($r.Code -ne 0 -and $r.Text -match 'put next to install\.bat by hand' -and $r.Text -match 'expected \d+ bytes with SHA-256') 'a wrong zip next to install.bat is refused by its size and SHA-256'
+    Check ($r.Text -notmatch 'download attempt' -and $r.Text -notmatch 'simulated failure') 'and nothing is downloaded instead'
+    Check (Test-Path -LiteralPath $local -PathType Leaf) 'the file stays where the user put it'
+}
+
+Invoke-Case 'DL2: dlssg_for_sm86 files put next to install.bat are used after the checks of a download; a wrong one is refused' {
+    $pkg = New-PackageCopy 'DL2'
+    $game = New-FakeGame 'DL2-fail' -NoDxgi
+    $base = @('-GpuDeviceIds', '10DE:2206', '-SpoofPins', $spoofPins, '-NoMfgUnlocker', '-FailDownloads')
+    $r = Invoke-PackageInstall $pkg $game $base
+    Check ($r.Code -ne 0 -and $r.Text -match [regex]::Escape((Get-SpoofUrl 'version.dll')) -and $r.Text -match 'saves the file version\.dll') 'a failed download names the address and the file'
+    foreach ($n in $spoofNames) { Copy-Item -LiteralPath (Join-Path $spoofSrc $n) -Destination (Join-Path $pkg $n) }
+    $game = New-FakeGame 'DL2-good' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game $base
+    Check ($r.Code -eq 0 -and $r.Text -match 'put next to install\.bat by hand' -and (Test-SpoofInstalled $game)) 'the files next to install.bat are installed'
+    Check ($r.Text -notmatch 'simulated failure') 'without a download'
+    # A package of its own: the files above are staged in the first one now.
+    $pkg = New-PackageCopy 'DL2-wrong'
+    foreach ($n in $spoofNames) { Copy-Item -LiteralPath (Join-Path $spoofSrc $n) -Destination (Join-Path $pkg $n) }
+    [IO.File]::AppendAllText((Join-Path $pkg 'version.dll'), 'x')
+    $game = New-FakeGame 'DL2-wrong' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game $base
+    Check ($r.Code -ne 0 -and $r.Text -match 'does not match its pins' -and -not (Test-Path -LiteralPath (Join-Path $game 'version.dll'))) 'a changed version.dll is refused'
+}
+
+Invoke-Case 'DL3: the MFG-Unlocker zip put next to install.bat is used after the checks of a download; a wrong one is refused' {
+    $pkg = New-PackageCopy 'DL3'
+    $base = @('-GpuDeviceIds', '10DE:2684', '-MfgPins', $mfgPins, '-NoSpoof', '-FailDownloads', '-KeepSmoothMotion')
+    $game = New-FakeGame 'DL3-fail' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game $base
+    Check ($r.Code -eq 0 -and $r.Text -match [regex]::Escape((Get-MfgUrl)) -and $r.Text -match "saves the file $([regex]::Escape($mfgAsset))") 'a failed download names the address and the file; the install goes on'
+    Check (-not (Test-Path -LiteralPath (Get-MfgTarget $game))) 'without MFG-Unlocker'
+    Copy-Item -LiteralPath (Join-Path $mfgSrc $mfgAsset) -Destination (Join-Path $pkg $mfgAsset)
+    $game = New-FakeGame 'DL3-good' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game $base
+    Check ($r.Code -eq 0 -and $r.Text -match 'put next to install\.bat by hand' -and (Test-Path -LiteralPath (Get-MfgTarget $game) -PathType Leaf)) 'the zip next to install.bat is installed'
+    $pkg = New-PackageCopy 'DL3-wrong'
+    Copy-Item -LiteralPath (Join-Path $mfgSrc $mfgAsset) -Destination (Join-Path $pkg $mfgAsset)
+    [IO.File]::AppendAllText((Join-Path $pkg $mfgAsset), 'x')
+    $game = New-FakeGame 'DL3-wrong' -NoDxgi
+    $r = Invoke-PackageInstall $pkg $game $base
+    Check ($r.Code -eq 0 -and $r.Text -match 'put next to install\.bat by hand' -and $r.Text -match 'expected \d+ bytes with SHA-256' -and
+        -not (Test-Path -LiteralPath (Get-MfgTarget $game))) 'a changed zip is refused'
 }
 
 # ---------------------------------------------------------------------------

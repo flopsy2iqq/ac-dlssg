@@ -35,7 +35,12 @@
      again". Otherwise scripts\fetch-deps.ps1 gets it into files\deps\:
      downloaded from NVIDIA's GitHub release only when not already there,
      SHA-256 and NVIDIA signatures verified. It prints where NVIDIA's license
-     files are; installing means accepting them.
+     files are; installing means accepting them. When a download fails (here,
+     or for dlssg_for_sm86 and MFG-Unlocker below), the message names the
+     address to open in a web browser and the file it saves; that file, put
+     next to install.bat, is used by the next run instead of a download,
+     after the same checks (size, SHA-256, signatures), and refused when it
+     does not match.
   3. dlssg_for_sm86 (spec 10), unless -NoSpoof is given. It reads every
      display adapter (the PNPDeviceID and name of each Win32_VideoController) and
      looks only at the NVIDIA ones:
@@ -213,7 +218,10 @@ param(
     # tried on a PC without an RTX 40 or 50 (the maintainer's RTX 3080):
     # install.bat -SmoothMotionAnyGpu, then uninstall.bat. Smooth Motion
     # itself does not run there, so the change does nothing in the game.
-    [switch]$SmoothMotionAnyGpu
+    [switch]$SmoothMotionAnyGpu,
+    # For tests only: every download fails at once, as without a network, so
+    # that the files put next to install.bat by hand are tried (fetch-deps.ps1).
+    [switch]$FailDownloads
 )
 
 $ErrorActionPreference = 'Stop'
@@ -368,7 +376,7 @@ function Get-SpoofInstallArgs([string]$Game) {
     if ($fetch.Count -gt 0) {
         Write-SpoofNotice $Game $class
         $deps = $depsDir
-        $fetchArgs = @{ Only = 'Spoof'; SpoofFiles = $fetch; DepsDir = $deps }
+        $fetchArgs = @{ Only = 'Spoof'; SpoofFiles = $fetch; DepsDir = $deps; LocalDir = $packageRoot; FailDownloads = $FailDownloads }
         if ($SpoofSourceDir) { $fetchArgs.SpoofSourceDir = $SpoofSourceDir }
         if ($SpoofPins) { $fetchArgs.SpoofPins = $SpoofPins }
         & (Join-Path $scripts 'fetch-deps.ps1') @fetchArgs
@@ -503,7 +511,7 @@ function Get-MfgInstallArgs([string]$Game) {
         }
     }
     Write-MfgNotice $Game
-    $fetchArgs = @{ Only = 'Mfg'; DepsDir = $depsDir }
+    $fetchArgs = @{ Only = 'Mfg'; DepsDir = $depsDir; LocalDir = $packageRoot; FailDownloads = $FailDownloads }
     if ($MfgSourceDir) { $fetchArgs.MfgSourceDir = $MfgSourceDir }
     if ($MfgPins) { $fetchArgs.MfgPins = $MfgPins }
     & (Join-Path $scripts 'fetch-deps.ps1') @fetchArgs
@@ -743,7 +751,7 @@ try {
                 Say "the Streamline $v files in $($reuse.From) cannot be used again ($($reuse.Problem)); Streamline is downloaded again."
             }
             Say "NVIDIA Streamline $v goes to $deps (a download of about 276 MB from github.com/NVIDIA-RTX/Streamline the first time; this can take several minutes without progress output)"
-            & (Join-Path $scripts 'fetch-deps.ps1') -Only Streamline -DepsDir $deps
+            & (Join-Path $scripts 'fetch-deps.ps1') -Only Streamline -DepsDir $deps -LocalDir $packageRoot -FailDownloads:$FailDownloads
             if ($LASTEXITCODE -ne 0) { Stop-Refused 'getting Streamline failed (see above). Nothing was installed.' }
             $slRoot = Join-Path $deps "streamline-$v"
             $StreamlineDir = Join-Path $slRoot 'bin\x64'
