@@ -241,9 +241,15 @@ function Add-KeepSmoothMotion([string]$Script, [string[]]$Arguments) {
 }
 
 function Invoke-Tool([string]$Script, [string[]]$Arguments) {
-    # Safety net: without -GameDir the scripts would find the real game.
+    # Safety net: without -GameDir the scripts would find the real game. The
+    # folder picker's runs (install.ps1 only) have none: their -SteamPath
+    # points into the fake root instead, so that no Steam library outside it
+    # is searched, and their stand-in picker answers fake folders.
     $i = [array]::IndexOf($Arguments, '-GameDir')
-    if ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1])) {
+    $s = [array]::IndexOf($Arguments, '-SteamPath')
+    $pickerRun = (Split-Path -Leaf $Script) -eq 'install.ps1' -and $i -lt 0 -and $s -ge 0 -and $s + 1 -lt $Arguments.Count -and
+        (Test-UnderFakeRoot $Arguments[$s + 1])
+    if (-not $pickerRun -and ($i -lt 0 -or $i + 1 -ge $Arguments.Count -or -not (Test-UnderFakeRoot $Arguments[$i + 1]))) {
         throw "refusing to run $Script without a -GameDir under $FakeRoot"
     }
     $Arguments = Add-KeepSmoothMotion $Script $Arguments
@@ -4114,6 +4120,132 @@ Invoke-Case 'DL3: the MFG-Unlocker zip put next to install.bat is used after the
     $r = Invoke-PackageInstall $pkg $game $base
     Check ($r.Code -eq 0 -and $r.Text -match 'put next to install\.bat by hand' -and $r.Text -match 'expected \d+ bytes with SHA-256' -and
         -not (Test-Path -LiteralPath (Get-MfgTarget $game))) 'a changed zip is refused'
+}
+
+# ---------------------------------------------------------------------------
+# The folder picker of install.bat. Without -GameDir the installer asks for
+# the game folder in a window first. The tests never show one: the picker and
+# its message box are a stand-in script (-FolderPicker), the session counts
+# as interactive only with -AssumeInteractive, and -SteamPath points the
+# search for the game into the fake root.
+
+$pickerScript = @'
+# A stand-in for install.ps1's folder picker (tools\test-dev-scripts.ps1).
+# -Mode pick appends "pick|<Initial>|<Title>" to calls.txt and answers the
+# next line of answers.txt ("<cancel>", or no line left, is Cancel); -Mode
+# warn appends "warn|<Text>".
+param([string]$Mode, [string]$Title, [string]$Initial, [string]$Text)
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$calls = Join-Path $PSScriptRoot 'calls.txt'
+if ($Mode -eq 'warn') {
+    [IO.File]::AppendAllText($calls, "warn|$Text`r`n", $utf8)
+    return
+}
+[IO.File]::AppendAllText($calls, "pick|$Initial|$Title`r`n", $utf8)
+$answers = Join-Path $PSScriptRoot 'answers.txt'
+$lines = @()
+if (Test-Path -LiteralPath $answers) { $lines = @([IO.File]::ReadAllLines($answers, $utf8) | Where-Object { $_ }) }
+if ($lines.Count -eq 0) { return $null }
+[IO.File]::WriteAllLines($answers, [string[]]@($lines | Select-Object -Skip 1), $utf8)
+if ($lines[0] -eq '<cancel>') { return $null }
+return $lines[0]
+'@
+
+# A stand-in picker that answers these folders in turn ('<cancel>' cancels).
+function New-FakePicker([string]$Name, [string[]]$Answers) {
+    $dir = Join-Path $FakeRoot "picker\$Name"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $path = Join-Path $dir 'pick.ps1'
+    Write-Text $path $pickerScript
+    Write-Text (Join-Path $dir 'answers.txt') ((@($Answers) -join "`r`n") + "`r`n")
+    return $path
+}
+function Get-PickerCalls([string]$Picker) {
+    $p = Join-Path (Split-Path -Parent $Picker) 'calls.txt'
+    if (-not (Test-Path -LiteralPath $p)) { return @() }
+    return @([IO.File]::ReadAllLines($p) | Where-Object { $_ })
+}
+# A Steam folder under the fake root whose only library holds $Game's folder
+# name; '' for $Game: a library without Assetto Corsa.
+function New-FakeSteam([string]$Name, [string]$GameName = '') {
+    $steam = Join-Path $FakeRoot "steam-picker\$Name\steam"
+    $lib = Join-Path $FakeRoot "steam-picker\$Name\library"
+    New-Item -ItemType Directory -Path (Join-Path $steam 'steamapps') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $lib 'steamapps\common') -Force | Out-Null
+    if ($GameName) {
+        $ac = Join-Path $lib 'steamapps\common\assettocorsa'
+        New-Item -ItemType Directory -Path $ac -Force | Out-Null
+        Write-Text (Join-Path $ac 'acs.exe') 'fake'
+    }
+    $vdf = "`"libraryfolders`"`n{`n`t`"0`"`n`t{`n`t`t`"path`"`t`t`"$($lib.Replace('\', '\\'))`"`n`t`t`"apps`"`n`t`t{`n`t`t`t`"244210`"`t`t`"1`"`n`t`t}`n`t}`n}`n"
+    Write-Text (Join-Path $steam 'steamapps\libraryfolders.vdf') $vdf
+    return [pscustomobject]@{ Steam = $steam; Game = $(if ($GameName) { Join-Path $lib 'steamapps\common\assettocorsa' } else { '' }) }
+}
+function Invoke-PickerInstall([string]$Pkg, [string]$Steam, [string[]]$Extra) {
+    return Invoke-Tool (Join-Path $Pkg 'scripts\install.ps1') (@('-SteamPath', $Steam, '-StreamlineDir', $slReal, '-NoPause', '-NoElevate',
+        '-NoSpoof', '-NoMfgUnlocker') + @($Extra))
+}
+
+Invoke-Case 'FP0: the picker asks until a folder with acs.exe is chosen; Cancel; the elevated run gets -GameDir; the shim compiles (static)' {
+    $good = New-FakeGame 'FP0-good' -NoDxgi
+    $bad = Join-Path $FakeRoot 'picker\FP0-bad'
+    New-Item -ItemType Directory -Path $bad -Force | Out-Null
+    $script:fp0Answers = @($bad, $good)
+    $script:fp0Calls = @()
+    $script:fp0Warnings = @()
+    $pick = { param($Title, $Initial) $script:fp0Calls += "$Initial|$Title"; $a = $script:fp0Answers[0]; $script:fp0Answers = @($script:fp0Answers | Select-Object -Skip 1); $a }
+    $warn = { param($Text) $script:fp0Warnings += $Text }
+    $chosen = Select-GameFolder 'C:\found' $pick $warn
+    Check ($chosen -eq $good) "a folder without acs.exe is refused, the next one taken ($chosen)"
+    Check ($script:fp0Calls.Count -eq 2 -and $script:fp0Calls[0] -like 'C:\found|ac-dlssg: choose the Assetto Corsa folder (the one with acs.exe)' -and
+        $script:fp0Calls[1] -like "$bad|*") 'the found folder is preselected first, then the refused one'
+    Check ($script:fp0Warnings.Count -eq 1 -and $script:fp0Warnings[0] -match 'has no acs\.exe') 'and the user is told why'
+    $script:fp0Answers = @($null)
+    Check ($null -eq (Select-GameFolder '' $pick $warn)) 'Cancel gives no folder'
+    $forward = @(Get-InstallElevationArguments ([ordered]@{ NoSpoof = [System.Management.Automation.SwitchParameter]$true }) $good)
+    $at = [array]::IndexOf($forward, '-GameDir')
+    Check ($at -ge 0 -and $forward[$at + 1] -eq $good -and $forward -contains '-Elevated' -and $forward -contains '-NoSpoof') "the elevated run gets the chosen folder as -GameDir ($($forward -join ' '))"
+    Initialize-FolderPickerShim
+    Check ($null -ne ('AcDlssg.FolderPicker' -as [type])) 'the folder picker shim compiles under Windows PowerShell 5.1'
+}
+
+Invoke-Case 'FP1: -GameDir and -NoFolderDialog skip the picker; a non-interactive run does not call it' {
+    $pkg = New-PackageCopy 'FP1'
+    $game = New-FakeGame 'FP1' -NoDxgi
+    $picker = New-FakePicker 'FP1' @($game)
+    $r = Invoke-PackageInstall $pkg $game @('-NoSpoof', '-NoMfgUnlocker', '-FolderPicker', $picker, '-AssumeInteractive')
+    Check ($r.Code -eq 0 -and @(Get-PickerCalls $picker).Count -eq 0) '-GameDir: installed without the picker'
+    $steam = New-FakeSteam 'FP1'
+    $r = Invoke-PickerInstall $pkg $steam.Steam @('-NoFolderDialog', '-FolderPicker', $picker, '-AssumeInteractive')
+    Check ($r.Code -ne 0 -and $r.Text -match 'not found through Steam' -and @(Get-PickerCalls $picker).Count -eq 0) '-NoFolderDialog: the folder found through Steam, without the picker'
+    $r = Invoke-PickerInstall $pkg $steam.Steam @('-FolderPicker', $picker)
+    Check ($r.Code -ne 0 -and $r.Text -match 'not found through Steam' -and @(Get-PickerCalls $picker).Count -eq 0) 'a non-interactive run finds the folder through Steam and does not call the picker'
+}
+
+Invoke-Case 'FP2: the picker preselects the folder found through Steam, asks again for a folder without acs.exe, and installs into the chosen one' {
+    $pkg = New-PackageCopy 'FP2'
+    $steam = New-FakeSteam 'FP2' 'assettocorsa'
+    $game = New-FakeGame 'FP2' -NoDxgi
+    $bad = Join-Path $FakeRoot 'picker\FP2-empty'
+    New-Item -ItemType Directory -Path $bad -Force | Out-Null
+    $picker = New-FakePicker 'FP2' @($bad, $game)
+    $r = Invoke-PickerInstall $pkg $steam.Steam @('-FolderPicker', $picker, '-AssumeInteractive')
+    $calls = @(Get-PickerCalls $picker)
+    Check ($calls.Count -eq 3 -and $calls[0] -like "pick|$($steam.Game)|*" -and $calls[1] -like 'warn|*has no acs.exe*' -and $calls[2] -like "pick|$bad|*") "the found folder first, then the warning, then the picker again ($($calls -join ' / '))"
+    Check ($r.Text -match 'has no acs\.exe') 'the console says why too'
+    Check ($r.Code -eq 0 -and $r.Text -match ([regex]::Escape("game folder: $game")) -and (Test-Path -LiteralPath (Get-GameDxgi $game))) 'installed into the chosen folder'
+    Check (-not (Test-Path -LiteralPath (Join-Path $steam.Game 'dxgi.dll'))) 'not into the folder found through Steam'
+}
+
+Invoke-Case 'FP3: Cancel ends the install with a plain line, a non-zero exit code and no change' {
+    $pkg = New-PackageCopy 'FP3'
+    $steam = New-FakeSteam 'FP3' 'assettocorsa'
+    $picker = New-FakePicker 'FP3' @('<cancel>')
+    $before = @(Get-ChildItem -LiteralPath $steam.Game -Recurse -Force | ForEach-Object { $_.FullName })
+    $r = Invoke-PickerInstall $pkg $steam.Steam @('-FolderPicker', $picker, '-AssumeInteractive')
+    Check ($r.Code -ne 0 -and $r.Text -match 'install: cancelled: no game folder was chosen; nothing was changed') 'it says so and exits non-zero'
+    Check ((@(Get-ChildItem -LiteralPath $steam.Game -Recurse -Force | ForEach-Object { $_.FullName }) -join '|') -eq ($before -join '|')) 'nothing changed in the game folder'
+    Check ($r.Text -notmatch 'Streamline') 'and nothing else happened'
 }
 
 # ---------------------------------------------------------------------------

@@ -1219,6 +1219,209 @@ function Get-ForwardArguments($Bound, [hashtable]$Set) {
     return $list
 }
 
+# ---------------------------------------------------------------------------
+# The folder picker of install.bat: without -GameDir the user chooses the
+# game folder in a window, before anything is changed or downloaded. The
+# picker is Explorer's own (IFileOpenDialog with FOS_PICKFOLDERS, through
+# the C# shim below, owned by the console window so that it opens in front);
+# when that cannot be shown, WinForms' FolderBrowserDialog.
+
+$script:AcdbFolderPickerTitle = 'ac-dlssg: choose the Assetto Corsa folder (the one with acs.exe)'
+
+$script:AcdbFolderPickerShim = @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace AcDlssg {
+    public static class FolderPicker {
+        [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+        private class FileOpenDialogClass { }
+
+        [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IFileOpenDialog {
+            [PreserveSig] int Show(IntPtr parent);
+            void SetFileTypes(uint count, IntPtr filters);
+            void SetFileTypeIndex(uint index);
+            void GetFileTypeIndex(out uint index);
+            void Advise(IntPtr events, out uint cookie);
+            void Unadvise(uint cookie);
+            void SetOptions(uint options);
+            void GetOptions(out uint options);
+            void SetDefaultFolder(IShellItem item);
+            void SetFolder(IShellItem item);
+            void GetFolder(out IShellItem item);
+            void GetCurrentSelection(out IShellItem item);
+            void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+            void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+            void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+            void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+            void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+            void GetResult(out IShellItem item);
+            void AddPlace(IShellItem item, int placement);
+            void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string extension);
+            void Close(int hr);
+            void SetClientGuid(ref Guid guid);
+            void ClearClientData();
+            void SetFilter(IntPtr filter);
+            void GetResults(out IntPtr items);
+            void GetSelectedItems(out IntPtr items);
+        }
+
+        [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItem {
+            void BindToHandler(IntPtr bindContext, ref Guid handler, ref Guid iid, out IntPtr result);
+            void GetParent(out IShellItem parent);
+            void GetDisplayName(uint form, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+            void GetAttributes(uint mask, out uint attributes);
+            void Compare(IShellItem other, uint hint, out int order);
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        private static extern void SHCreateItemFromParsingName(string path, IntPtr bindContext,
+            [MarshalAs(UnmanagedType.LPStruct)] Guid iid, [MarshalAs(UnmanagedType.Interface)] out IShellItem item);
+
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetConsoleWindow();
+
+        private const uint FOS_NOCHANGEDIR = 0x8;
+        private const uint FOS_PICKFOLDERS = 0x20;
+        private const uint FOS_FORCEFILESYSTEM = 0x40;
+        private const uint FOS_PATHMUSTEXIST = 0x800;
+        private const uint SIGDN_FILESYSPATH = 0x80058000;
+        private const int HRESULT_CANCELLED = unchecked((int)0x800704C7);
+        // This PC.
+        private const string ComputerFolder = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+
+        private static IShellItem Item(string path) {
+            IShellItem item;
+            SHCreateItemFromParsingName(path, IntPtr.Zero, typeof(IShellItem).GUID, out item);
+            return item;
+        }
+
+        // The chosen folder, or null for Cancel. selected is preselected (the
+        // dialog opens in its parent with its name filled in); without one
+        // the dialog opens at This PC. Throws when the dialog cannot be shown.
+        public static string Pick(string title, string selected) {
+            IFileOpenDialog dialog = (IFileOpenDialog)new FileOpenDialogClass();
+            try {
+                uint options;
+                dialog.GetOptions(out options);
+                dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+                dialog.SetTitle(title);
+                bool placed = false;
+                if (!string.IsNullOrEmpty(selected)) {
+                    try {
+                        string trimmed = selected.TrimEnd('\\');
+                        string parent = System.IO.Path.GetDirectoryName(trimmed);
+                        if (!string.IsNullOrEmpty(parent)) {
+                            dialog.SetFolder(Item(parent));
+                            dialog.SetFileName(System.IO.Path.GetFileName(trimmed));
+                            placed = true;
+                        }
+                    } catch (Exception) {
+                    }
+                }
+                if (!placed) {
+                    try {
+                        dialog.SetFolder(Item(ComputerFolder));
+                    } catch (Exception) {
+                    }
+                }
+                int hr = dialog.Show(GetConsoleWindow());
+                if (hr == HRESULT_CANCELLED) return null;
+                if (hr != 0) Marshal.ThrowExceptionForHR(hr);
+                IShellItem result;
+                dialog.GetResult(out result);
+                string path;
+                result.GetDisplayName(SIGDN_FILESYSPATH, out path);
+                return path;
+            } finally {
+                Marshal.ReleaseComObject(dialog);
+            }
+        }
+    }
+}
+'@
+
+# Compiles the shim once per process (Windows PowerShell 5.1 compiles C# 5).
+function Initialize-FolderPickerShim {
+    if ('AcDlssg.FolderPicker' -as [type]) { return }
+    Add-Type -TypeDefinition $script:AcdbFolderPickerShim -Language CSharp
+}
+
+# True when this PowerShell can show a window to the user: an interactive
+# session whose input is not redirected, a host not started with
+# -NonInteractive, and a console window to own the dialog.
+function Test-InteractiveSession {
+    if (-not [Environment]::UserInteractive) { return $false }
+    try { if ([Console]::IsInputRedirected) { return $false } } catch { return $false }
+    if (@([Environment]::GetCommandLineArgs() | Where-Object { $_ -ieq '-NonInteractive' }).Count -gt 0) { return $false }
+    try {
+        Initialize-FolderPickerShim
+        return [AcDlssg.FolderPicker]::GetConsoleWindow() -ne [IntPtr]::Zero
+    } catch {
+        return $false
+    }
+}
+
+# Asks for the game folder until one with acs.exe is chosen: & $Pick $Title
+# $Initial shows the picker and gives the chosen path or $null (Cancel), &
+# $Warn $Text says that a folder has no acs.exe. $Initial is preselected
+# (the folder found through Steam, or a refused one). $null on Cancel.
+function Select-GameFolder([string]$Initial, [scriptblock]$Pick, [scriptblock]$Warn) {
+    while ($true) {
+        $picked = & $Pick $script:AcdbFolderPickerTitle $Initial
+        if (-not $picked) { return $null }
+        $picked = [string]$picked
+        if (Test-Path -LiteralPath (Join-Path $picked $script:AcdbGameExe) -PathType Leaf) { return $picked }
+        & $Warn ("$picked has no $($script:AcdbGameExe), so it is not the Assetto Corsa folder. Choose the folder " +
+            "that holds $($script:AcdbGameExe); for Steam that is usually ...\steamapps\common\assettocorsa.")
+        $Initial = $picked
+    }
+}
+
+# The real picker: Explorer's folder dialog, else FolderBrowserDialog. The
+# chosen path, or $null for Cancel.
+function Show-FolderPicker([string]$Title, [string]$Initial) {
+    try {
+        Initialize-FolderPickerShim
+        return [AcDlssg.FolderPicker]::Pick($Title, $Initial)
+    } catch {
+        Write-Host "  the Explorer folder picker could not open ($($_.Exception.Message)); the older folder dialog opens instead"
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    try {
+        $dialog.Description = $Title
+        $dialog.ShowNewFolderButton = $false
+        if ($Initial -and (Test-Path -LiteralPath $Initial -PathType Container)) {
+            $dialog.SelectedPath = $Initial
+        } else {
+            $dialog.RootFolder = [Environment+SpecialFolder]::MyComputer
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $dialog.SelectedPath }
+        return $null
+    } finally {
+        $dialog.Dispose()
+    }
+}
+
+# The real warning for a folder without acs.exe: a message box.
+function Show-FolderWarning([string]$Text) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show($Text, 'ac-dlssg', [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
+    } catch {
+    }
+}
+
+# The arguments of the installer's elevated run: the caller's, with the game
+# folder as -GameDir, so that the folder picker never shows twice.
+function Get-InstallElevationArguments($Bound, [string]$Game) {
+    return Get-ForwardArguments $Bound @{ GameDir = $Game; Elevated = $true }
+}
+
 # Starts $Script again in an elevated Windows PowerShell (Windows shows its
 # UAC prompt) and waits for it; returns its exit code. Throws when the
 # prompt is declined. -WithoutUac, for tests only: the second run is a

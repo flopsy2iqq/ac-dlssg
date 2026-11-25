@@ -5,8 +5,9 @@
 .DESCRIPTION
   Part of the test package built by tools\make-test-package.ps1, where it is
   scripts\install.ps1 and install.bat in the package root starts it; it needs
-  neither the repository nor any build tool. It asks nothing: it prints what
-  it finds and decides, and runs to the end. The package layout:
+  neither the repository nor any build tool. It asks for one thing, the game
+  folder, in a window; then it prints what it finds and decides, and runs to
+  the end. The package layout:
     install.bat          starts this script
     files\               ac-dlssg.dll, apps\lua\AcDlssg, ac-dlssg\ (the
                          uninstaller and the log collector for the game
@@ -16,8 +17,13 @@
     docs\                READMEs, LICENSE, EXCEPTIONS.md, THIRD_PARTY_NOTICES.txt,
                          README-test.txt
 
-  1. Refuses while acs.exe is running and finds the game through Steam's
-     libraryfolders.vdf (or -GameDir). When this account may not write into
+  1. Refuses while acs.exe is running. Without -GameDir it opens a folder
+     window (Explorer's folder picker) with the game folder it found through
+     Steam's libraryfolders.vdf selected, or at This PC when there is none;
+     a folder without acs.exe is refused with a message and the window opens
+     again, and Cancel ends the install without any change. -NoFolderDialog,
+     or a session without a console window or with redirected input, takes
+     the folder found through Steam without a window. When this account may not write into
      the game folder (a game under C:\Program Files (x86)), it starts itself
      again with administrator rights, once, and that window goes on; the
      Windows UAC prompt is the only question. It refuses when Windows Smart
@@ -132,6 +138,14 @@
   The last line is "Press Enter to exit", so that a double-clicked window
   stays open; not with -NoPause or when the input is redirected.
 
+.PARAMETER GameDir
+  The game folder (the one with acs.exe), for scripts and advanced use: no
+  folder window opens.
+
+.PARAMETER NoFolderDialog
+  Take the game folder found through Steam without opening the folder
+  window (the behaviour before 1.3.0).
+
 .PARAMETER NoSpoof
   Skip step 3: no GPU check, no dlssg_for_sm86 download or install. Spoof
   files an earlier run installed stay, and uninstall.ps1 still removes them.
@@ -221,7 +235,15 @@ param(
     [switch]$SmoothMotionAnyGpu,
     # For tests only: every download fails at once, as without a network, so
     # that the files put next to install.bat by hand are tried (fetch-deps.ps1).
-    [switch]$FailDownloads
+    [switch]$FailDownloads,
+    [switch]$NoFolderDialog,
+    # For tests only (tools\test-dev-scripts.ps1), so that no window ever
+    # shows there: a script that stands in for the folder picker and its
+    # message box (-Mode pick|warn), a session that counts as interactive,
+    # and the Steam folder that the search for the game reads.
+    [string]$FolderPicker,
+    [switch]$AssumeInteractive,
+    [string]$SteamPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -703,7 +725,37 @@ try {
     if ($running.Count -gt 0) {
         Stop-Refused "$($script:AcdbGameExe) is running (pid $(($running | ForEach-Object { $_.Id }) -join ', ')). Close Assetto Corsa first."
     }
-    $game = Resolve-GameDir $GameDir
+    # Without -GameDir the user chooses the game folder in a window, before
+    # anything is changed or downloaded and before an elevated rerun, which
+    # then gets it as -GameDir. -NoFolderDialog, or a session that cannot
+    # show a window, takes the folder found through Steam, as before.
+    if (-not $GameDir -and -not $NoFolderDialog) {
+        if ($AssumeInteractive -or (Test-InteractiveSession)) {
+            if ($FolderPicker) {
+                $pick = { param($Title, $Initial) & $FolderPicker -Mode pick -Title $Title -Initial $Initial }
+                $warn = { param($Text) Say $Text; & $FolderPicker -Mode warn -Text $Text }
+            } else {
+                $pick = { param($Title, $Initial) Show-FolderPicker $Title $Initial }
+                $warn = { param($Text) Say $Text; Show-FolderWarning $Text }
+            }
+            $found = Find-AssettoCorsaDir $SteamPath
+            if ($found) {
+                Say "choose the game folder in the window that opened; the folder found through Steam is selected ($found)."
+            } else {
+                Say 'choose the game folder in the window that opened (the folder with acs.exe); Steam did not tell where the game is.'
+            }
+            $chosen = Select-GameFolder $found $pick $warn
+            if (-not $chosen) {
+                Say 'cancelled: no game folder was chosen; nothing was changed.'
+                Wait-BeforeClose
+                exit 1
+            }
+            $GameDir = $chosen
+        } else {
+            Say 'this session cannot show the folder window, so the game folder is the one found through Steam.'
+        }
+    }
+    $game = Resolve-GameDir $GameDir $SteamPath
     Say "game folder: $game"
 
     # A game under Program Files: start again with administrator rights, once;
@@ -717,7 +769,7 @@ try {
         }
         Say "this account may not write into $game. The installer starts again with administrator rights: confirm the Windows prompt, and follow the new window."
         try {
-            $code = Invoke-ElevatedScript $PSCommandPath (Get-ForwardArguments $PSBoundParameters @{ GameDir = $game; Elevated = $true })
+            $code = Invoke-ElevatedScript $PSCommandPath (Get-InstallElevationArguments $PSBoundParameters $game)
         } catch {
             Stop-Refused "the installer did not get administrator rights ($($_.Exception.Message)). Nothing was installed."
         }
