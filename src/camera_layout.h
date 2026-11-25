@@ -29,6 +29,7 @@ enum CameraFlags : uint32_t {
     // triple table (FLAG_FLAT, FLAG_LAYOUT); the single view has neither.
     kCamTripleFlat = 256,    // flat, symmetric screens: fovVDeg is the whole frame's, from the layout
     kCamTripleLayout = 512,  // an angled or asymmetric layout, which no single camera describes
+    kCamScreenshot = 1024,   // AC is making an accumulation screenshot (ac.getSim().isMakingScreenshot)
 };
 
 struct CameraLayout {

@@ -52,6 +52,7 @@ local FLAG_TRIPLE = 16
 local FLAG_MAIN_MENU = 32
 local FLAG_WRITE_FAILED = 64
 local FLAG_CUSTOM_MODE = 128 -- CSP's custom rendering modes: 360, fisheye, split screen
+local FLAG_SCREENSHOT = 1024 -- AC is making an accumulation screenshot: frame generation stays off
 
 -- Triple-screen mode (ac-dlssg 1.3.0), in one table: the main chunk is near
 -- LuaJIT's limit of local variables. The diagnostics' log lines, and for
@@ -87,7 +88,7 @@ local function hasField(object, name)
 end
 local OPTIONAL_SIM_FIELDS = { 'renderSize', 'originShift', 'cameraJumped', 'driveableCameraMode', 'carCameraIndex',
   'trackCamerasSet', 'isTripleMode', 'isVRConnected', 'cameraClipNear', 'cameraClipFar', 'isOpenXRMode',
-  'isCustomVideoMode', 'isTripleScreenAvailable' }
+  'isCustomVideoMode', 'isTripleScreenAvailable', 'isMakingScreenshot' }
 local simHas = {}
 for _, name in ipairs(OPTIONAL_SIM_FIELDS) do simHas[name] = hasField(sim, name) end
 do -- a block, so that the list takes no top-level local for good
@@ -188,6 +189,7 @@ local function fill()
   if simHas.isCustomVideoMode and sim.isCustomVideoMode then flags = flags + FLAG_CUSTOM_MODE end
   flags = flags + tripleFlags
   if sim.isInMainMenu then flags = flags + FLAG_MAIN_MENU end
+  if simHas.isMakingScreenshot and sim.isMakingScreenshot then flags = flags + FLAG_SCREENSHOT end
 
   -- The 3D render size fed to the upscaler; the window size until CSP has one,
   -- or always on builds without renderSize.

@@ -85,7 +85,8 @@ static_assert(kCameraMagic == 0x47534C44u);
 static_assert(kCameraVersion == 1u);
 static_assert(kCamJumped == 1u && kCamPaused == 2u && kCamReplay == 4u && kCamVR == 8u && kCamTriple == 16u &&
               kCamMainMenu == 32u && kCamWriteFailed == 64u);
-static_assert(kCamCustomMode == 128u && kCamTripleFlat == 256u && kCamTripleLayout == 512u);
+static_assert(kCamCustomMode == 128u && kCamTripleFlat == 256u && kCamTripleLayout == 512u &&
+              kCamScreenshot == 1024u);
 
 TEST(CameraLayout_MagicReadsDlsgInMemory) {
     const uint32_t magic = kCameraMagic;
@@ -200,6 +201,7 @@ TEST(LuaApp_ConstantsMatchTheCppSide) {
     CHECK_EQ(LuaConstant(lua, "FLAG_MAIN_MENU"), static_cast<long long>(kCamMainMenu));
     CHECK_EQ(LuaConstant(lua, "FLAG_WRITE_FAILED"), static_cast<long long>(kCamWriteFailed));
     CHECK_EQ(LuaConstant(lua, "FLAG_CUSTOM_MODE"), static_cast<long long>(kCamCustomMode));
+    CHECK_EQ(LuaConstant(lua, "FLAG_SCREENSHOT"), static_cast<long long>(kCamScreenshot));
     // The triple view's flags (experimental triple-screen frame generation)
     // are fields of the app's triple table: its main chunk is near LuaJIT's
     // limit of local variables.

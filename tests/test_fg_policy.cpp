@@ -76,6 +76,10 @@ TEST(FgGate_EachConditionTurnsItOffWithItsReason) {
         {"camera stale", [](FgGateInputs* in) { in->cameraFresh = false; }, "camera not fresh", true},
         {"paused", [](FgGateInputs* in) { in->cameraFlags = kCamPaused; }, "game paused", true},
         {"menu", [](FgGateInputs* in) { in->cameraFlags = kCamMainMenu; }, "menu open", true},
+        // An OverTake reviewer: a CSP accumulation screenshot (a motion shot)
+        // taken with frame generation on comes out very low quality.
+        {"screenshot", [](FgGateInputs* in) { in->cameraFlags = kCamScreenshot; },
+         "accumulation screenshot in progress", true},
         {"vr", [](FgGateInputs* in) { in->cameraFlags = kCamVR; }, "VR or triple-screen", true},
         {"triple", [](FgGateInputs* in) { in->cameraFlags = kCamTriple; }, "VR or triple-screen", true},
         {"custom", [](FgGateInputs* in) { in->cameraFlags = kCamCustomMode; }, "custom rendering mode", true},

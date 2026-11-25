@@ -563,7 +563,8 @@ TEST(LuaApp_CameraWriterReadsOptionalSimFieldsOnlyBehindAProbe) {
     const std::string listed = m[1];
     const char* const optional[] = {"renderSize",      "originShift",    "cameraJumped", "driveableCameraMode",
                                     "carCameraIndex",  "trackCamerasSet", "isTripleMode", "isVRConnected",
-                                    "cameraClipNear",  "cameraClipFar",   "isOpenXRMode", "isCustomVideoMode"};
+                                    "cameraClipNear",  "cameraClipFar",   "isOpenXRMode", "isCustomVideoMode",
+                                    "isMakingScreenshot"};
     const std::string body = acdb_test::LuaFunctionBody(lua, "open") + acdb_test::LuaFunctionBody(lua, "fill");
     REQUIRE(!body.empty());
     auto count = [](const std::string& s, const std::string& what) {
@@ -636,6 +637,10 @@ TEST(LuaApp_OpenXrIsVrAndCustomVideoModesAreFlagged) {
     CHECK(fill.find("if sim.isVRMode or (simHas.isVRConnected and sim.isVRConnected) or (simHas.isOpenXRMode and "
                     "sim.isOpenXRMode) then flags = flags + FLAG_VR end") != std::string::npos);
     CHECK(fill.find("if simHas.isCustomVideoMode and sim.isCustomVideoMode then flags = flags + FLAG_CUSTOM_MODE end") !=
+          std::string::npos);
+    // An accumulation screenshot (the SDK: "If true, currently AC is doing an
+    // accumulation screenshot") turns frame generation off, frame by frame.
+    CHECK(fill.find("if simHas.isMakingScreenshot and sim.isMakingScreenshot then flags = flags + FLAG_SCREENSHOT end") !=
           std::string::npos);
 }
 

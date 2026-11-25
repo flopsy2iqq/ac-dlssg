@@ -77,6 +77,7 @@ struct FgGateResult {
 // 11. !cameraFresh     "camera not fresh"                       (per frame)
 // 12. kCamPaused       "game paused"                            (per frame)
 // 13. kCamMainMenu     "in-game menu open"                      (per frame)
+// 13a. kCamScreenshot  "accumulation screenshot in progress"    (per frame)
 // 14. kCamVR, or kCamTriple without tripleFg
 //                      "VR or triple-screen mode"               (per frame)
 // 14a. kCamTripleLayout kTripleLayoutFgReason                   (per frame)

@@ -42,6 +42,9 @@ FgGateResult DecideFg(const FgGateInputs& in) {
     if (!in.cameraFresh) return Off("camera not fresh", true);
     if (in.cameraFlags & kCamPaused) return Off("game paused", true);
     if (in.cameraFlags & kCamMainMenu) return Off("in-game menu open", true);
+    // An accumulation screenshot taken with frame generation on comes out of
+    // very low quality (an OverTake review).
+    if (in.cameraFlags & kCamScreenshot) return Off("accumulation screenshot in progress", true);
     if ((in.cameraFlags & kCamVR) || ((in.cameraFlags & kCamTriple) && !in.tripleFg))
         return Off("VR or triple-screen mode", true);
     if (in.cameraFlags & kCamTripleLayout) return Off(kTripleLayoutFgReason, true);
