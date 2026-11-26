@@ -19,6 +19,12 @@ Assetto Corsa renders with DirectX 11. DLSS Frame Generation runs only on Direct
 - Depth and motion vectors come from the DLSS upscaling pass that CSP already runs.
 - The camera comes from a small CSP Lua app that the installer adds.
 
+## Video
+
+[4Tash](https://www.youtube.com/@4Tash) installs ac-dlssg step by step and tests it in game in [AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa (DLSS5)](https://www.youtube.com/watch?v=dXHG9-oGhWk):
+
+[![AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa, a video by 4Tash](https://img.youtube.com/vi/dXHG9-oGhWk/hqdefault.jpg)](https://www.youtube.com/watch?v=dXHG9-oGhWk)
+
 ## Screenshots
 
 DLSS-G 2X in Assetto Corsa with CSP:
@@ -75,6 +81,8 @@ On a 4 GB card the video memory is tight. The bridge adapts to it by itself (`fg
 - **ReShade is optional.** With ReShade 6.8+ (add-on build) installed as `dxgi.dll`, the bridge loads through ReShade. Without it, the bridge itself is installed as `dxgi.dll`. The installer picks the mode.
 
 ## Install
+
+To watch these steps first, see [4Tash's video](https://www.youtube.com/watch?v=dXHG9-oGhWk).
 
 1. Close Assetto Corsa and Content Manager's game session.
 2. Download `ac-dlssg-<version>.zip` from [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) and extract it anywhere. The folder holds `install.bat` and the folders `docs`, `files`, `scripts` and `tools`.

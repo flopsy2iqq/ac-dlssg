@@ -19,6 +19,12 @@ Assetto Corsa рисует через DirectX 11. DLSS Frame Generation рабо
 - Глубину и векторы движения мост берёт из DLSS-апскейла, который CSP и так выполняет.
 - Камеру передаёт маленькое Lua-приложение для CSP, которое ставит установщик.
 
+## Видео
+
+[4Tash](https://www.youtube.com/@4Tash) по шагам ставит ac-dlssg и проверяет его в игре в ролике [AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa (DLSS5)](https://www.youtube.com/watch?v=dXHG9-oGhWk):
+
+[![AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa, ролик 4Tash](https://img.youtube.com/vi/dXHG9-oGhWk/hqdefault.jpg)](https://www.youtube.com/watch?v=dXHG9-oGhWk)
+
 ## Скриншоты
 
 DLSS-G 2X в Assetto Corsa с CSP:
@@ -75,6 +81,8 @@ DLSS-G 2X в Assetto Corsa с CSP:
 - **ReShade не обязателен.** Если стоит ReShade 6.8+ (версия с аддонами) как `dxgi.dll`, мост грузится через него. Если нет, мост сам ставится как `dxgi.dll`. Установщик выбирает режим сам.
 
 ## Установка
+
+Сначала посмотреть эти шаги можно в [ролике 4Tash](https://www.youtube.com/watch?v=dXHG9-oGhWk).
 
 1. Закройте Assetto Corsa и игровую сессию Content Manager.
 2. Скачайте `ac-dlssg-<версия>.zip` из [Releases](https://github.com/flopsy2iqq/ac-dlssg/releases) и распакуйте в любую папку. В ней лежит `install.bat` и папки `docs`, `files`, `scripts` и `tools`.
