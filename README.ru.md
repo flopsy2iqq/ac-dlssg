@@ -21,9 +21,15 @@ Assetto Corsa рисует через DirectX 11. DLSS Frame Generation рабо
 
 ## Видео
 
-[4Tash](https://www.youtube.com/@4Tash) по шагам ставит ac-dlssg и проверяет его в игре в ролике [AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa (DLSS5)](https://www.youtube.com/watch?v=dXHG9-oGhWk):
+<div align="center">
 
-[![AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa, ролик 4Tash](https://img.youtube.com/vi/dXHG9-oGhWk/hqdefault.jpg)](https://www.youtube.com/watch?v=dXHG9-oGhWk)
+<a href="https://www.youtube.com/watch?v=dXHG9-oGhWk"><img src="https://img.youtube.com/vi/dXHG9-oGhWk/maxresdefault.jpg" alt="AC-DLSSG Frame Gen Tutorial and Test for Assetto Corsa (DLSS5), ролик 4Tash" width="100%"></a>
+
+[![Смотреть на YouTube](https://img.shields.io/badge/Смотреть_на-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=dXHG9-oGhWk)
+
+Установка по шагам и проверка в игре, ролик [4Tash](https://www.youtube.com/@4Tash).
+
+</div>
 
 ## Скриншоты
 
