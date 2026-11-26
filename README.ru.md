@@ -256,7 +256,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 Каждый архив релиза собирает GitHub Actions из этого репозитория, а у архива и `ac-dlssg.dll` есть аттестация сборки. В описании релиза указан SHA-256 обоих файлов. Проверить скачанный файл через GitHub CLI:
 
 ```
-gh attestation verify ac-dlssg-1.2.0.zip --repo flopsy2iqq/ac-dlssg
+gh attestation verify ac-dlssg-1.3.0.zip --repo flopsy2iqq/ac-dlssg
 ```
 
 ## Поддержать автора

@@ -256,7 +256,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\make-test-package.ps1
 Every release zip is built by GitHub Actions from this repository, and the zip and `ac-dlssg.dll` carry build provenance attestations. The release notes list the SHA-256 of both. To check a downloaded file with the GitHub CLI:
 
 ```
-gh attestation verify ac-dlssg-1.2.0.zip --repo flopsy2iqq/ac-dlssg
+gh attestation verify ac-dlssg-1.3.0.zip --repo flopsy2iqq/ac-dlssg
 ```
 
 ## Support
